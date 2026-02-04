@@ -1,0 +1,74 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/decision",
+    "crates/task",
+    "crates/context",
+    "crates/execution",
+    "crates/storage",
+    "crates/observability",
+    "crates/repl",
+    "crates/daemon",
+    "crates/cli",
+    "crates/plugins",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/user/ndc"
+authors = ["NDC Contributors"]
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.42", features = ["full"] }
+async-trait = "0.1"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Tracing
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# UUID
+uuid = { version = "1.11", features = ["v4", "serde"] }
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# gRPC
+tonic = "0.12"
+prost = "0.13"
+
+# Database (optional)
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"], optional = true }
+
+# Vector DB (optional)
+qdrant-client = { version = "1.12", optional = true }
+
+# Graph DB (optional)
+neo4rs = { version = "0.7", optional = true }
+
+# WASM
+wasmtime = { version = "26", optional = true }
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+ratatui = "0.29"
+crossterm = "0.28"
+
+[workspace.metadata.release]
+pre-release-replacements = [
+  {file="CHANGELOG.md", search="Unreleased", replace="{{version}}", min=1},
+  {file="CHANGELOG.md", search="\\.\\.\\.HEAD", replace="...{{tag_name}}", min=1},
+  {file="CHANGELOG.md", search="ReleaseDate", replace="{{date}}", min=1},
+  {file="CHANGELOG.md", search="<!-- next-header -->", replace="<!-- next-header -->\n## [Unreleased] - ReleaseDate\n", min=1},
+]
