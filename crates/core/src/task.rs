@@ -4,13 +4,12 @@
 //! - Intent: AI 提出的行动提案
 //! - Task: 已通过 Verdict 裁决的 Intent，可执行
 //! - Task 包含原始 Intent 信息，保证可追溯性
-//! - Task 包含 Snapshot，支持回滚
+//! - Snapshot 使用 Git Worktree 实现，支持精确回滚
 
 use crate::intent::{Intent, Action, Verdict};
 use crate::agent::AgentRole;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::fmt;
 
 /// 任务状态
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -25,29 +24,79 @@ pub enum TaskState {
     Cancelled,            // 已取消
 }
 
-/// 任务快照（支持回滚）
+/// Git Worktree 快照（使用 git worktree 实现精确回滚）
+///
+/// 工作原理：
+/// 1. 在 Preparing 阶段创建临时 worktree
+/// 2. 在 worktree 中执行操作
+/// 3. 回滚时删除 worktree 并切换回主分支
+/// 4. 不会污染主分支历史
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskSnapshot {
+pub struct GitWorktreeSnapshot {
     /// 快照 ID
     pub id: SnapshotId,
-    /// 捕获时间
-    pub captured_at: Timestamp,
-    /// Git Commit Hash（如适用）
-    pub git_commit: Option<String>,
-    /// 受影响文件列表（路径 + hash）
-    pub affected_files: Vec<FileSnapshot>,
-    /// 内存快照（Base64 编码，如 state.json）
-    pub memory_snapshot: Option<String>,
-    /// 创建者
-    pub created_by: AgentRole,
+
+    /// Worktree 路径
+    pub worktree_path: PathBuf,
+
+    /// 创建时间
+    pub created_at: Timestamp,
+
+    /// 创建时的 commit hash
+    pub base_commit: String,
+
+    /// 此快照对应的分支名
+    pub branch_name: String,
+
+    /// 任务 ID（关联）
+    pub task_id: TaskId,
+
+    /// 执行的步骤 ID
+    pub step_id: Option<u64>,
+
+    /// 受影响的文件列表（相对路径）
+    pub affected_paths: Vec<PathBuf>,
+
+    /// 操作摘要
+    pub operation_summary: String,
 }
 
-/// 单文件快照
+/// 文件变更记录
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FileSnapshot {
+pub struct FileChange {
+    /// 文件路径（相对）
     pub path: PathBuf,
-    pub content_hash: String,  // SHA256
-    pub size: u64,
+
+    /// 变更类型
+    pub change_type: ChangeType,
+
+    /// 变更前的内容 hash
+    pub old_content_hash: Option<String>,
+
+    /// 变更后的内容 hash
+    pub new_content_hash: Option<String>,
+
+    /// 行数统计
+    pub lines_added: u32,
+    pub lines_removed: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ChangeType {
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+}
+
+/// 轻量级快照（仅记录路径，不创建 worktree）
+/// 用于不需要回滚的场景
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LightweightSnapshot {
+    pub id: SnapshotId,
+    pub captured_at: Timestamp,
+    pub paths: Vec<PathBuf>,
+    pub checksum: String,  // SHA256 of all file contents
 }
 
 /// 任务
@@ -82,9 +131,13 @@ pub struct Task {
     /// 质量门禁
     pub quality_gate: Option<QualityGate>,
 
-    /// 任务快照（Preparing 阶段捕获）
+    /// Git Worktree 快照（Preparing/InProgress 阶段创建）
     #[serde(default)]
-    pub snapshots: Vec<TaskSnapshot>,
+    pub snapshots: Vec<GitWorktreeSnapshot>,
+
+    /// 轻量级快照（不需要回滚时使用）
+    #[serde(default)]
+    pub lightweight_snapshots: Vec<LightweightSnapshot>,
 
     /// 元数据
     pub metadata: TaskMetadata,
@@ -208,6 +261,7 @@ impl Task {
             steps: vec![],
             quality_gate: None,
             snapshots: vec![],
+            lightweight_snapshots: vec![],
             metadata: TaskMetadata::default(),
         }
     }
@@ -225,6 +279,7 @@ impl Task {
             steps: vec![],
             quality_gate: None,
             snapshots: vec![],
+            lightweight_snapshots: vec![],
             metadata: TaskMetadata {
                 created_at: Timestamp::now(),
                 updated_at: Timestamp::now(),
@@ -273,21 +328,46 @@ impl Task {
         };
     }
 
-    /// 捕获当前快照（用于回滚）
-    pub fn capture_snapshot(&mut self, files: Vec<FileSnapshot>) {
-        self.snapshots.push(TaskSnapshot {
+    /// 创建 Git Worktree 快照
+    pub fn capture_worktree_snapshot(
+        &mut self,
+        worktree_path: PathBuf,
+        base_commit: String,
+        branch_name: String,
+        affected_paths: Vec<PathBuf>,
+        operation_summary: String,
+    ) {
+        self.snapshots.push(GitWorktreeSnapshot {
             id: SnapshotId::new(),
-            captured_at: Timestamp::now(),
-            git_commit: None,
-            affected_files: files,
-            memory_snapshot: None,
-            created_by: self.metadata.created_by.clone(),
+            worktree_path,
+            created_at: Timestamp::now(),
+            base_commit,
+            branch_name,
+            task_id: self.id,
+            step_id: self.steps.last().map(|s| s.step_id),
+            affected_paths,
+            operation_summary,
         });
     }
 
-    /// 获取最新快照
-    pub fn latest_snapshot(&self) -> Option<&TaskSnapshot> {
+    /// 创建轻量级快照
+    pub fn capture_lightweight_snapshot(&mut self, paths: Vec<PathBuf>, checksum: String) {
+        self.lightweight_snapshots.push(LightweightSnapshot {
+            id: SnapshotId::new(),
+            captured_at: Timestamp::now(),
+            paths,
+            checksum,
+        });
+    }
+
+    /// 获取最新 Git Worktree 快照
+    pub fn latest_worktree_snapshot(&self) -> Option<&GitWorktreeSnapshot> {
         self.snapshots.last()
+    }
+
+    /// 获取最新轻量级快照
+    pub fn latest_lightweight_snapshot(&self) -> Option<&LightweightSnapshot> {
+        self.lightweight_snapshots.last()
     }
 }
 

@@ -1,61 +1,171 @@
-//! Intent and Verdict types for the decision system
+//! Intent and Verdict - 决策引擎核心类型
+//!
+//! - Intent: AI 提出的行动提案
+//! - Verdict: 决策引擎的裁决结果（含权限等级）
+//! - Effect: 声明的影响范围
 
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
-use chrono::{DateTime, Utc};
-
 use crate::{agent::AgentRole, task::TaskId, memory::MemoryId};
+use std::path::PathBuf;
+use std::fmt;
 
-/// Unique identifier for an intent
+/// Intent ID
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct IntentId(pub Uuid);
+pub struct IntentId(pub ulid::Ulid);
 
 impl IntentId {
     pub fn new() -> Self {
-        Self(Uuid::new_v4())
+        Self(ulid::Ulid::new())
     }
 }
 
-/// Intent - AI's proposal for action
+impl Default for IntentId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Intent - AI 的行动提案
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Intent {
+    /// Intent ID
     pub id: IntentId,
+
+    /// 发起者 ID
     pub agent: AgentId,
+
+    /// 发起者角色
     pub agent_role: AgentRole,
+
+    /// 提议的动作
     pub proposed_action: Action,
+
+    /// 声明的影响范围
     pub effects: Vec<Effect>,
+
+    /// 推理过程
     pub reasoning: String,
-    pub task_id: TaskId,
-    pub timestamp: DateTime<Utc>,
+
+    /// 关联任务 ID
+    pub task_id: Option<TaskId>,
+
+    /// 创建时间
+    pub timestamp: Timestamp,
 }
 
-/// Action that an agent wants to perform
+/// Action - 提议的动作
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Action {
-    EditFile { path: String, edits: Vec<FileEdit> },
-    CreateFile { path: String, content: String },
-    DeleteFile { path: String },
+    /// 读文件
+    ReadFile { path: PathBuf },
+
+    /// 写文件
+    WriteFile { path: PathBuf, content: String },
+
+    /// 创建文件
+    CreateFile { path: PathBuf },
+
+    /// 删除文件
+    DeleteFile { path: PathBuf },
+
+    /// 执行命令
     RunCommand { command: String, args: Vec<String> },
-    ReadMemory { query: String },
-    WriteMemory { content: String },
-    TransitionTask { task_id: TaskId, to: TaskState },
-    RequestHumanInput { prompt: String },
+
+    /// Git 操作
+    Git { operation: GitOp },
+
+    /// 修改内存
+    ModifyMemory { memory_id: MemoryId, changes: String },
+
+    /// 创建任务
+    CreateTask { task_spec: TaskSpec },
+
+    /// 更新任务状态
+    UpdateTaskState { task_id: TaskId, new_state: TaskState },
+
+    /// 搜索知识
+    SearchKnowledge { query: String },
+
+    /// 保存知识
+    SaveKnowledge { knowledge: KnowledgeSpec },
+
+    /// 运行测试
+    RunTests { test_type: TestType },
+
+    /// 质量检查
+    RunQualityCheck { check_type: QualityCheckType },
+
+    /// 请求人类介入
+    RequestHuman { question: String, context: String },
+
+    /// 其他动作
+    Other { name: String, params: serde_json::Value },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FileEdit {
-    pub start_line: usize,
-    pub end_line: usize,
-    pub replacement: String,
+pub enum GitOp {
+    Status,
+    Commit { message: String },
+    Push,
+    Pull,
+    Branch { name: String },
+    Checkout { branch: String },
 }
 
-/// Effect - declared impact scope of an intent
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum TestType {
+    Unit,
+    Integration,
+    All,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum QualityCheckType {
+    Lint,
+    TypeCheck,
+    Build,
+    Security,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskSpec {
+    pub title: String,
+    pub description: String,
+    pub task_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KnowledgeSpec {
+    pub title: String,
+    pub content: String,
+    pub knowledge_type: KnowledgeType,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum KnowledgeType {
+    CodeSnippet,
+    Documentation,
+    Decision,
+    Pattern,
+    Tutorial,
+}
+
+/// Effect - 声明的影响范围
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Effect {
-    FileOperation { path: String, op: FileOp },
-    TaskTransition { from: TaskState, to: TaskState },
-    MemoryOperation { memory_id: MemoryId, op: MemoryOp },
+    /// 文件操作
+    FileOperation { path: PathBuf, operation: FileOp },
+
+    /// 任务状态转换
+    TaskTransition { task_id: TaskId, from: TaskState, to: TaskState },
+
+    /// 内存操作
+    MemoryOperation { memory_id: MemoryId, operation: MemoryOp },
+
+    /// 工具调用
     ToolInvocation { tool: String, args: Vec<String> },
+
+    /// 人类交互
     HumanInteraction { interaction_type: InteractionType },
 }
 
@@ -63,6 +173,7 @@ pub enum Effect {
 pub enum FileOp {
     Read,
     Write,
+    Create,
     Delete,
 }
 
@@ -70,64 +181,202 @@ pub enum FileOp {
 pub enum MemoryOp {
     Read,
     Write,
-    Modify,
+    Update,
+    Delete,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum InteractionType {
-    Question,
-    Confirmation,
-    Alert,
+    Approval,
+    Decision,
+    Information,
 }
 
-/// Verdict - system's decision on an intent
+/// 权限等级 - 用于精细化控制
+///
+/// 示例：
+/// - ReadFile(src/) → Normal 权限
+/// - WriteFile(src/) → Normal 权限
+/// - WriteFile(Cargo.toml) → Elevated 权限
+/// - DeleteFile(any) → High 权限
+/// - RunCommand(git reset --hard) → Critical 权限
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum PrivilegeLevel {
+    /// 普通权限 - 读文件、普通写操作
+    Normal = 0,
+
+    /// 提升权限 - 配置文件修改、构建操作
+    Elevated = 1,
+
+    /// 高权限 - 删除文件、强制操作
+    High = 2,
+
+    /// 关键权限 - 危险命令、系统修改
+    Critical = 3,
+}
+
+impl fmt::Display for PrivilegeLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PrivilegeLevel::Normal => write!(f, "Normal"),
+            PrivilegeLevel::Elevated => write!(f, "Elevated"),
+            PrivilegeLevel::High => write!(f, "High"),
+            PrivilegeLevel::Critical => write!(f, "Critical"),
+        }
+    }
+}
+
+/// Verdict - 决策引擎的裁决结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Verdict {
-    Allow,
-    Deny { reason: String, code: ErrorCode },
-    RequireHuman {
-        question: String,
-        context: HumanContext,
-        timeout: Option<u64>, // seconds
+    /// 允许执行（带权限等级）
+    Allow {
+        /// 动作
+        action: Action,
+
+        /// 授予的权限等级
+        privilege: PrivilegeLevel,
+
+        /// 附加条件
+        conditions: Vec<Condition>,
     },
-    Modify {
-        original_action: Action,
-        modified_action: Action,
+
+    /// 拒绝执行
+    Deny {
+        /// 原始动作
+        action: Action,
+
+        /// 拒绝原因
         reason: String,
+
+        /// 错误码
+        error_code: ErrorCode,
+    },
+
+    /// 需要人类介入
+    RequireHuman {
+        /// 原始动作
+        action: Action,
+
+        /// 询问问题
+        question: String,
+
+        /// 上下文
+        context: HumanContext,
+
+        /// 超时时间（秒）
+        timeout: Option<u64>,
+    },
+
+    /// 修改后执行
+    Modify {
+        /// 原始动作
+        original_action: Action,
+
+        /// 修改后的动作
+        modified_action: Action,
+
+        /// 修改原因
+        reason: String,
+
+        /// 警告
         warnings: Vec<String>,
     },
+
+    /// 延迟决策
     Defer {
+        /// 原始动作
+        action: Action,
+
+        /// 需要的信息
         required_info: Vec<InformationRequirement>,
-        retry_after: Option<u64>, // seconds
+
+        /// 重试间隔（秒）
+        retry_after: Option<u64>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Condition {
+    pub condition_type: ConditionType,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ConditionType {
+    /// 必须通过测试
+    MustPassTests,
+
+    /// 必须通过 lint
+    MustPassLint,
+
+    /// 必须审查
+    MustReview,
+
+    /// 必须文档化
+    MustDocument,
+
+    /// 需要特定权限
+    RequirePrivilege(PrivilegeLevel),
+
+    /// 自定义条件
+    Custom(String),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ErrorCode {
+    /// 未授权操作
+    Unauthorized,
+
+    /// 超出范围
+    OutOfScope,
+
+    /// 危险操作
+    DangerousOperation,
+
+    /// 无效动作
+    InvalidAction,
+
+    /// 依赖未满足
+    DependencyNotMet,
+
+    /// 权限不足
+    InsufficientPrivilege {
+        required: PrivilegeLevel,
+        granted: PrivilegeLevel,
     },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HumanContext {
-    pub task_id: TaskId,
-    pub current_state: TaskState,
-    pub proposed_state: TaskState,
-    pub relevant_info: String,
+    pub task_id: Option<TaskId>,
+    pub affected_files: Vec<PathBuf>,
+    pub risk_level: RiskLevel,
+    pub alternatives: Vec<Action>,
+    pub required_privilege: PrivilegeLevel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum RiskLevel {
+    Low,
+    Medium,
+    High,
+    Critical,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum InformationRequirement {
-    SecurityApproval(String),
-    MissingArtifact(String),
-    UnknownDependency(String),
+pub struct InformationRequirement {
+    pub description: String,
+    pub source: InformationSource,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ErrorCode {
-    ActionNotAllowed,
-    InvalidStateTransition,
-    PermissionDenied,
-    SecurityViolation,
-    MissingArtifact,
-    DependencyNotMet,
-    MemoryConflict,
-    AccessDenied,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum InformationSource {
+    Human,
+    Memory,
+    ExternalAPI,
 }
 
-// Re-export types
-use crate::{agent::AgentId, task::TaskState};
+// 类型别名
+pub type AgentId = ulid::Ulid;
+pub type Timestamp = chrono::DateTime<chrono::Utc>;
