@@ -1,86 +1,119 @@
 # NDC 实现待办清单
 
-> 基于 `docs/design/2026-02-04-ndc-final-design.md` 提取
+> **重要更新 (2026-02-05)**: 采用 **NDC 2.0 深度融合方案（优化版）**
+> - 放弃 Adapter 层，DevMan 功能"器官化"整合
+> - 详情见: `docs/devman-integration-plan.md`
+> - 新增：依赖循环防范、Type Alias 策略、Snapshot 支持、事务存储
 
-## Phase 1: 最小可运行核心 (MRC) [P0]
+## 架构概览
 
-### 1.1 配置 DevMan 依赖
-- [ ] 添加 git 依赖到 workspace Cargo.toml
-- [ ] 验证编译通过
-- [ ] 文档: `docs/development/setup.md`
+```
+ndc/
+├── core/              # [核心] 统一模型 (Task-Intent 合一) ✅ 已更新
+├── decision/          # [大脑] 决策引擎
+├── cognition/         # [记忆] 认知网络 (原 DevMan Knowledge)
+├── runtime/           # [身体] 执行与验证 (Tools + Quality)
+├── persistence/       # [归档] 存储层（含事务）
+└── interface/         # [触觉] 交互层 (CLI + REPL + Daemon)
+```
 
-### 1.2 核心数据模型 (`crates/core`)
+## ✅ 已完成
+
 | 优先级 | 任务 | 状态 | 说明 |
 |--------|------|------|------|
-| P0 | Intent, Verdict, Effect | ☐ | 决策引擎核心类型 |
-| P0 | Agent, AgentRole | ☐ | 角色定义 |
-| P0 | MemoryEntry, MemoryStability | ☐ | 记忆模型 |
-| P0 | Task, TaskState | ☐ | 任务模型 |
-
-### 1.3 决策引擎 (`crates/decision`)
-| 优先级 | 任务 | 状态 | 说明 |
-|--------|------|------|------|
-| P0 | DecisionEngine trait | ☐ | 核心接口 |
-| P0 | TaskBoundaryValidator | ☐ | 任务边界校验 |
-| P0 | PermissionValidator | ☐ | 权限校验 |
-| P1 | SecurityPolicyValidator | ☐ | 安全策略 |
-| P1 | DependencyValidator | ☐ | 依赖校验 |
-
-### 1.4 Adapter 层 (`crates/adapter`)
-| 优先级 | 任务 | 状态 | 说明 |
-|--------|------|------|------|
-| P0 | TaskAdapter | ☐ | Intent → DevMan Task |
-| P0 | QualityAdapter | ☐ | 质量检查适配 |
-| P1 | KnowledgeAdapter | ☐ | 知识服务适配 |
-| P1 | ToolAdapter | ☐ | 工具执行适配 |
-
-### 1.5 CLI 基础 (`crates/cli`)
-| 优先级 | 任务 | 状态 | 说明 |
-|--------|------|------|------|
-| P0 | `ndc create <task>` | ☐ | 创建任务 |
-| P0 | `ndc status` | ☐ | 查看状态 |
-| P0 | `ndc list` | ☐ | 列出任务 |
+| - | `crates/core/src/task.rs` | ✅ | Task-Intent 统一，含 Snapshot |
+| - | `crates/core/src/intent.rs` | ✅ | Intent, Verdict, Effect |
+| - | `crates/core/src/agent.rs` | ✅ | AgentRole, Permission |
+| - | `crates/core/src/memory.rs` | ✅ | MemoryStability, MemoryQuery |
 
 ---
 
-## Phase 2: 完整适配 [P1]
+## Phase 1: 内核重构 (Week 1) [P0]
 
+### 1.1 ndc-core 核心数据 ✅ 已更新
 | 优先级 | 任务 | 状态 | 说明 |
 |--------|------|------|------|
-| P1 | KnowledgeAdapter 完整实现 | ☐ | Memory → Knowledge |
-| P1 | ToolAdapter 完整实现 | ☐ | Action → Tool |
-| P1 | AsyncTaskAdapter | ☐ | JobManager 集成 |
+| P0 | `crates/core/Cargo.toml` | ☐ | 更新依赖（ulid, chrono, serde） |
+| P0 | `crates/core/src/task.rs` | ✅ | **含 Snapshot** |
+| P0 | `crates/core/src/intent.rs` | ✅ | Intent, Verdict, Effect |
+| P0 | `crates/core/src/agent.rs` | ✅ | AgentRole, Permission |
+| P0 | `crates/core/src/memory.rs` | ✅ | MemoryStability |
+
+### 1.2 ndc-persistence 存储层
+| 优先级 | 任务 | 状态 | 说明 |
+|--------|------|------|------|
+| P0 | `crates/persistence/Cargo.toml` | ☐ | 创建存储 crate |
+| P0 | `crates/persistence/src/store.rs` | ☐ | **存储抽象 trait（含事务）** |
+| P0 | `crates/persistence/src/json.rs` | ☐ | JSON 实现 |
+| P0 | `crates/persistence/src/lib.rs` | ☐ | 模块入口 |
+
+### 1.3 ndc-decision 决策引擎
+| 优先级 | 任务 | 状态 | 说明 |
+|--------|------|------|------|
+| P0 | `crates/decision/Cargo.toml` | ☐ | 创建决策 crate |
+| P0 | `crates/decision/src/engine.rs` | ☐ | DecisionEngine trait |
+| P0 | `crates/decision/src/validators.rs` | ☐ | 内置校验器 |
 
 ---
 
-## Phase 3: 交互层 [P2]
+## Phase 2: 执行层吸收 (Week 2) [P0]
 
+### 2.1 ndc-runtime 执行引擎
 | 优先级 | 任务 | 状态 | 说明 |
 |--------|------|------|------|
-| P2 | REPL 模式 (`crates/repl`) | ☐ | 对话式交互 |
-| P2 | 守护进程 (`crates/daemon`) | ☐ | gRPC 服务器 |
-| P2 | CLI 控制命令 | ☐ | 完整命令集 |
+| P0 | `crates/runtime/Cargo.toml` | ☐ | 创建执行 crate |
+| P0 | `crates/runtime/src/executor.rs` | ☐ | 异步任务调度器 |
+| P0 | `crates/runtime/src/workflow.rs` | ☐ | 状态机 |
+| P0 | `crates/runtime/src/tools/` | ☐ | 受控工具集 |
+| P0 | `crates/runtime/src/verify/` | ☐ | 质量门禁 |
 
 ---
 
-## Phase 4: 可观测性 [P2]
+## Phase 3: 认知升级 (Week 3) [P1]
 
+### 3.1 ndc-cognition 认知网络
 | 优先级 | 任务 | 状态 | 说明 |
 |--------|------|------|------|
-| P2 | Task Timeline | ☐ | 任务时间线 |
-| P2 | Agent 行为日志 | ☐ | 操作轨迹 |
-| P2 | 记忆访问轨迹 | ☐ | 上下文访问 |
+| P1 | `crates/cognition/Cargo.toml` | ☐ | 创建认知 crate |
+| P1 | `crates/cognition/src/lib.rs` | ☐ | 模块入口 |
+| P1 | `crates/cognition/src/vector.rs` | ☐ | 向量检索 (#Issue 3) |
+| P1 | `crates/cognition/src/stability.rs` | ☐ | 记忆稳定性 (#Issue 1) |
+| P1 | `crates/cognition/src/context.rs` | ☐ | 上下文组装 |
 
 ---
 
-## Phase 5: 生产就绪 [P3]
+## Phase 4: 交互层 (Week 4) [P2]
 
 | 优先级 | 任务 | 状态 | 说明 |
 |--------|------|------|------|
-| P3 | 完整测试覆盖 | ☐ | > 80% |
-| P3 | 性能优化 | ☐ | 基准测试 |
-| P3 | 安全审计 | ☐ | 代码审查 |
-| P3 | 用户文档 | ☐ | README, guides |
+| P2 | `crates/interface/Cargo.toml` | ☐ | 创建交互 crate |
+| P2 | `crates/interface/src/cli.rs` | ☐ | CLI 入口 |
+| P2 | `crates/interface/src/repl.rs` | ☐ | REPL 模式 |
+| P2 | `crates/interface/src/daemon.rs` | ☐ | gRPC 服务 |
+
+---
+
+## DevMan 迁移清单
+
+| 来源 | 目标 | 状态 |
+|------|------|------|
+| devman-core | ndc-core | ✅ 已更新 |
+| devman-storage | ndc-persistence | 待迁移 |
+| devman-tools | ndc-runtime/tools | 待迁移 |
+| devman-quality | ndc-runtime/verify | 待迁移 |
+| devman-knowledge | ndc-cognition | 待迁移 |
+| devman-work | ndc-runtime/workflow | 待迁移 |
+| devman-ai | ndc-interface | 待迁移 |
+| devman-progress | ndc-runtime | 待迁移 |
+
+---
+
+## 核心原则检查
+
+- [x] **向下引用**: `core` 是纯数据，不引用其他 crate
+- [x] **Type Alias**: 迁移时使用别名兼容旧代码
+- [x] **Snapshot**: Task 包含 `snapshots` 支持回滚
+- [x] **事务**: 存储层支持 `Transaction` trait
 
 ---
 
@@ -98,9 +131,9 @@
 
 | Issue | 功能 | 状态 | 优先级 |
 |-------|------|------|--------|
-| #1 | 知识稳定性 | 已提交 | 中 |
-| #2 | 访问控制 | 已提交 | 中 |
-| #3 | 向量检索 | 已提交 | 高 |
+| #1 | 知识稳定性 | 已集成规划 | 中 |
+| #2 | 访问控制 | 待规划 | 中 |
+| #3 | 向量检索 | 已集成规划 | 高 |
 
 ---
 
@@ -115,5 +148,12 @@
 
 ---
 
-最后更新: 2026-02-04
-标签: #ndc #todo #planning
+## 相关文档
+
+- `docs/devman-integration-plan.md` - 深度融合详细方案（优化版）
+- `docs/design/2026-02-04-ndc-final-design.md` - 架构设计
+
+---
+
+最后更新: 2026-02-05
+标签: #ndc #todo #integration
