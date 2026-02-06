@@ -1,6 +1,6 @@
 # NDC 实现待办清单
 
-> **重要更新 (2026-02-06)**: gRPC 客户端库完成 - 64 个测试全部通过
+> **重要更新 (2026-02-06)**: LLM 集成规划完成
 
 ## 架构概览
 
@@ -38,6 +38,11 @@ ndc/
 | **interface** | repl.rs | ✅ | REPL mode (15 intent parsing tests) |
 | **interface** | e2e_tests.rs | ✅ | E2E tests (17 tests) |
 | **interface** | grpc_client.rs | ✅ | gRPC client SDK (10 tests) |
+| **core** | llm/mod.rs | ⏳ | LLM Provider 接口 (规划中) |
+| **core** | llm/openai.rs | ⏳ | OpenAI Provider (规划中) |
+| **core** | llm/anthropic.rs | ⏳ | Anthropic Provider (规划中) |
+| **core** | llm/minimax.rs | ⏳ | MiniMax Provider (规划中) |
+| **core** | llm/intent.rs | ⏳ | LLM Intent Parser (规划中) |
 
 ---
 
@@ -158,6 +163,57 @@ gRPC Client SDK (with --features grpc):
 - [x] 10 个 gRPC 客户端单元测试
 ```
 
+### 5. LLM 集成 (规划中)
+
+```
+当前状态：设计文档已完成
+目标：让 REPL 支持自然语言理解，LLM 严格遵循 NDC 工程哲学
+
+工程哲学约束：
+- LLM 输出只是"提案"，不是"事实"
+- Decision Engine 同步阻塞，没有 verdict 不能 commit
+- 强制质量门禁验证
+- 危险操作需要人类确认
+
+实现步骤：
+
+#### 5.1 配置系统
+- [ ] 配置文件格式设计 (YAML/JSON)
+- [ ] 环境变量支持
+- [ ] 多 Provider 配置
+- [ ] 配置验证和错误处理
+
+#### 5.2 LLM Provider 接口
+- [ ] LlmProvider trait 定义
+- [ ] LlmMessage / LlmResponse 类型
+- [ ] 流式输出支持
+- [ ] 错误处理和重试
+
+#### 5.3 Provider 实现
+- [ ] OpenAI Provider (GPT-4/GPT-3.5)
+- [ ] Anthropic Provider (Claude 3)
+- [ ] MiniMax Provider (MiniMax API)
+- [ ] Ollama Provider (本地模型，可选)
+
+#### 5.4 Intent Parser
+- [ ] LLM IntentParser 实现
+- [ ] 正则 Parser 降级
+- [ ] 置信度计算
+- [ ] 批量解析支持
+
+#### 5.5 System Prompt
+- [ ] NDC 工程哲学 prompt
+- [ ] 任务分解 prompt
+- [ ] 安全约束 prompt
+
+#### 5.6 测试
+- [ ] Provider 单元测试
+- [ ] Intent Parser 测试
+- [ ] 降级策略测试
+- [ ] 集成测试
+```
+```
+
 ---
 
 ## 快速开始
@@ -192,12 +248,12 @@ cargo build --features grpc
 
 ## 下一步工作
 
-1. **gRPC 客户端库** - 提供客户端 SDK
+1. **LLM 集成** - 配置系统、Provider 实现、Intent Parser
 2. **历史命令** - REPL 命令历史持久化
 3. **性能优化** - 并行任务执行优化
 4. **文档完善** - API 文档和使用指南
 
 ---
 
-最后更新: 2026-02-06 (gRPC 客户端库完成 - 64 tests)
+最后更新: 2026-02-06 (LLM 集成规划完成)
 标签: #ndc #todo

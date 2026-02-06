@@ -10,11 +10,13 @@ mod task;
 mod intent;
 mod agent;
 mod memory;
+mod config;
 
 pub use task::*;
 pub use intent::*;
 pub use agent::*;
 pub use memory::*;
+pub use config::*;
 
 // Re-export commonly used types to avoid conflicts
 pub use agent::AgentId;

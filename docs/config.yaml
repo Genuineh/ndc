@@ -1,0 +1,180 @@
+# NDC 配置文件
+#
+# 支持 YAML 格式
+# 路径: ~/.ndc/config.yaml 或项目根目录 .ndc.yaml
+
+# ============================================
+# LLM 配置
+# ============================================
+llm:
+  # 是否启用 LLM（设置为 false 则使用正则匹配）
+  enabled: true
+
+  # 默认 Provider
+  provider: "openai"
+
+  # 默认模型
+  model: "gpt-4o"
+
+  # API 基础 URL（可选，覆盖默认值）
+  # base_url: "https://api.openai.com/v1"
+
+  # API Key（推荐使用环境变量）
+  # api_key: "${OPENAI_API_KEY}"
+
+  # 组织 ID（OpenAI 专用）
+  # organization: "org-xxx"
+
+  # 温度参数（越低越稳定，推荐 0.1）
+  temperature: 0.1
+
+  # 最大 token 数
+  max_tokens: 4096
+
+  # 请求超时（秒）
+  timeout: 60
+
+  # 多 Provider 配置
+  providers:
+    # OpenAI Provider
+    openai:
+      type: "openai"
+      model: "gpt-4o"
+      # api_key: "${OPENAI_API_KEY}"
+      # organization: "org-xxx"
+
+    # Anthropic Provider (Claude 3)
+    anthropic:
+      type: "anthropic"
+      model: "claude-3-5-sonnet-20241022"
+      # api_key: "${ANTHROPIC_API_KEY}"
+
+    # MiniMax Provider
+    minimax:
+      type: "minimax"
+      model: "abab6.5s-chat"
+      # api_key: "${MINIMAX_API_KEY}"
+      # base_url: "https://api.minimax.chat/v1/text/chatcompletion_v2"
+
+    # Ollama 本地模型
+    ollama:
+      type: "ollama"
+      model: "llama2"
+      base_url: "http://localhost:11434"
+
+# ============================================
+# REPL 配置
+# ============================================
+repl:
+  # 提示符
+  prompt: "ndc> "
+
+  # 历史文件路径
+  # history_file: "~/.ndc_history"
+
+  # 最大历史行数
+  max_history: 1000
+
+  # 是否显示思考过程
+  show_thought: true
+
+  # 是否自动创建任务
+  auto_create_task: true
+
+  # 会话超时（秒）
+  session_timeout: 3600
+
+  # LLM 不可用时是否回退到正则匹配
+  fallback_to_regex: true
+
+  # 确认模式（危险操作需要人类确认）
+  confirmation_mode: true
+
+# ============================================
+# Runtime 配置
+# ============================================
+runtime:
+  # 并发任务数
+  max_concurrent_tasks: 4
+
+  # 执行超时（秒）
+  execution_timeout: 300
+
+  # 工作目录
+  # working_dir: "/path/to/project"
+
+  # 质量门禁（执行前检查）
+  quality_gates:
+    - "cargo check"
+    - "cargo test --lib"
+
+# ============================================
+# 存储配置
+# ============================================
+storage:
+  # 存储类型: memory, sqlite
+  storage_type: "memory"
+
+  # SQLite 数据库路径
+  # db_path: "~/.ndc/ndc.db"
+
+  # 是否使用内存存储
+  in_memory: true
+
+# ============================================
+# 质量门禁配置
+# ============================================
+quality_gates:
+  # 是否启用质量门禁
+  enabled: true
+
+  # 检查项
+  checks:
+    - name: "rust_syntax"
+      enabled: true
+      command: "cargo check"
+
+    - name: "rust_tests"
+      enabled: true
+      command: "cargo test --lib -- --test-threads=1"
+
+    - name: "rust_clippy"
+      enabled: false
+      command: "cargo clippy -- -D warnings"
+
+# ============================================
+# 安全配置
+# ============================================
+security:
+  # 危险命令黑名单
+  dangerous_commands:
+    - "rm -rf /"
+    - "sudo rm"
+    - "mkfs"
+
+  # 最大文件删除确认
+  max_delete_confirm: true
+
+  # 是否允许执行任意 Shell 命令
+  allow_shell: false
+
+  # Shell 白名单命令
+  shell_whitelist:
+    - "cargo"
+    - "git"
+    - "ls"
+    - "cat"
+    - "echo"
+
+# ============================================
+# 日志配置
+# ============================================
+logging:
+  # 日志级别: debug, info, warn, error
+  level: "info"
+
+  # 是否显示详细日志
+  verbose: false
+
+  # 日志格式: json, text
+  format: "text"
