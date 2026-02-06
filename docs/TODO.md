@@ -18,15 +18,17 @@ ndc/
 └── interface/         # [触觉] 交互层 (CLI + REPL + Daemon)
 ```
 
-## ✅ 已完成
+## ✅ Phase 1 + Phase 2 已完成
 
 | 优先级 | 任务 | 状态 | 说明 |
 |--------|------|------|------|
-| - | `crates/core/src/task.rs` | ✅ | **GitWorktreeSnapshot** |
-| - | `crates/core/src/intent.rs` | ✅ | **PrivilegeLevel**, AllowWithPrivilege |
+| - | `crates/core/src/task.rs` | ✅ | GitWorktreeSnapshot + LightweightSnapshot |
+| - | `crates/core/src/intent.rs` | ✅ | PrivilegeLevel + ConditionType |
 | - | `crates/core/src/agent.rs` | ✅ | AgentRole, Permission |
 | - | `crates/core/src/memory.rs` | ✅ | MemoryStability, MemoryQuery |
 | - | `crates/persistence/src/store.rs` | ✅ | **Stream + 分页** |
+| - | `crates/decision/src/engine.rs` | ✅ | DecisionEngine + PrivilegeLevel |
+| - | `crates/runtime/` | ✅ | **完整执行引擎** |
 
 ---
 
@@ -96,42 +98,48 @@ async fn search_memory_paged(
 
 ---
 
-## Phase 1: 内核重构 (Week 1) [P0]
+## Phase 1: 内核重构 (Week 1) ✅ 已完成
 
-### 1.1 ndc-core ✅ 已更新
-| 优先级 | 任务 | 状态 | 说明 |
-|--------|------|------|------|
-| P0 | `crates/core/src/task.rs` | ✅ | GitWorktreeSnapshot + LightweightSnapshot |
-| P0 | `crates/core/src/intent.rs` | ✅ | PrivilegeLevel + ConditionType |
-| P0 | `crates/core/Cargo.toml` | ☐ | 更新依赖（ulid, chrono, serde） |
-
-### 1.2 ndc-persistence ✅ 已更新
-| 优先级 | 任务 | 状态 | 说明 |
-|--------|------|------|------|
-| P0 | `crates/persistence/src/store.rs` | ✅ | **Stream + 分页** |
-| P0 | `crates/persistence/Cargo.toml` | ☐ | 创建 crate（futures, async-trait） |
-| P0 | `crates/persistence/src/json.rs` | ☐ | JSON 实现 |
-| P0 | `crates/persistence/src/lib.rs` | ☐ | 模块入口 |
-
-### 1.3 ndc-decision 决策引擎
-| 优先级 | 任务 | 状态 | 说明 |
-|--------|------|------|------|
-| P0 | `crates/decision/Cargo.toml` | ☐ | 创建决策 crate |
-| P0 | `crates/decision/src/engine.rs` | ☐ | DecisionEngine trait + PrivilegeLevel 评估 |
-| P0 | `crates/decision/src/validators.rs` | ☐ | 内置校验器 |
+| 任务 | 状态 | 说明 |
+|------|------|------|
+| `crates/core/src/task.rs` | ✅ | GitWorktreeSnapshot, LightweightSnapshot |
+| `crates/core/src/intent.rs` | ✅ | PrivilegeLevel, ConditionType |
+| `crates/core/src/agent.rs` | ✅ | AgentRole, Permission |
+| `crates/core/src/memory.rs` | ✅ | MemoryStability, MemoryQuery |
+| `crates/persistence/src/store.rs` | ✅ | Stream + 分页 |
+| `crates/persistence/src/json.rs` | ✅ | JSON 实现 |
+| `crates/decision/src/engine.rs` | ✅ | DecisionEngine + PrivilegeLevel |
 
 ---
 
-## Phase 2: 执行层吸收 (Week 2) [P0]
+## Phase 2: 执行层吸收 (Week 2) ✅ 已完成
 
-### 2.1 ndc-runtime 执行引擎
-| 优先级 | 任务 | 状态 | 说明 |
-|--------|------|------|------|
-| P0 | `crates/runtime/Cargo.toml` | ☐ | 创建执行 crate |
-| P0 | `crates/runtime/src/executor.rs` | ☐ | 异步任务调度器 |
-| P0 | `crates/runtime/src/workflow.rs` | ☐ | 状态机 |
-| P0 | `crates/runtime/src/tools/` | ☐ | 受控工具集 |
-| P0 | `crates/runtime/src/verify/` | ☐ | 质量门禁 |
+### ndc-runtime 完整实现
+
+```
+crates/runtime/
+├── Cargo.toml
+└── src/
+    ├── lib.rs
+    ├── executor.rs       # 异步任务调度器
+    ├── workflow.rs       # 状态机引擎
+    ├── tools/
+    │   ├── mod.rs       # ToolRegistry
+    │   ├── trait_mod.rs # Tool trait
+    │   ├── fs.rs        # FsTool（安全文件操作）
+    │   ├── git.rs        # GitTool（worktree, commit）
+    │   └── shell.rs      # ShellTool（白名单命令）
+    └── verify/
+        └── mod.rs        # QualityGateRunner
+```
+
+**特性**：
+- `Executor`: 任务调度、质量门禁、工具协调
+- `WorkflowEngine`: 状态机、转换规则、后置动作
+- `FsTool`: 路径验证、防遍历攻击
+- `GitTool`: worktree 快照、分支、提交
+- `ShellTool`: 命令白名单、超时限制
+- `QualityGateRunner`: 测试、lint、构建检查
 
 ---
 
