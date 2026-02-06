@@ -16,7 +16,6 @@ use ndc_core::{AgentRole, TaskId};
 use ndc_runtime::{Executor};
 use tracing::{info, warn};
 // TODO: LLM 集成后移除 regex 依赖
-#[cfg(test)]
 use regex::Regex;
 use std::collections::HashMap;
 

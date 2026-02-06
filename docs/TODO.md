@@ -168,80 +168,81 @@ gRPC Client SDK (with --features grpc):
 ```
 核心理念：LLM + 强制工程约束 = 稳定高质量代码
 
-┌─────────────────────────────────────────────────────────────────────┐
-│                    NDC LLM 工程约束流程                               │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│  用户需求 ──▶ LLM 分解 ──▶ 结构校验 ──▶ 执行 ──▶ 验证 ──▶ 完成      │
-│                    │           │           │        │               │
-│                    ▼           ▼           ▼        ▼               │
-│                 不通过?      不通过?     不通过?   不通过?            │
-│                    │           │           │        │               │
-│                    └───────────┴───────────┴────────┘               │
-│                               │                                      │
-│                               ▼                                      │
-│                         强制重来 N 次                                 │
-│                               │                                      │
-│                    ┌──────────▼──────────┐                           │
-│                    │  超过次数?           │                           │
-│                    └──────────┬──────────┘                           │
-│                               │                                      │
-│                    ┌──────────▼──────────┐                           │
-│                    │  需要人工介入        │                           │
-│                    │  (调整需求/参数)    │                           │
-│                    └────────────────────┘                           │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
+📄 详细设计: docs/ENGINEERING_CONSTRAINTS.md
+
+组件整合:
+- Task 状态机: Pending → Preparing → InProgress → AwaitingVerification → Completed
+- Memory 稳定性: Ephemeral → Derived → Verified → Canonical
+- 质量门禁: Test → Lint → TypeCheck → Build
+
+工程约束流程:
+  用户需求 ──▶ LLM 分解 ──▶ 结构校验 ──▶ 执行 ──▶ 验证 ──▶ 完成
+                    │           │           │        │
+                    ▼           ▼           ▼        ▼
+                 不通过?      不通过?     不通过?   不通过?
+                    │           │           │        │
+                    └───────────┴───────────┴────────┘
+                               │
+                         强制重来 N 次
+                               │
+                    ┌──────────▼──────────┐
+                    │  超过次数?          │
+                    └──────────┬──────────┘
+                               │
+                    ┌──────────▼──────────┐
+                    │  需要人工介入        │
+                    └────────────────────┘
 ```
 
-#### 工程约束原则
+#### 核心组件 ⏳
 
-1. **强制分解约束**
-   - LLM 必须将需求分解为原子任务
-   - 每个任务必须有明确的输入/输出/验收标准
-   - 未分解 → 重来；分解不完整 → 重来
+```
+crates/core/src/
+├── llm/
+│   ├── decomposer.rs       # Preparing: 任务分解器 ⏳
+│   ├── validator.rs        # Preparing: 计划校验器 ⏳
+│   └── retry.rs           # 全局: 强制重来引擎 ⏳
+├── task/
+│   └── state_machine.rs    # 状态机扩展 ⏳
+└── memory/
+    └── stability.rs        # 稳定性升级 ⏳
 
-2. **强制校验约束**
-   - 每个步骤执行后必须通过质量门禁
-   - 单元测试覆盖率必须达标
-   - 编译必须通过
-
-3. **强制重来机制**
-   - LLM 输出不符合规范 → 重来
-   - 任务分解缺少步骤 → 重来
-   - 校验失败 → 重来（最多 N 次）
-
-4. **人工介入机制**
-   - 超过重试次数 → 暂停并报告
-   - 提供具体失败原因和改进建议
-   - 人工调整需求或参数后继续
+crates/runtime/src/
+├── executor/
+│   ├── step_engine.rs     # InProgress: 步骤执行引擎 ⏳
+│   └── quality_gate.rs     # InProgress: 质量门禁 ⏳
+└── verification/
+    └── verifier.rs         # AwaitingVerification: 验收 ⏳
+```
 
 #### 实现步骤
 
-##### 5.1 配置系统
-- [ ] 配置文件格式设计 (YAML/JSON)
-- [ ] 环境变量支持
-- [ ] 多 Provider 配置（OpenAI/Anthropic/MiniMax）
-- [ ] 重试次数和超时配置
-- [ ] 人工介入阈值配置
+##### 5.1 配置系统 ✅
+- [x] 配置文件格式设计 (YAML)
+- [x] 环境变量支持
+- [x] 多 Provider 配置（OpenAI/Anthropic/MiniMax）
+- [x] 重试/分解/验收配置
 
 ##### 5.2 LLM Provider 接口 ⏳
 - [ ] LlmProvider trait 定义
 - [ ] LlmMessage / LlmResponse 类型
 - [ ] 流式输出支持
-- [ ] 错误处理和重试
 - [ ] Provider 实现：
-  - [ ] OpenAI Provider (GPT-4o/GPT-4)
+  - [ ] OpenAI Provider (GPT-4o)
   - [ ] Anthropic Provider (Claude 3.5)
   - [ ] MiniMax Provider (MiniMax API)
 
-##### 5.3 Task Decomposer ⏳ (核心)
+##### 5.3 Task Decomposer ⏳ (Preparing 阶段)
 ```
-任务分解器 - 强制分解约束
-├── 输入: 用户自然语言需求
-├── 分解规则:
-│   ├── 必须返回结构化 TaskPlan
-│   ├── 每个 step 必须有: title, description, input, output, validation
+职责:
+- LLM 分解用户需求为 TaskPlan
+- 强制校验: 完整性/依赖/知识库
+- Memory: Ephemeral → Derived
+
+强制约束:
+├── 必须返回结构化 TaskPlan
+├── 每个 step 必须有: title, description, input, output, validation
+│   └── 校验不通过 → 重来 N 次 → 人工介入
 │   ├── 不能为空分解
 │   └── 不能漏掉关键步骤
 ├── 校验器:
@@ -314,8 +315,6 @@ crates/core/src/llm/
     ├── mod.rs              # 重试模块
     ├── engine.rs           # 重试引擎
     └── policy.rs           # 重试策略
-```
-
 ```
 
 ---
