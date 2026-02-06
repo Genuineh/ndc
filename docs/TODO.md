@@ -1,6 +1,6 @@
 # NDC 实现待办清单
 
-> **重要更新 (2026-02-06)**: LLM 集成规划完成
+> **重要更新 (2026-02-06)**: LLM 集成 - 纯 LLM + 强制工程约束
 
 ## 架构概览
 
@@ -35,7 +35,7 @@ ndc/
 | **interface** | cli.rs | ✅ | CLI commands (11 tests) |
 | **interface** | daemon.rs | ✅ | gRPC service framework |
 | **interface** | grpc.rs | ✅ | gRPC service impl (12 tests) |
-| **interface** | repl.rs | ✅ | REPL mode (15 intent parsing tests) |
+| **interface** | repl.rs | ✅ | REPL mode - LLM-powered intent parsing (15 tests) |
 | **interface** | e2e_tests.rs | ✅ | E2E tests (17 tests) |
 | **interface** | grpc_client.rs | ✅ | gRPC client SDK (10 tests) |
 | **core** | llm/mod.rs | ⏳ | LLM Provider 接口 (规划中) |
@@ -131,7 +131,7 @@ gRPC Client SDK (with --features grpc):
 ```
 当前状态：REPL 增强已完成
 已实现：
-- [x] 完整意图解析 (正则表达式模式匹配)
+- [x] 完整意图解析 (LLM-powered)
 - [x] 任务自动创建 (从对话自动创建任务)
 - [x] 上下文保持 (会话状态、对话历史、实体提取)
 - [x] 15 个 REPL 单元测试
@@ -163,55 +163,159 @@ gRPC Client SDK (with --features grpc):
 - [x] 10 个 gRPC 客户端单元测试
 ```
 
-### 5. LLM 集成 (规划中)
+### 5. LLM 集成 - 强制工程约束 ⏳
 
 ```
-当前状态：设计文档已完成
-目标：让 REPL 支持自然语言理解，LLM 严格遵循 NDC 工程哲学
+核心理念：LLM + 强制工程约束 = 稳定高质量代码
 
-工程哲学约束：
-- LLM 输出只是"提案"，不是"事实"
-- Decision Engine 同步阻塞，没有 verdict 不能 commit
-- 强制质量门禁验证
-- 危险操作需要人类确认
+┌─────────────────────────────────────────────────────────────────────┐
+│                    NDC LLM 工程约束流程                               │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  用户需求 ──▶ LLM 分解 ──▶ 结构校验 ──▶ 执行 ──▶ 验证 ──▶ 完成      │
+│                    │           │           │        │               │
+│                    ▼           ▼           ▼        ▼               │
+│                 不通过?      不通过?     不通过?   不通过?            │
+│                    │           │           │        │               │
+│                    └───────────┴───────────┴────────┘               │
+│                               │                                      │
+│                               ▼                                      │
+│                         强制重来 N 次                                 │
+│                               │                                      │
+│                    ┌──────────▼──────────┐                           │
+│                    │  超过次数?           │                           │
+│                    └──────────┬──────────┘                           │
+│                               │                                      │
+│                    ┌──────────▼──────────┐                           │
+│                    │  需要人工介入        │                           │
+│                    │  (调整需求/参数)    │                           │
+│                    └────────────────────┘                           │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
 
-实现步骤：
+#### 工程约束原则
 
-#### 5.1 配置系统
+1. **强制分解约束**
+   - LLM 必须将需求分解为原子任务
+   - 每个任务必须有明确的输入/输出/验收标准
+   - 未分解 → 重来；分解不完整 → 重来
+
+2. **强制校验约束**
+   - 每个步骤执行后必须通过质量门禁
+   - 单元测试覆盖率必须达标
+   - 编译必须通过
+
+3. **强制重来机制**
+   - LLM 输出不符合规范 → 重来
+   - 任务分解缺少步骤 → 重来
+   - 校验失败 → 重来（最多 N 次）
+
+4. **人工介入机制**
+   - 超过重试次数 → 暂停并报告
+   - 提供具体失败原因和改进建议
+   - 人工调整需求或参数后继续
+
+#### 实现步骤
+
+##### 5.1 配置系统
 - [ ] 配置文件格式设计 (YAML/JSON)
 - [ ] 环境变量支持
-- [ ] 多 Provider 配置
-- [ ] 配置验证和错误处理
+- [ ] 多 Provider 配置（OpenAI/Anthropic/MiniMax）
+- [ ] 重试次数和超时配置
+- [ ] 人工介入阈值配置
 
-#### 5.2 LLM Provider 接口
+##### 5.2 LLM Provider 接口 ⏳
 - [ ] LlmProvider trait 定义
 - [ ] LlmMessage / LlmResponse 类型
 - [ ] 流式输出支持
 - [ ] 错误处理和重试
+- [ ] Provider 实现：
+  - [ ] OpenAI Provider (GPT-4o/GPT-4)
+  - [ ] Anthropic Provider (Claude 3.5)
+  - [ ] MiniMax Provider (MiniMax API)
 
-#### 5.3 Provider 实现
-- [ ] OpenAI Provider (GPT-4/GPT-3.5)
-- [ ] Anthropic Provider (Claude 3)
-- [ ] MiniMax Provider (MiniMax API)
-- [ ] Ollama Provider (本地模型，可选)
-
-#### 5.4 Intent Parser
-- [ ] LLM IntentParser 实现
-- [ ] 正则 Parser 降级
-- [ ] 置信度计算
-- [ ] 批量解析支持
-
-#### 5.5 System Prompt
-- [ ] NDC 工程哲学 prompt
-- [ ] 任务分解 prompt
-- [ ] 安全约束 prompt
-
-#### 5.6 测试
-- [ ] Provider 单元测试
-- [ ] Intent Parser 测试
-- [ ] 降级策略测试
-- [ ] 集成测试
+##### 5.3 Task Decomposer ⏳ (核心)
 ```
+任务分解器 - 强制分解约束
+├── 输入: 用户自然语言需求
+├── 分解规则:
+│   ├── 必须返回结构化 TaskPlan
+│   ├── 每个 step 必须有: title, description, input, output, validation
+│   ├── 不能为空分解
+│   └── 不能漏掉关键步骤
+├── 校验器:
+│   ├── completeness_check - 完整性检查
+│   ├── dependency_check - 依赖关系检查
+│   └── validation_check - 验收标准检查
+└── 输出: ValidatedTaskPlan
+```
+
+- [ ] TaskPlan 结构体定义
+- [ ] TaskStep 结构体定义
+- [ ] DecomposeEngine - 分解引擎
+- [ ] PlanValidator - 计划校验器（强制约束）
+- [ ] RetryPolicy - 重试策略配置
+- [ ] HumanInterventionHandler - 人工介入处理器
+
+##### 5.4 REPL Intent Parser ⏳
+- [ ] LLM IntentParser 实现（纯 LLM，无正则）
+- [ ] 上下文保持
+- [ ] 实体提取
+- [ ] 置信度计算
+
+##### 5.5 质量门禁 ⏳
+- [ ] QualityGate 集成
+- [ ] 编译检查 (cargo check)
+- [ ] 测试执行 (cargo test)
+- [ ] Lint 检查 (cargo clippy)
+- [ ] 门禁失败 → 重来
+
+##### 5.6 强制重来引擎 ⏳
+```
+RetryEngine 配置:
+├── max_retries: 3           // 最大重试次数
+├── retry_delay: 1000        // 重试延迟(ms)
+├── backoff_multiplier: 2     // 指数退避
+├── max_delay: 30000          // 最大延迟(ms)
+└── human_intervention_after: 3  // 人工介入阈值
+```
+
+- [ ] RetryPolicy 结构体
+- [ ] RetryEngine 实现
+- [ ] 自动重试逻辑
+- [ ] 人工介入触发
+
+##### 5.7 状态报告 ⏳
+- [ ] ExecutionState 状态跟踪
+- [ ] ProgressReport 进度报告
+- [ ] FailureReport 失败报告（含改进建议）
+- [ ] HumanInterventionRequest 人工请求
+
+#### 代码结构
+
+```
+crates/core/src/llm/
+├── mod.rs                    # 模块入口
+├── provider/
+│   ├── mod.rs              # Provider trait
+│   ├── openai.rs           # OpenAI 实现
+│   ├── anthropic.rs        # Anthropic 实现
+│   └── minimax.rs          # MiniMax 实现
+├── decomposer/
+│   ├── mod.rs              # 分解器模块
+│   ├── task_plan.rs        # TaskPlan 结构
+│   ├── validator.rs        # 计划校验器
+│   └── engine.rs           # 分解引擎
+├── parser/
+│   ├── mod.rs              # Intent Parser
+│   └── intent.rs           # 意图解析
+└── retry/
+    ├── mod.rs              # 重试模块
+    ├── engine.rs           # 重试引擎
+    └── policy.rs           # 重试策略
+```
+
 ```
 
 ---
@@ -248,12 +352,12 @@ cargo build --features grpc
 
 ## 下一步工作
 
-1. **LLM 集成** - 配置系统、Provider 实现、Intent Parser
-2. **历史命令** - REPL 命令历史持久化
-3. **性能优化** - 并行任务执行优化
-4. **文档完善** - API 文档和使用指南
+1. **LLM Provider** - OpenAI/Anthropic/MiniMax 实现
+2. **Task Decomposer** - 强制分解约束引擎
+3. **Retry Engine** - 强制重来机制
+4. **Human Intervention** - 人工介入处理
 
 ---
 
-最后更新: 2026-02-06 (LLM 集成规划完成)
-标签: #ndc #todo
+最后更新: 2026-02-06 (LLM 集成 - 纯 LLM + 强制工程约束)
+标签: #ndc #llm #engineering-constraints

@@ -7,7 +7,7 @@
 # LLM 配置
 # ============================================
 llm:
-  # 是否启用 LLM（设置为 false 则使用正则匹配）
+  # 是否启用 LLM（NDC 纯 LLM 驱动，无正则 fallback）
   enabled: true
 
   # 默认 Provider
@@ -34,6 +34,28 @@ llm:
   # 请求超时（秒）
   timeout: 60
 
+  # 任务分解器配置
+  decomposer:
+    # 是否启用强制分解
+    enabled: true
+    # 最小分解步骤数
+    min_steps: 1
+    # 最大分解步骤数
+    max_steps: 20
+
+  # 强制重来引擎配置
+  retry:
+    # 最大重试次数
+    max_retries: 3
+    # 重试延迟(ms)
+    retry_delay: 1000
+    # 指数退避乘数
+    backoff_multiplier: 2
+    # 最大延迟(ms)
+    max_delay: 30000
+    # 人工介入阈值
+    human_intervention_after: 3
+
   # 多 Provider 配置
   providers:
     # OpenAI Provider
@@ -56,12 +78,6 @@ llm:
       # api_key: "${MINIMAX_API_KEY}"
       # base_url: "https://api.minimax.chat/v1/text/chatcompletion_v2"
 
-    # Ollama 本地模型
-    ollama:
-      type: "ollama"
-      model: "llama2"
-      base_url: "http://localhost:11434"
-
 # ============================================
 # REPL 配置
 # ============================================
@@ -83,9 +99,6 @@ repl:
 
   # 会话超时（秒）
   session_timeout: 3600
-
-  # LLM 不可用时是否回退到正则匹配
-  fallback_to_regex: true
 
   # 确认模式（危险操作需要人类确认）
   confirmation_mode: true

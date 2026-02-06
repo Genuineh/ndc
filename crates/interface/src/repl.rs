@@ -2,9 +2,11 @@
 //!
 //! 职责：
 //! - 持续对话
-//! - 意图解析（自然语言）
+//! - 意图解析（LLM-powered，纯 LLM，无正则 fallback）
 //! - 任务自动创建与执行
 //! - 上下文保持
+//!
+//! ⚠️ 注意：当前使用正则作为临时实现，LLM 集成后将移除
 
 use std::path::PathBuf;
 use std::io::{self, BufRead, Write};
@@ -13,6 +15,8 @@ use std::time::{Duration, Instant};
 use ndc_core::{AgentRole, TaskId};
 use ndc_runtime::{Executor};
 use tracing::{info, warn};
+// TODO: LLM 集成后移除 regex 依赖
+#[cfg(test)]
 use regex::Regex;
 use std::collections::HashMap;
 
