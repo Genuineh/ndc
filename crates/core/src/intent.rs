@@ -5,7 +5,7 @@
 //! - Effect: 声明的影响范围
 
 use serde::{Deserialize, Serialize};
-use crate::{agent::AgentRole, task::TaskId, memory::MemoryId};
+use crate::{agent::AgentRole, task::{TaskId, TaskState}, memory::MemoryId};
 use std::path::PathBuf;
 use std::fmt;
 

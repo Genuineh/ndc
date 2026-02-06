@@ -82,10 +82,9 @@ pub struct PolicyState {
 }
 
 /// 决策引擎实现
-#[derive(Debug)]
 pub struct BasicDecisionEngine {
     /// 校验器列表（按优先级排序）
-    validators: Vec<Arc<dyn Validator>>,
+    validators: Vec<Arc<dyn Validator + Send + Sync>>,
 
     /// 策略状态
     policy_state: PolicyState,
@@ -116,8 +115,7 @@ impl BasicDecisionEngine {
         self.role_privileges.insert(AgentRole::Reviewer, PrivilegeLevel::Normal);
         self.role_privileges.insert(AgentRole::Tester, PrivilegeLevel::Normal);
         self.role_privileges.insert(AgentRole::Historian, PrivilegeLevel::Normal);
-        self.role_privileges.insert(AgentRole::Assistant, PrivilegeLevel::Normal);
-        self.role_privileges.insert(AgentRole::Human, PrivilegeLevel::Critical);
+        self.role_privileges.insert(AgentRole::Admin, PrivilegeLevel::Critical);
     }
 }
 
@@ -149,7 +147,7 @@ impl DecisionEngine for BasicDecisionEngine {
                     return Verdict::Deny {
                         action: intent.proposed_action,
                         reason,
-                        error_code: ErrorCode::ActionNotAllowed,
+                        error_code: ErrorCode::InvalidAction,
                     };
                 }
                 ValidationResult::RequireHuman(question, context) => {

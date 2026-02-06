@@ -7,7 +7,7 @@ use std::collections::HashSet;
 
 use crate::agent::{AgentId, AgentRole};
 
-/// Unique identifier for a memory entry
+/// Unique identifier for a memory entry (uses UUID for compatibility)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MemoryId(pub Uuid);
 
@@ -142,7 +142,7 @@ pub struct AccessControl {
     pub read_roles: HashSet<AgentRole>,
     pub write_roles: HashSet<AgentRole>,
     pub created_at: DateTime<Utc>,
-    pub modified_at: DateTime<Utc>,
+    pub modified_at: Option<DateTime<Utc>>,
 }
 
 impl AccessControl {
@@ -213,3 +213,39 @@ impl MemoryEntry {
         self.id
     }
 }
+
+/// Memory query for filtering memories
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MemoryQuery {
+    /// Text query for filtering
+    pub query: Option<String>,
+
+    /// Filter by stability level
+    pub stability: Option<MemoryStability>,
+
+    /// Filter by memory type
+    pub memory_type: Option<String>,
+
+    /// Filter by tags
+    pub tags: Vec<String>,
+
+    /// Filter by source task
+    pub source_task: Option<TaskId>,
+
+    /// Filter by minimum stability (inclusive)
+    pub min_stability: Option<MemoryStability>,
+
+    /// Filter by maximum stability (inclusive)
+    pub max_stability: Option<MemoryStability>,
+}
+
+/// A memory with a similarity score (for vector search results)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScoredMemory {
+    pub memory: MemoryEntry,
+    pub score: f32,
+}
+
+/// Type alias for Memory (used by persistence layer)
+pub type Memory = MemoryEntry;
+

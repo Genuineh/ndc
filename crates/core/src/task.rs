@@ -8,6 +8,7 @@
 
 use crate::intent::{Intent, Action, Verdict};
 use crate::agent::AgentRole;
+use crate::memory::MemoryId;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -227,7 +228,7 @@ pub struct TaskMetadata {
 
 impl Default for TaskMetadata {
     fn default() -> Self {
-        let now = Timestamp::now();
+        let now = chrono::Utc::now();
         Self {
             created_at: now,
             updated_at: now,
@@ -281,8 +282,8 @@ impl Task {
             snapshots: vec![],
             lightweight_snapshots: vec![],
             metadata: TaskMetadata {
-                created_at: Timestamp::now(),
-                updated_at: Timestamp::now(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
                 created_by,
                 priority: TaskPriority::Medium,
                 tags: vec![],
@@ -305,7 +306,7 @@ impl Task {
         }
         self.state = to;
         self.update_allowed_transitions();
-        self.metadata.updated_at = Timestamp::now();
+        self.metadata.updated_at = chrono::Utc::now();
         Ok(())
     }
 
@@ -340,7 +341,7 @@ impl Task {
         self.snapshots.push(GitWorktreeSnapshot {
             id: SnapshotId::new(),
             worktree_path,
-            created_at: Timestamp::now(),
+            created_at: chrono::Utc::now(),
             base_commit,
             branch_name,
             task_id: self.id,
@@ -354,7 +355,7 @@ impl Task {
     pub fn capture_lightweight_snapshot(&mut self, paths: Vec<PathBuf>, checksum: String) {
         self.lightweight_snapshots.push(LightweightSnapshot {
             id: SnapshotId::new(),
-            captured_at: Timestamp::now(),
+            captured_at: chrono::Utc::now(),
             paths,
             checksum,
         });
@@ -417,6 +418,5 @@ pub enum TransitionError {
 // 类型别名
 pub type TaskId = ulid::Ulid;
 pub type SnapshotId = ulid::Ulid;
-pub type MemoryId = ulid::Ulid;
 pub type WorkRecordId = ulid::Ulid;
 pub type Timestamp = chrono::DateTime<chrono::Utc>;

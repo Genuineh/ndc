@@ -3,14 +3,8 @@ resolver = "2"
 members = [
     "crates/core",
     "crates/decision",
-    "crates/persistence",
     "crates/runtime",
-    "crates/cognition",
-    "crates/observability",
-    "crates/repl",
-    "crates/daemon",
-    "crates/cli",
-    "crates/plugins",
+    "crates/interface",
 ]
 
 [workspace.package]
@@ -49,7 +43,7 @@ chrono = { version = "0.4", features = ["serde"] }
 sha2 = "0.10"
 
 # Similarity (SimHash)
-simhash = "3"
+simhash = "0.2"
 
 # LRU Cache
 lru = "0.12"
@@ -60,18 +54,6 @@ git2 = "0.18"
 # gRPC
 tonic = "0.12"
 prost = "0.13"
-
-# Database (optional)
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"], optional = true }
-
-# Vector DB (optional)
-qdrant-client = { version = "1.12", optional = true }
-
-# Graph DB (optional)
-neo4rs = { version = "0.7", optional = true }
-
-# WASM
-wasmtime = { version = "26", optional = true }
 
 # CLI
 clap = { version = "4.5", features = ["derive"] }

@@ -1,5 +1,5 @@
 [package]
-name = "ndc-persistence"
+name = "ndc-interface"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
@@ -19,21 +19,27 @@ serde_json = "1"
 thiserror = "1"
 anyhow = "1"
 
-# ID generation
-ulid = { version = "1", features = ["serde"] }
+# Tracing
+tracing = "0.1"
+tracing-subscriber = "0.3"
 
-# Time
-chrono = { version = "0.4", features = ["serde"] }
+# CLI
+clap = { version = "4", features = ["derive"] }
+ratatui = "0.29"
+crossterm = "0.28"
 
 # Core types
 ndc-core = { path = "../core" }
+ndc-decision = { path = "../decision" }
+ndc-runtime = { path = "../runtime" }
 
-# File operations
-futures = "0.3"
-tokio = { version = "1", features = ["fs"] }
+# gRPC (optional)
+tonic = { version = "0.12", optional = true }
+prost = { version = "0.13", optional = true }
 
-# SHA256 for checksums
-sha2 = "0.10"
+[features]
+default = []
+grpc = ["tonic", "prost"]
 
 [dev-dependencies]
 tempfile = "3"

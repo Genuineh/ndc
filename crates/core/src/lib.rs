@@ -14,4 +14,4 @@ mod memory;
 pub use task::*;
 pub use intent::*;
 pub use agent::*;
-pub use memory::*;;
+pub use memory::*;

@@ -7,7 +7,7 @@ authors = ["Jerry"]
 
 [dependencies]
 # Async runtime
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["full", "fs", "process"] }
 futures = "0.3"
 async-trait = "0.1"
 
@@ -35,11 +35,6 @@ git2 = "0.18"
 # Core types
 ndc-core = { path = "../core" }
 ndc-decision = { path = "../decision" }
-ndc-persistence = { path = "../persistence" }
-
-# File operations
-tokio = { version = "1", features = ["fs", "process"] }
-futures = "0.3"
 
 # SHA256 for checksums
 sha2 = "0.10"

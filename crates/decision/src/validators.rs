@@ -5,14 +5,14 @@
 //! - SecurityPolicyValidator: 防止危险操作
 //! - DependencyValidator: 确保前置条件满足
 
-use crate::core::{Intent, Task, TaskState, AgentRole, AgentId};
+use ndc_core::{Intent, Task, TaskState, AgentRole, AgentId};
 use crate::engine::{ValidationResult, PolicyState};
 use std::sync::Arc;
 use async_trait::async_trait;
 
 /// 校验器 Trait
 #[async_trait]
-pub trait Validator: Send + Sync {
+pub trait Validator: Send + Sync + std::fmt::Debug {
     /// 校验 Intent
     async fn validate(
         &self,
@@ -34,8 +34,8 @@ impl Validator for TaskBoundaryValidator {
     ) -> ValidationResult {
         // 如果没有关联任务，检查是否是创建任务的请求
         if intent.task_id.is_none() {
-            match intent.proposed_action {
-                crate::core::Action::CreateTask { .. } => {
+            match &intent.proposed_action {
+                ndc_core::Action::CreateTask { .. } => {
                     // Planner 角色可以创建任务
                     if intent.agent_role == AgentRole::Planner {
                         return ValidationResult::Allow;
@@ -67,41 +67,41 @@ impl Validator for PermissionValidator {
         // 检查角色是否有权限执行此操作
         match &intent.proposed_action {
             // 删除文件只有 Human 或特定角色可以做
-            crate::core::Action::DeleteFile { .. } => {
-                if intent.agent_role != AgentRole::Human {
+            ndc_core::Action::DeleteFile { .. } => {
+                if intent.agent_role != AgentRole::Admin {
                     return ValidationResult::RequireHuman(
                         "Delete file operation requires human approval".to_string(),
-                        crate::core::HumanContext {
+                        ndc_core::HumanContext {
                             task_id: intent.task_id,
                             affected_files: vec![],
-                            risk_level: crate::core::RiskLevel::Critical,
+                            risk_level: ndc_core::RiskLevel::Critical,
                             alternatives: vec![],
-                            required_privilege: crate::core::PrivilegeLevel::Critical,
+                            required_privilege: ndc_core::PrivilegeLevel::Critical,
                         },
                     );
                 }
             }
 
             // 修改系统配置需要提升权限
-            crate::core::Action::WriteFile { path, .. } => {
+            ndc_core::Action::WriteFile { path, .. } => {
                 let is_config = path.to_string_lossy().contains("Cargo.toml")
                     || path.to_string_lossy().contains("package.json");
-                if is_config && intent.agent_role != AgentRole::Human {
+                if is_config && intent.agent_role != AgentRole::Admin {
                     return ValidationResult::RequireHuman(
                         "System configuration modification requires human approval".to_string(),
-                        crate::core::HumanContext {
+                        ndc_core::HumanContext {
                             task_id: intent.task_id,
                             affected_files: vec![path.clone()],
-                            risk_level: crate::core::RiskLevel::Medium,
+                            risk_level: ndc_core::RiskLevel::Medium,
                             alternatives: vec![],
-                            required_privilege: crate::core::PrivilegeLevel::Elevated,
+                            required_privilege: ndc_core::PrivilegeLevel::Elevated,
                         },
                     );
                 }
             }
 
             // 运行危险命令需要人类确认
-            crate::core::Action::RunCommand { command, .. } => {
+            ndc_core::Action::RunCommand { command, .. } => {
                 let is_dangerous = command.contains("rm -rf")
                     || command.contains("sudo")
                     || command.contains(":(){:|:&};:");
@@ -133,13 +133,13 @@ impl Validator for SecurityPolicyValidator {
         // 检查是否启用严格模式
         if policy.strict_mode {
             // 严格模式下禁止所有删除操作
-            match intent.proposed_action {
-                crate::core::Action::DeleteFile { .. } => {
+            match &intent.proposed_action {
+                ndc_core::Action::DeleteFile { .. } => {
                     return ValidationResult::Deny(
                         "Delete operations are not allowed in strict mode".to_string(),
                     );
                 }
-                crate::core::Action::RunCommand { command, .. } => {
+                ndc_core::Action::RunCommand { command, .. } => {
                     let cmd = command.to_lowercase();
                     if cmd.contains("rm") || cmd.contains("del") {
                         return ValidationResult::Deny(
@@ -153,8 +153,8 @@ impl Validator for SecurityPolicyValidator {
 
         // 检查是否允许危险操作
         if !policy.allow_dangerous {
-            match intent.proposed_action {
-                crate::core::Action::RunCommand { command, .. } => {
+            match &intent.proposed_action {
+                ndc_core::Action::RunCommand { command, .. } => {
                     let cmd = command.to_lowercase();
                     if cmd.contains("sudo")
                         || cmd.contains("chmod 777")
@@ -185,7 +185,7 @@ impl Validator for DependencyValidator {
     ) -> ValidationResult {
         // 检查状态转换的前置条件
         match &intent.proposed_action {
-            crate::core::Action::UpdateTaskState { task_id, new_state, .. } => {
+            ndc_core::Action::UpdateTaskState { task_id, new_state, .. } => {
                 // 这里应该检查任务依赖是否满足
                 // 目前简化处理
                 tracing::debug!(
@@ -203,7 +203,7 @@ impl Validator for DependencyValidator {
 /// 校验器注册表
 #[derive(Debug, Default)]
 pub struct ValidatorRegistry {
-    validators: Vec<Arc<dyn Validator>>,
+    validators: Vec<Arc<dyn Validator + Send + Sync>>,
 }
 
 impl ValidatorRegistry {
@@ -213,11 +213,11 @@ impl ValidatorRegistry {
         }
     }
 
-    pub fn register(&mut self, validator: Arc<dyn Validator>) {
+    pub fn register(&mut self, validator: Arc<dyn Validator + Send + Sync>) {
         self.validators.push(validator);
     }
 
-    pub fn get_all(&self) -> Vec<Arc<dyn Validator>> {
+    pub fn get_all(&self) -> Vec<Arc<dyn Validator + Send + Sync>> {
         self.validators.clone()
     }
 }
