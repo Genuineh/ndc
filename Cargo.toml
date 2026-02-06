@@ -5,6 +5,7 @@ members = [
     "crates/decision",
     "crates/persistence",
     "crates/runtime",
+    "crates/cognition",
     "crates/observability",
     "crates/repl",
     "crates/daemon",
@@ -46,6 +47,12 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # Hashing
 sha2 = "0.10"
+
+# Similarity (SimHash)
+simhash = "3"
+
+# LRU Cache
+lru = "0.12"
 
 # Git
 git2 = "0.18"

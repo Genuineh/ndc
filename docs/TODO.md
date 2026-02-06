@@ -143,14 +143,42 @@ crates/runtime/
 
 ---
 
-## Phase 3: 认知升级 (Week 3) [P1]
+## Phase 3: 认知升级 (Week 3) ✅ 已完成
 
-### 3.1 ndc-cognition 认知网络
-| 优先级 | 任务 | 状态 | 说明 |
-|--------|------|------|------|
-| P1 | `crates/cognition/Cargo.toml` | ☐ | 创建认知 crate |
-| P1 | `crates/cognition/src/vector.rs` | ☐ | 向量检索 (#Issue 3) |
-| P1 | `crates/cognition/src/stability.rs` | ☐ | 记忆稳定性 (#Issue 1) |
+### ndc-cognition 完整实现
+
+```
+crates/cognition/
+├── Cargo.toml
+└── src/
+    ├── lib.rs
+    ├── memory.rs       # 记忆存储 (L1/L2/L3)
+    ├── vector.rs       # SimHash 语义搜索
+    ├── stability.rs    # 稳定性管理
+    └── context.rs      # 上下文组装
+```
+
+**特性**：
+
+### MemoryStore
+- CRUD 操作
+- L1 缓存（LRU）
+- 按稳定性/类型检索
+
+### VectorSearch (SimHash)
+- 轻量级向量计算
+- 海明距离相似度
+- 自动索引构建
+
+### StabilityManager
+- Ephemeral → Derived → Verified → Canonical
+- 自动升级规则
+- TTL 清理策略
+
+### ContextBuilder
+- 三层检索（L1/L2/L3）
+- Token 预算控制
+- 优先级排序
 
 ---
 
@@ -169,11 +197,11 @@ crates/runtime/
 | 来源 | 目标 | 状态 |
 |------|------|------|
 | devman-core | ndc-core | ✅ 已更新 |
-| devman-storage | ndc-persistence | 待迁移 |
-| devman-tools | ndc-runtime/tools | 待迁移 |
-| devman-quality | ndc-runtime/verify | 待迁移 |
-| devman-knowledge | ndc-cognition | 待迁移 |
-| devman-work | ndc-runtime/workflow | 待迁移 |
+| devman-storage | ndc-persistence | ✅ 已迁移 |
+| devman-tools | ndc-runtime/tools | ✅ 已迁移 |
+| devman-quality | ndc-runtime/verify | ✅ 已迁移 |
+| devman-knowledge | ndc-cognition | ✅ 已迁移 |
+| devman-work | ndc-runtime/workflow | ✅ 已迁移 |
 
 ---
 
