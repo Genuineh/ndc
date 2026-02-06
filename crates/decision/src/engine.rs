@@ -10,8 +10,8 @@
 //! - 插件不能绕过核心层
 
 use ndc_core::{
-    Intent, Verdict, Action, IntentId, TaskId, AgentId, AgentRole,
-    PrivilegeLevel, Condition, ConditionType, ErrorCode, HumanContext, RiskLevel,
+    Intent, Verdict, Action, AgentRole,
+    PrivilegeLevel, Condition, ConditionType, ErrorCode, HumanContext,
 };
 use std::sync::Arc;
 use std::collections::HashMap;

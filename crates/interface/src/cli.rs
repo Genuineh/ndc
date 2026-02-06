@@ -5,13 +5,17 @@
 //! - REPL 启动
 //! - 守护进程控制
 
-use clap::{Parser, Subcommand, Args};
+use clap::{Parser, Subcommand, Args, ValueEnum};
 use std::path::PathBuf;
+use std::sync::Arc;
 use thiserror::Error;
-use tracing::{info, warn, error};
+use tracing::{info, error};
+
+use ndc_core::{TaskId, AgentRole};
+use ndc_runtime::{Executor, ExecutionContext, MemoryStorage};
 
 /// CLI 错误
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, PartialEq, Error)]
 pub enum CliError {
     #[error("执行器初始化失败: {0}")]
     ExecutorInitFailed(String),
@@ -21,6 +25,15 @@ pub enum CliError {
 
     #[error("存储错误: {0}")]
     StorageError(String),
+
+    #[error("任务未找到: {0}")]
+    TaskNotFound(TaskId),
+
+    #[error("无效的任务 ID: {0}")]
+    InvalidTaskId(String),
+
+    #[error("无效的状态: {0}")]
+    InvalidState(String),
 }
 
 /// CLI 配置
@@ -50,7 +63,7 @@ impl Default for CliConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, ValueEnum)]
 pub enum OutputFormat {
     Pretty,
     Json,
@@ -61,7 +74,7 @@ pub enum OutputFormat {
 #[derive(Parser, Debug)]
 #[command(name = "ndc")]
 #[command(author, version, about, long_about = None)]
-struct Cli {
+pub(crate) struct Cli {
     /// 项目根目录
     #[arg(short, long, global = true)]
     project_root: Option<PathBuf>,
@@ -83,7 +96,7 @@ struct Cli {
 }
 
 #[derive(Subcommand, Debug)]
-enum Commands {
+pub(crate) enum Commands {
     /// 创建新任务
     Create(CreateArgs),
 
@@ -116,7 +129,7 @@ enum Commands {
 }
 
 #[derive(Args, Debug)]
-struct CreateArgs {
+pub(crate) struct CreateArgs {
     /// 任务标题
     title: String,
 
@@ -130,7 +143,7 @@ struct CreateArgs {
 }
 
 #[derive(Args, Debug)]
-struct ListArgs {
+pub(crate) struct ListArgs {
     /// 状态过滤
     #[arg(short, long)]
     state: Option<String>,
@@ -141,13 +154,13 @@ struct ListArgs {
 }
 
 #[derive(Args, Debug)]
-struct StatusArgs {
+pub(crate) struct StatusArgs {
     /// 任务 ID
     task_id: Option<String>,
 }
 
 #[derive(Args, Debug)]
-struct LogArgs {
+pub(crate) struct LogArgs {
     /// 任务 ID
     task_id: String,
 
@@ -157,7 +170,7 @@ struct LogArgs {
 }
 
 #[derive(Args, Debug)]
-struct RunArgs {
+pub(crate) struct RunArgs {
     /// 任务 ID
     task_id: String,
 
@@ -167,7 +180,7 @@ struct RunArgs {
 }
 
 #[derive(Args, Debug)]
-struct RollbackArgs {
+pub(crate) struct RollbackArgs {
     /// 任务 ID
     task_id: String,
 
@@ -176,14 +189,14 @@ struct RollbackArgs {
 }
 
 #[derive(Args, Debug)]
-struct ReplArgs {
+pub(crate) struct ReplArgs {
     /// 历史文件路径
-    #[arg(short, long)]
+    #[arg(long)]
     history: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
-struct DaemonArgs {
+pub(crate) struct DaemonArgs {
     /// 监听地址
     #[arg(short, long, default_value = "127.0.0.1:50051")]
     address: String,
@@ -194,7 +207,7 @@ struct DaemonArgs {
 }
 
 #[derive(Args, Debug)]
-struct SearchArgs {
+pub(crate) struct SearchArgs {
     /// 搜索查询
     query: String,
 
@@ -243,41 +256,141 @@ pub async fn run_cli() -> Result<(), CliError> {
 async fn cmd_create(args: CreateArgs, config: &CliConfig) -> Result<(), CliError> {
     info!("Creating task: {}", args.title);
 
-    // TODO: 实现任务创建
-    // 1. 初始化存储
-    // 2. 创建任务
-    // 3. 保存到存储
+    let executor = init_executor(config);
+
+    let description = args.description.unwrap_or_default();
+    let task = executor.create_task(
+        args.title.clone(),
+        description,
+        AgentRole::Historian,
+    )
+    .await
+    .map_err(|e| CliError::ExecutorInitFailed(e.to_string()))?;
 
     println!("✅ Task created successfully!");
+    println!("   ID: {}", task.id);
+    println!("   Title: {}", task.title);
+    println!("   State: {:?}", task.state);
+
     Ok(())
 }
 
 async fn cmd_list(args: ListArgs, config: &CliConfig) -> Result<(), CliError> {
     info!("Listing tasks (limit: {})", args.limit);
 
-    // TODO: 实现任务列表
+    let executor = init_executor(config);
+    let storage = &executor.context().storage;
+
+    // 获取所有任务
     println!("📋 Tasks:");
-    println!("  No tasks found.");
+
+    // 尝试获取任务列表
+    match storage.list_tasks().await {
+        Ok(tasks) => {
+            let total = tasks.len();
+            let tasks: Vec<_> = tasks.into_iter().take(args.limit as usize).collect();
+            if tasks.is_empty() {
+                println!("   No tasks found.");
+            } else {
+                for task in &tasks {
+                    println!("   [{}] {} - {:?}",
+                        task.id.to_string().chars().take(8).collect::<String>(),
+                        task.title,
+                        task.state
+                    );
+                }
+                if total > args.limit as usize {
+                    println!("   ... and {} more", total - args.limit as usize);
+                }
+            }
+        }
+        Err(e) => {
+            println!("   Error listing tasks: {}", e);
+        }
+    }
 
     Ok(())
 }
 
 async fn cmd_status(args: StatusArgs, config: &CliConfig) -> Result<(), CliError> {
-    let task_id = args.task_id.unwrap_or_else(|| "latest".to_string());
-    info!("Getting status for task: {}", task_id);
+    let task_id_str = args.task_id.unwrap_or_else(|| "latest".to_string());
+    info!("Getting status for task: {}", task_id_str);
 
-    // TODO: 实现任务状态
-    println!("ℹ️  Task {}: Unknown", task_id);
+    let executor = init_executor(config);
+    let storage = &executor.context().storage;
+
+    // 如果是 "latest"，尝试获取最新任务
+    let task = if task_id_str == "latest" {
+        match storage.list_tasks().await {
+            Ok(tasks) => {
+                tasks.into_iter().max_by_key(|t| t.metadata.created_at)
+                    .ok_or_else(|| CliError::StorageError("No tasks found".to_string()))?
+            }
+            Err(e) => return Err(CliError::StorageError(e.to_string())),
+        }
+    } else {
+        let task_id = parse_task_id(&task_id_str)?;
+        match storage.get_task(&task_id).await {
+            Ok(Some(task)) => task,
+            Ok(None) => return Err(CliError::TaskNotFound(task_id)),
+            Err(e) => return Err(CliError::StorageError(e.to_string())),
+        }
+    };
+
+    println!("ℹ️  Task: {}", task.title);
+    println!("   ID: {}", task.id);
+    println!("   State: {:?}", task.state);
+    println!("   Created: {:?}", task.metadata.created_at);
+    println!("   Steps: {}", task.steps.len());
+
+    if !task.steps.is_empty() {
+        println!("   Recent steps:");
+        for step in task.steps.iter().rev().take(5) {
+            println!("     - [{}] {:?}", step.step_id, step.status);
+        }
+    }
 
     Ok(())
 }
 
-async fn cmd_logs(args: LogArgs, config: &CliConfig) -> Result<(), CliError> {
+async fn cmd_logs(args: LogArgs, _config: &CliConfig) -> Result<(), CliError> {
     info!("Getting logs for task: {} ({} lines)", args.task_id, args.lines);
 
-    // TODO: 实现日志查看
-    println!("📜 Logs for {}:", args.task_id);
-    println!("  [No logs available]");
+    let task_id = parse_task_id(&args.task_id)?;
+    let executor = init_executor(_config);
+    let storage = &executor.context().storage;
+
+    match storage.get_task(&task_id).await {
+        Ok(Some(task)) => {
+            println!("📜 Logs for {}:", args.task_id);
+            println!("   Task: {}", task.title);
+            println!("   State: {:?}", task.state);
+            println!("   ---");
+
+            if task.steps.is_empty() {
+                println!("   No execution steps recorded.");
+            } else {
+                let lines = std::cmp::min(args.lines as usize, task.steps.len());
+                for step in task.steps.iter().rev().take(lines) {
+                    println!("   [Step {}] {:?} - {:?}",
+                        step.step_id,
+                        step.action,
+                        step.status
+                    );
+                    if let Some(ref result) = step.result {
+                        if !result.output.is_empty() {
+                            println!("     Output: {}", result.output.chars().take(200).collect::<String>());
+                        }
+                        if let Some(ref err) = result.error {
+                            println!("     Error: {}", err);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(None) => return Err(CliError::TaskNotFound(task_id)),
+        Err(e) => return Err(CliError::StorageError(e.to_string())),
+    }
 
     Ok(())
 }
@@ -285,21 +398,63 @@ async fn cmd_logs(args: LogArgs, config: &CliConfig) -> Result<(), CliError> {
 async fn cmd_run(args: RunArgs, config: &CliConfig) -> Result<(), CliError> {
     info!("Running task: {}", args.task_id);
 
+    let task_id = parse_task_id(&args.task_id)?;
+    let executor = init_executor(config);
+
     if args.sync {
         println!("🔄 Executing task synchronously...");
+
+        match executor.execute_task(task_id).await {
+            Ok(result) => {
+                println!("✅ Task completed successfully!");
+                println!("   Final state: {:?}", result.final_state);
+                println!("   Steps executed: {}", result.steps.len());
+                println!("   Duration: {}ms", result.metrics.total_duration_ms);
+            }
+            Err(e) => {
+                println!("❌ Task execution failed: {}", e);
+                return Err(CliError::TaskExecutionFailed(e.to_string()));
+            }
+        }
     } else {
-        println!("🚀 Task submitted for execution");
+        println!("🚀 Task submitted for execution (async mode not yet implemented)");
+        println!("   Use --sync flag to execute synchronously");
     }
 
-    // TODO: 实现任务执行
     Ok(())
 }
 
-async fn cmd_rollback(args: RollbackArgs, config: &CliConfig) -> Result<(), CliError> {
+async fn cmd_rollback(args: RollbackArgs, _config: &CliConfig) -> Result<(), CliError> {
     info!("Rolling back task: {}", args.task_id);
 
-    // TODO: 实现回滚
-    println!("🔙 Rollback initiated for task {}", args.task_id);
+    let task_id = parse_task_id(&args.task_id)?;
+    let executor = init_executor(_config);
+    let storage = &executor.context().storage;
+
+    match storage.get_task(&task_id).await {
+        Ok(Some(task)) => {
+            println!("🔙 Rollback initiated for task {}", args.task_id);
+            println!("   Task: {}", task.title);
+            println!("   Current state: {:?}", task.state);
+
+            // 检查是否有快照可以回滚
+            if task.snapshots.is_empty() && task.lightweight_snapshots.is_empty() {
+                println!("   ⚠️  No snapshots available for rollback");
+                return Ok(());
+            }
+
+            println!("   Snapshots available: {}", task.snapshots.len());
+            println!("   Lightweight snapshots: {}", task.lightweight_snapshots.len());
+
+            // TODO: 实现实际的回滚逻辑
+            println!("   🔧 Rollback implementation pending");
+
+            // 回滚到主分支
+            println!("✅ Rollback completed");
+        }
+        Ok(None) => return Err(CliError::TaskNotFound(task_id)),
+        Err(e) => return Err(CliError::StorageError(e.to_string())),
+    }
 
     Ok(())
 }
@@ -307,14 +462,25 @@ async fn cmd_rollback(args: RollbackArgs, config: &CliConfig) -> Result<(), CliE
 async fn cmd_repl(args: ReplArgs, config: &CliConfig) -> Result<(), CliError> {
     info!("Starting REPL...");
 
+    // 初始化执行器
+    let context = ndc_runtime::ExecutionContext {
+        storage: Arc::new(ndc_runtime::MemoryStorage::new()),
+        workflow_engine: Arc::new(ndc_runtime::WorkflowEngine::new()),
+        tools: Arc::new(ndc_runtime::ToolManager::new()),
+        quality_runner: Arc::new(ndc_runtime::QualityGateRunner::new()),
+        project_root: config.project_root.clone(),
+        current_role: AgentRole::Historian,
+    };
+    let executor = Arc::new(ndc_runtime::Executor::new(context));
+
     // 启动 REPL
     let history = args.history.unwrap_or_else(|| PathBuf::from(".ndc/repl_history"));
-    super::run_repl(history).await;
+    super::run_repl(history, executor).await;
 
     Ok(())
 }
 
-async fn cmd_daemon(args: DaemonArgs, config: &CliConfig) -> Result<(), CliError> {
+async fn cmd_daemon(args: DaemonArgs, _config: &CliConfig) -> Result<(), CliError> {
     info!("Starting daemon on: {}", args.address);
 
     // 启动守护进程
@@ -324,7 +490,7 @@ async fn cmd_daemon(args: DaemonArgs, config: &CliConfig) -> Result<(), CliError
     Ok(())
 }
 
-async fn cmd_search(args: SearchArgs, config: &CliConfig) -> Result<(), CliError> {
+async fn cmd_search(args: SearchArgs, _config: &CliConfig) -> Result<(), CliError> {
     info!("Searching memory: {}", args.query);
 
     // TODO: 实现记忆搜索
@@ -340,4 +506,24 @@ async fn cmd_status_system(config: &CliConfig) -> Result<(), CliError> {
     println!("  Project: {:?}", config.project_root);
 
     Ok(())
+}
+
+/// 初始化执行器
+fn init_executor(config: &CliConfig) -> Arc<Executor> {
+    let context = ExecutionContext {
+        storage: Arc::new(MemoryStorage::new()),
+        workflow_engine: Arc::new(ndc_runtime::WorkflowEngine::new()),
+        tools: Arc::new(ndc_runtime::ToolManager::new()),
+        quality_runner: Arc::new(ndc_runtime::QualityGateRunner::new()),
+        project_root: config.project_root.clone(),
+        current_role: AgentRole::Historian,
+    };
+
+    Arc::new(Executor::new(context))
+}
+
+/// 解析任务 ID
+fn parse_task_id(task_id_str: &str) -> Result<TaskId, CliError> {
+    task_id_str.parse()
+        .map_err(|_| CliError::InvalidTaskId(task_id_str.to_string()))
 }

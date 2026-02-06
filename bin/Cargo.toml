@@ -1,0 +1,14 @@
+[package]
+name = "ndc"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Jerry"]
+
+[[bin]]
+path = "main.rs"
+name = "ndc"
+
+[dependencies]
+ndc-interface = { path = "../crates/interface" }
+tokio = { version = "1", features = ["full"] }

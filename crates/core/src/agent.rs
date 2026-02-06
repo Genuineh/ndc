@@ -18,9 +18,10 @@ impl AgentId {
 }
 
 /// Agent role in the system
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum AgentRole {
     /// Plans tasks and decomposes work
+    #[default]
     Planner,
     /// Implements code and executes operations
     Implementer,

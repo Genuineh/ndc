@@ -6,6 +6,7 @@ use chrono::{DateTime, Utc};
 use std::collections::HashSet;
 
 use crate::agent::{AgentId, AgentRole};
+use crate::TaskId;
 
 /// Unique identifier for a memory entry (uses UUID for compatibility)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -131,11 +132,7 @@ pub struct MemoryMetadata {
     pub tags: Vec<String>,
 }
 
-// Use TaskId from task module - for now use a placeholder
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct TaskId(pub Uuid);
-
-/// Access control for memory
+// Use TaskId from task module (re-exported from lib.rs)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccessControl {
     pub owner: AgentId,
@@ -147,7 +144,7 @@ pub struct AccessControl {
 
 impl AccessControl {
     pub fn new(owner: AgentId, stability: MemoryStability) -> Self {
-        let mut read_roles: HashSet<AgentRole> = [
+        let read_roles: HashSet<AgentRole> = [
             AgentRole::Planner,
             AgentRole::Implementer,
             AgentRole::Reviewer,

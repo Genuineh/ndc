@@ -3,8 +3,9 @@ resolver = "2"
 members = [
     "crates/core",
     "crates/decision",
-    "crates/runtime",
     "crates/interface",
+    "crates/runtime",
+    "bin",
 ]
 
 [workspace.package]

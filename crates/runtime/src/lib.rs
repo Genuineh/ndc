@@ -1,22 +1,24 @@
-//! NDC Runtime - 执行与验证引擎
+//! NDC Runtime - Execution engine
 //!
-//! 职责：
-//! - 任务调度与执行
-//! - 受控工具集
-//! - 质量门禁
-//! - 状态机流转
-//!
-//! 架构：
-//! - Executor: 异步任务调度器
-//! - tools/: 受控工具集（fs, git, shell）
-//! - verify/: 质量门禁（tests, lint, build）
+//! Responsibilities:
+//! - Tool management (fs, shell)
+//! - Quality gate execution
+//! - Task execution
+//! - Workflow management
+//! - Storage
 
-pub mod executor;
-pub mod workflow;
 pub mod tools;
 pub mod verify;
+pub mod storage;
+#[cfg(feature = "sqlite")]
+pub mod storage_sqlite;
+pub mod workflow;
+pub mod executor;
 
-pub use executor::{Executor, ExecutionContext, ExecutionResult};
-pub use workflow::{WorkflowEngine, WorkflowStep, WorkflowEvent};
-pub use tools::{Tool, ToolResult, ToolError};
-pub use verify::{QualityGate, QualityCheck, QualityResult};
+pub use tools::{Tool, ToolResult, ToolError, ToolManager, ToolContext};
+pub use verify::QualityGateRunner;
+pub use storage::{Storage, MemoryStorage, SharedStorage, create_memory_storage};
+#[cfg(feature = "sqlite")]
+pub use storage_sqlite::{SqliteStorage, SqliteStorageError, create_sqlite_storage};
+pub use workflow::{WorkflowEngine, WorkflowListener, WorkflowError};
+pub use executor::{Executor, ExecutionContext, ExecutionResult, ExecutionError};

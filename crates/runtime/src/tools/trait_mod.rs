@@ -9,6 +9,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::Arc;
 use thiserror::Error;
 
 /// 工具执行结果
@@ -109,21 +110,25 @@ impl Default for ToolContext {
 }
 
 /// 工具管理器
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct ToolManager {
     registry: std::collections::HashMap<String, Arc<dyn Tool>>,
+    #[allow(dead_code)]
     context: ToolContext,
 }
 
+impl std::fmt::Debug for ToolManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolManager")
+            .field("tool_names", &self.registry.keys().collect::<Vec<_>>())
+            .finish()
+    }
+}
+
 impl ToolManager {
+
     pub fn new() -> Self {
         Self::default()
-    }
-
-    pub fn with_context(context: ToolContext) -> Self {
-        let mut manager = Self::default();
-        manager.context = context;
-        manager
     }
 
     pub fn register<T: Tool + 'static>(&mut self, name: impl Into<String>, tool: T) {

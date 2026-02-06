@@ -5,7 +5,7 @@
 //! - Effect: 声明的影响范围
 
 use serde::{Deserialize, Serialize};
-use crate::{agent::AgentRole, task::{TaskId, TaskState}, memory::MemoryId};
+use crate::{AgentRole, AgentId, TaskId, TaskState, MemoryId, Timestamp, QualityCheckType};
 use std::path::PathBuf;
 use std::fmt;
 
@@ -92,7 +92,7 @@ pub enum Action {
     /// 运行测试
     RunTests { test_type: TestType },
 
-    /// 质量检查
+    /// 质量检查（使用 task::QualityCheckType）
     RunQualityCheck { check_type: QualityCheckType },
 
     /// 请求人类介入
@@ -117,14 +117,6 @@ pub enum TestType {
     Unit,
     Integration,
     All,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum QualityCheckType {
-    Lint,
-    TypeCheck,
-    Build,
-    Security,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -378,5 +370,4 @@ pub enum InformationSource {
 }
 
 // 类型别名
-pub type AgentId = ulid::Ulid;
-pub type Timestamp = chrono::DateTime<chrono::Utc>;
+// 使用 ndc_core::AgentId 和 ndc_core::Timestamp (从 agent.rs 和 task.rs 重导出)

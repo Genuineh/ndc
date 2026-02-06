@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// 任务状态
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TaskState {
     Pending,              // 待处理
     Preparing,            // 准备中
@@ -162,7 +162,7 @@ pub enum StepStatus {
     Failed,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ActionResult {
     pub success: bool,
     pub output: String,
@@ -205,6 +205,7 @@ pub enum QualityCheckType {
     Lint,
     TypeCheck,
     Build,
+    Security,
     Custom(String),
 }
 
