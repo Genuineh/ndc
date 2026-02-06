@@ -20,6 +20,9 @@ mod cli_tests;
 #[cfg(test)]
 mod daemon_tests;
 
+#[cfg(test)]
+mod e2e_tests;
+
 pub use cli::{run_cli, CliConfig};
 pub use repl::{run_repl, ReplConfig, ReplState};
 pub use daemon::run_daemon;

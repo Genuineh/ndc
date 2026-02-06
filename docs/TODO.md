@@ -1,6 +1,6 @@
 # NDC 实现待办清单
 
-> **重要更新 (2026-02-06)**: CLI + gRPC 服务 + REPL 增强完成，96 个测试通过
+> **重要更新 (2026-02-06)**: 测试覆盖完成 - 150 个测试全部通过
 
 ## 架构概览
 
@@ -36,6 +36,7 @@ ndc/
 | **interface** | daemon.rs | ✅ | gRPC service framework |
 | **interface** | grpc.rs | ✅ | gRPC service impl (12 tests) |
 | **interface** | repl.rs | ✅ | REPL mode (15 intent parsing tests) |
+| **interface** | e2e_tests.rs | ✅ | E2E tests (17 tests) |
 
 ---
 
@@ -126,17 +127,16 @@ gRPC Services (with --features grpc):
 ### 3. 测试覆盖 ✅
 
 ```
-当前状态：96 个测试
+当前状态：150 个测试全部通过
 已实现：
 - [x] Core 单元测试 (37 tests) ✅
 - [x] Decision 集成测试 (21 tests) ✅
-- [x] REPL 测试 (15 tests) ✅
-- [x] SQLite 测试 (6 tests) ✅
+- [x] Runtime 工具测试 (37 tests) ✅
+- [x] E2E 测试 (17 tests) ✅
 - [x] CLI 测试 (11 tests) ✅
 - [x] gRPC/Daemon 测试 (6 tests) ✅
-待实现：
-- [ ] 工具测试 (fs/git/shell)
-- [ ] E2E 测试 (CLI commands)
+- [x] REPL 测试 (15 tests) ✅
+- [x] SQLite 测试 (6 tests) ✅
 ```
 
 ### 4. gRPC 客户端库
@@ -183,10 +183,10 @@ cargo build --features grpc
 
 ## 下一步工作
 
-1. **持久化存储** - JSON 文件后端
-2. **工具测试** - fs/git/shell 工具测试
-3. **E2E 测试** - CLI 命令端到端测试
-4. **gRPC 客户端库** - 提供客户端 SDK
+1. **gRPC 客户端库** - 提供客户端 SDK
+2. **历史命令** - REPL 命令历史持久化
+3. **性能优化** - 并行任务执行优化
+4. **文档完善** - API 文档和使用指南
 
 ---
 
