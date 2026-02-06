@@ -1,6 +1,6 @@
 # NDC 实现待办清单
 
-> **重要更新 (2026-02-06)**: 测试覆盖完成 - 150 个测试全部通过
+> **重要更新 (2026-02-06)**: gRPC 客户端库完成 - 64 个测试全部通过
 
 ## 架构概览
 
@@ -37,6 +37,7 @@ ndc/
 | **interface** | grpc.rs | ✅ | gRPC service impl (12 tests) |
 | **interface** | repl.rs | ✅ | REPL mode (15 intent parsing tests) |
 | **interface** | e2e_tests.rs | ✅ | E2E tests (17 tests) |
+| **interface** | grpc_client.rs | ✅ | gRPC client SDK (10 tests) |
 
 ---
 
@@ -97,6 +98,13 @@ gRPC Services (with --features grpc):
 - ExecuteTask - 执行任务
 - RollbackTask - 回滚任务
 - GetSystemStatus - 系统状态
+
+gRPC Client SDK (with --features grpc):
+- NdcClient - 客户端实例
+- ClientConfig - 客户端配置
+- create_client() - 便捷连接函数
+- Connection pooling - 连接池管理
+- Retry with exponential backoff - 指数退避重试
 ```
 
 ---
@@ -139,14 +147,15 @@ gRPC Services (with --features grpc):
 - [x] SQLite 测试 (6 tests) ✅
 ```
 
-### 4. gRPC 客户端库
+### 4. gRPC 客户端库 ✅
 
 ```
-当前状态：服务端完成
-需要实现：
-- [ ] 客户端 SDK
-- [ ] 连接池
-- [ ] 重试机制
+当前状态：客户端库已完成
+已实现：
+- [x] 客户端 SDK (NdcClient, ClientConfig)
+- [x] 连接池 (PooledChannel, pool management)
+- [x] 重试机制 (exponential backoff, retry logic)
+- [x] 10 个 gRPC 客户端单元测试
 ```
 
 ---
@@ -190,5 +199,5 @@ cargo build --features grpc
 
 ---
 
-最后更新: 2026-02-06 (测试覆盖完成 - 96 tests)
+最后更新: 2026-02-06 (gRPC 客户端库完成 - 64 tests)
 标签: #ndc #todo

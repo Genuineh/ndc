@@ -11,8 +11,24 @@ use ndc_core::TaskId;
 use ndc_core::AgentRole;
 use ndc_runtime::{Executor, ExecutionContext};
 
-/// 包含 tonic 生成的代码
-include!(concat!(env!("OUT_DIR"), "/ndc.rs"));
+// Re-export generated types
+pub use super::generated::{
+    NdcService,
+    HealthCheckRequest,
+    HealthCheckResponse,
+    CreateTaskRequest,
+    GetTaskRequest,
+    ListTasksRequest,
+    TaskResponse,
+    ListTasksResponse,
+    Task,
+    ExecuteTaskRequest,
+    ExecuteTaskResponse,
+    RollbackTaskRequest,
+    RollbackTaskResponse,
+    GetSystemStatusRequest,
+    SystemStatusResponse,
+};
 
 /// gRPC NDC 服务实现
 #[derive(Debug)]

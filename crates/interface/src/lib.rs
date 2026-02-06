@@ -14,6 +14,12 @@ pub mod cli;
 pub mod repl;
 pub mod daemon;
 
+#[cfg(feature = "grpc")]
+pub mod generated;
+
+#[cfg(feature = "grpc")]
+pub mod grpc_client;
+
 #[cfg(test)]
 mod cli_tests;
 
@@ -26,3 +32,6 @@ mod e2e_tests;
 pub use cli::{run_cli, CliConfig};
 pub use repl::{run_repl, ReplConfig, ReplState};
 pub use daemon::run_daemon;
+
+#[cfg(feature = "grpc")]
+pub use grpc_client::{NdcClient, ClientConfig, create_client, ClientError};

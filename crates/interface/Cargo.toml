@@ -6,7 +6,7 @@ license = "MIT"
 authors = ["Jerry"]
 
 [build-dependencies]
-prost-build = "0.13"
+tonic-build = "0.12"
 
 [dependencies]
 # Async runtime
