@@ -1,14 +1,14 @@
 # NDC 实现待办清单
 
-> **重要更新 (2026-02-06)**: LLM 集成 - 知识驱动 + TODO 映射 + 完整工程流程
+> **重要更新 (2026-02-06)**: LLM 集成 - 知识驱动 + TODO 映射 + 工业级优化
 
 ## 架构概览
 
 ```
 ndc/
-├── core/              # [核心] 统一模型 + LLM Provider + TODO 管理 ✅ 已完成
+├── core/              # [核心] 统一模型 + LLM Provider + TODO 管理 + Memory ✅
 ├── decision/          # [大脑] 决策引擎 ✅ 已完成
-├── runtime/           # [身体] 执行与验证 + 工作流引擎 ⏳
+├── runtime/           # [身体] 执行与验证 + Workflow Engine ⏳
 └── interface/         # [触觉] 交互层 (CLI + REPL + Daemon) ✅ 已完成
 ```
 
@@ -16,12 +16,13 @@ ndc/
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│              NDC 知识驱动开发流程                                    │
+│              NDC 工业级自治系统                                        │
 │                                                                     │
-│  知识库 ──▶ 理解需求 ──▶ TODO 映射 ──▶ 分解 ──▶ 执行 ──▶ 验收   │
+│  知识库 ──▶ 理解需求 ──▶ TODO 映射 ──▶ 分解 ──▶ 影子探测 ──▶      │
 │                                                                     │
-│  文档 ──▶ 更新 ──▶ 完成 ──▶ 通知用户                               │
+│  工作记忆 ──▶ 执行开发 ──▶ 验收 ──▶ 失败归因 ──▶ 文档 ──▶ 完成     │
 │                                                                     │
+│  核心闭环: 人类纠正 → Invariant (Gold Memory) → 永不重复犯错          │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -53,207 +54,198 @@ ndc/
 
 ---
 
-## LLM 集成 - 知识驱动 + TODO 映射 ⏳
+## LLM 集成 - 知识驱动 + 工业级自治 ⏳
 
 ```
-核心理念：知识驱动开发，TODO 映射，完整工程流程
-
 📄 详细设计: docs/ENGINEERING_CONSTRAINTS.md
 
-六大阶段:
+九大阶段:
+0. 谱系继承 → 继承历史知识
 1. 理解需求 → 检索知识库 + 检查 TODO
 2. 建立映射 → 关联/创建总 TODO
-3. 分解任务 → LLM 分解为原子子任务
-4. 执行开发 → 质量门禁 + 重来机制
-5. 验收确认 → 自动/人工验收
-6. 更新文档 → 知识库 + 通知用户
+3. 分解任务 → LLM 分解 + 非LLM确定性校验
+4. 影子探测 → Read-Only 影响分析 ← 新增
+5. 工作记忆 → 精简上下文 ← 新增
+6. 执行开发 → 质量门禁 + 重来机制
+7. 失败归因 → Human Correction → Invariant ← 新增
+8. 更新文档 → Fact/Narrative
+9. 完成 → 谱系更新
 ```
 
-### 核心组件 ⏳
+### 工业级优化组件 ⏳
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 组件                     │ 文件                          │ 优先级       │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ Working Memory           │ memory/working_memory.rs     │ P2           │
+│ Discovery Phase          │ discovery/mod.rs             │ P1 ⭐       │
+│ Failure Taxonomy        │ error/taxonomy.rs            │ P2           │
+│ Invariant (Gold Memory) │ memory/invariant.rs          │ P3           │
+│ Model Selector           │ llm/selector.rs             │ P3           │
+│ Task Lineage            │ todo/lineage.rs              │ P2           │
+│ Event-Driven Engine     │ engine/mod.rs               │ P2           │
+│ Decomposition Lint      │ llm/decomposition/lint.rs    │ P2           │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+P1 = 第一刀 (Discovery Phase)
+P2 = 第二刀
+P3 = 第三刀
+```
+
+---
+
+## 代码结构 (规划中)
 
 ```
 crates/core/src/
 ├── llm/
-│   ├── mod.rs              # Provider Trait + 接口 ⏳
+│   ├── mod.rs              # Provider Trait
 │   ├── provider/
 │   │   ├── mod.rs          # Trait 定义
-│   │   ├── openai.rs       # OpenAI ⏳
-│   │   ├── anthropic.rs     # Anthropic ⏳
-│   │   └── minimax.rs      # MiniMax ⏳
-│   ├── understanding.rs     # 阶段 1: 需求理解 ⏳
-│   └── decomposition.rs    # 阶段 3: 任务分解 ⏳
+│   │   ├── openai.rs       # OpenAI
+│   │   ├── anthropic.rs     # Anthropic
+│   │   └── minimax.rs       # MiniMax
+│   ├── understanding.rs     # 阶段 1
+│   ├── decomposition/
+│   │   ├── mod.rs          # 分解服务
+│   │   ├── planner.rs      # 任务规划
+│   │   └── lint.rs         # 非LLM校验 ⭐
+│   ├── selector.rs          # 模型自适应 ⭐
+│   └── discovery.rs         # 影子探测 ⭐
 │
 ├── todo/
-│   ├── mod.rs              # TODO 管理模块 ⏳
-│   ├── project_todo.rs     # 总 TODO 结构 ⏳
-│   ├── task_chain.rs       # 子任务链 ⏳
-│   └── mapping_service.rs   # 阶段 2: 映射服务 ⏳
+│   ├── mod.rs              # TODO 模块
+│   ├── project_todo.rs     # 总 TODO
+│   ├── task_chain.rs       # 任务链
+│   ├── mapping_service.rs   # 映射服务
+│   └── lineage.rs          # 谱系继承 ⭐
 │
-└── memory/
-    └── knowledge_base.rs     # 知识库管理 ⏳
+├── memory/
+│   ├── mod.rs
+│   ├── knowledge_base.rs    # 知识库
+│   ├── working_memory.rs   # 工作记忆 ⭐
+│   └── invariant.rs        # Gold Memory ⭐
+│
+└── error/
+    └── taxonomy.rs         # 失败分类 ⭐
 
 crates/runtime/src/
 ├── engine/
-│   ├── mod.rs              # 工作流引擎 ⏳
-│   ├── workflow_engine.rs   # 完整流程控制 ⏳
-│   ├── execution_engine.rs  # 阶段 4: 执行引擎 ⏳
-│   └── acceptance_engine.rs # 阶段 5: 验收引擎 ⏳
+│   ├── mod.rs              # 事件驱动引擎 ⭐
+│   ├── workflow.rs         # 工作流
+│   ├── execution.rs        # 执行引擎
+│   └── acceptance.rs       # 验收
+│
+├── discovery/
+│   └── mod.rs              # 影子探测 ⭐
 │
 └── documentation/
-    └── updater.rs          # 阶段 6: 文档更新 ⏳
+    └── updater.rs         # 文档更新
 ```
 
-### 实现步骤
+---
 
-#### 阶段 1: 需求理解 ⏳
+## 实施优先级
 
-```
-职责:
-- 检索知识库文档
-- 检查总 TODO 映射
-- LLM 分析需求
-
-输出: RequirementContext
-```
-
-- [ ] KnowledgeBase 检索接口
-- [ ] TodoIndex 相似度搜索
-- [ ] LLM 需求分析 Prompt
-- [ ] UnderstandingResult 结构
-
-#### 阶段 2: TODO 映射 ⏳
+### ⭐ 第一刀：Discovery Phase (影子探测)
 
 ```
-职责:
-- 检查是否已有 TODO
-- 创建/关联总 TODO
-- 通知用户确认
+职责: 在动手前先照 X 光
+触发: 高 Volatility 模块
+产物: ImpactReport
 
-输出: TodoMappingResult
+核心约束:
+- 只读扫描 (fs read / grep / ls)
+- 禁止写文件 / git commit
+- 高风险 → 触发加强版验收
+
+配置:
+discovery:
+  enabled: true
+  risk_threshold: 0.7
 ```
 
-- [ ] ProjectTodo 结构
-- [ ] TodoState 状态机
-- [ ] MappingService 实现
-- [ ] NotificationService
+**验收标准**:
+- [ ] ImpactReport 结构
+- [ ] VolatilityScore 计算
+- [ ] Read-only Tool 限制
+- [ ] 触发加强验收逻辑
 
-#### 阶段 3: 任务分解 ⏳
+---
 
-```
-职责:
-- LLM 分解为子任务
-- 创建 TaskChain
-- 记录依赖关系
-
-输出: TaskChain
-```
-
-- [ ] SubTask 结构
-- [ ] TaskChain 结构
-- [ ] DependencyGraph
-- [ ] DecompositionService
-
-#### 阶段 4: 执行开发 ⏳
+### 第二刀：Working Memory + ContextSummarizer
 
 ```
-职责:
-- 执行子任务
-- 质量门禁检查
-- 强制重来机制
-- 人工介入处理
+职责: 执行态认知边界
+特点:
+- 强生命周期 (SubTask 结束时销毁)
+- 非检索型 (系统喂给 LLM)
+- 工程优先 (API > 约束 > 文档)
 
-子任务循环:
-  开发 → 测试 → 质量门禁 → 验证 → 重来/下一步
+包含:
+- active_files
+- api_surface
+- recent_failures (最近 3 次)
+- invariants (Gold Memory)
 ```
 
-- [ ] StepExecutionEngine
-- [ ] QualityGateRunner 集成
-- [ ] RetryEngine
-- [ ] HumanInterventionHandler
+---
 
-#### 阶段 5: 验收确认 ⏳
+### 第三刀：Human → Invariant → Gold Memory
 
 ```
-职责:
-- 自动验收检查
-- 人工验收请求
-- 验收结果记录
+职责: "同一个坑填过一次，永远不会再掉进去"
 
-验收标准:
-- 测试覆盖率 >= 80%
-- 所有测试通过
-- 编译无警告
+流程:
+1. 人类纠正错误
+2. 分类: FailureTaxonomy::HumanCorrection
+3. 抽象为 FormalConstraint
+4. 注入 Gold Memory
+5. 影响:
+   - Future WorkingMemory
+   - Decomposition Validator
+   - ModelSelector (高风险)
+
+优先级: Highest (人类纠正 > 系统推理 > LLM 建议)
 ```
 
-- [ ] AcceptanceCriteria 结构
-- [ ] AcceptanceService
-- [ ] HumanReviewRequest
+---
 
-#### 阶段 6: 文档更新 ⏳
+## 核心数据结构
 
-```
-职责:
-- 更新相关文档
-- 记录决策变更
-- 提升知识库稳定性
-- 发送完成通知
+### Failure Taxonomy
 
-输出: CompletionReport
-```
-
-- [ ] DocumentationService
-- [ ] DocumentChanges 结构
-- [ ] NotificationService
-- [ ] KnowledgeBase 稳定性升级
-
-### LLM Provider 实现
-
-```
-接口:
-├── LlmProvider Trait
-│   ├── chat() → LlmResponse
-│   ├── chat_stream() → Stream
-│   └── is_healthy() → bool
-│
-├── LlmMessage / LlmResponse
-├── TokenUsage
-└── LlmError
+```rust
+enum FailureTaxonomy {
+    LogicError,           // 重试
+    TestGap,              // 重试
+    SpecAmbiguity,        // 回阶段1
+    DecisionConflict,     // 回阶段2
+    ToolFailure,          // 视情况
+    HumanCorrection,      // 产生 Invariant
+}
 ```
 
-- [ ] OpenAI Provider (GPT-4o)
-- [ ] Anthropic Provider (Claude 3.5)
-- [ ] MiniMax Provider (MiniMax API)
+### Task Lineage
 
-### 代码结构
-
+```rust
+struct TaskLineage {
+    parent: Option<TaskId>,
+    inherited_invariants: Vec<InvariantRef>,
+    inherited_failures: Vec<FailurePattern>,
+    inherited_context: Option<ArchivedWorkingMemory>,
+}
 ```
-crates/core/src/llm/
-├── mod.rs                    # 模块入口 + Trait
-├── provider/
-│   ├── mod.rs              # Trait 定义
-│   ├── openai.rs           # OpenAI 实现
-│   ├── anthropic.rs        # Anthropic 实现
-│   └── minimax.rs          # MiniMax 实现
-├── understanding/
-│   ├── mod.rs              # 理解服务
-│   └── analyzer.rs          # 需求分析
-└── decomposition/
-    ├── mod.rs              # 分解服务
-    ├── planner.rs          # 任务规划
-    └── validator.rs         # 分解校验
 
-crates/core/src/todo/
-├── mod.rs                    # 模块入口
-├── project_todo.rs          # 总 TODO
-├── subtask.rs               # 子任务
-├── task_chain.rs            # 任务链
-└── mapping.rs               # 映射服务
+### Model Selector
 
-crates/runtime/src/engine/
-├── mod.rs                    # 模块入口
-├── workflow.rs              # 工作流引擎
-├── executor.rs              # 执行引擎
-└── acceptance.rs            # 验收引擎
+```rust
+fn select_model(entropy: TaskEntropy) -> LlmProvider {
+    // 低风险 + 高不变量密度 → 快速模型
+    // 中等风险 → 均衡模型
+    // 高风险 / 跨模块 → 最强模型
+}
 ```
 
 ---
@@ -278,22 +270,28 @@ cargo build
 
 # 创建任务
 ./target/debug/ndc create "test task" -d "description"
-
-# 列出任务
-./target/debug/ndc list
 ```
 
 ---
 
 ## 下一步工作
 
-1. **LLM Provider** - OpenAI/Anthropic/MiniMax 接口
-2. **KnowledgeBase** - 文档检索和更新
-3. **TODO 系统** - 映射和追踪
-4. **Workflow Engine** - 完整流程编排
-5. **Documentation** - 文档变更管理
+### 短期 (P1)
+- [ ] Discovery Phase 实现
+- [ ] ImpactReport 结构
+- [ ] VolatilityScore 计算
+
+### 中期 (P2)
+- [ ] Working Memory 设计
+- [ ] Task Lineage 继承
+- [ ] Decomposition Lint
+
+### 长期 (P3)
+- [ ] Invariant Gold Memory
+- [ ] Model Selector
+- [ ] Event-Driven Engine
 
 ---
 
-最后更新: 2026-02-06 (LLM 集成 - 知识驱动 + TODO 映射)
-标签: #ndc #llm #knowledge-driven #todo-mapping
+最后更新: 2026-02-06 (LLM 集成 - 工业级自治系统)
+标签: #ndc #llm #industrial-grade #autonomous

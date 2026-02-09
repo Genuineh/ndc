@@ -1,6 +1,6 @@
 # NDC 完整工程约束流程设计
 
-> 整合知识库 + TODO 管理 + 任务分解 + 开发验收
+> 整合知识库 + TODO 管理 + 任务分解 + 开发验收 + 工业级优化
 
 ---
 
@@ -12,31 +12,37 @@
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │  ┌───────────────────────────────────────────────────────────────────┐   │
-│  │                    知识库 (Knowledge Base)                         │   │
-│  │  - 项目文档 (README, ARCHITECTURE, API Docs)                     │   │
-│  │  - 代码知识 (CodeKnowledge)                                        │   │
-│  │  - 决策记录 (Decision Records)                                     │   │
-│  │  - 变更历史 (Change History)                                       │   │
+│  │                    知识库 (Knowledge Base)                           │   │
+│  │  - 项目文档 (README, ARCHITECTURE, API Docs)                       │   │
+│  │  - 代码知识 (CodeKnowledge)                                          │   │
+│  │  - 决策记录 (Decision Records)                                      │   │
+│  │  - 变更历史 (Change History)                                        │   │
+│  │  - 不变量约束 (Invariants) - Gold Memory                           │   │
 │  │  - 稳定性层级: Ephemeral → Derived → Verified → Canonical        │   │
 │  └───────────────────────────────────────────────────────────────────┘   │
 │                                    │                                      │
 │                                    ▼                                      │
 │  ┌───────────────────────────────────────────────────────────────────┐   │
-│  │                    TODO 管理 (Task Mapping)                        │   │
-│  │  - 总 TODO (Project-Level)                                        │   │
-│  │  - 子 TODO (Feature-Level)                                        │   │
-│  │  - 任务分解链 (Task Chain)                                         │   │
-│  │  - 状态追踪 (State Tracking)                                       │   │
+│  │                    TODO 管理 (Task Mapping)                          │   │
+│  │  - 总 TODO (Project-Level)                                          │   │
+│  │  - 子 TODO (Feature-Level)                                          │   │
+│  │  - 任务分解链 (Task Chain)                                          │   │
+│  │  - 状态追踪 (State Tracking)                                         │   │
+│  │  - 约束容器 (ConstraintSet)                                        │   │
+│  │  - 波动性分数 (VolatilityScore)                                     │   │
 │  └───────────────────────────────────────────────────────────────────┘   │
 │                                    │                                      │
 │                                    ▼                                      │
 │  ┌───────────────────────────────────────────────────────────────────┐   │
-│  │                    任务执行 (Execution)                           │   │
-│  │  - 步骤分解 (Step Decomposition)                                  │   │
+│  │                    任务执行 (Execution)                            │   │
+│  │  - 步骤分解 (Step Decomposition)                                   │   │
 │  │  - 开发执行 (Development)                                          │   │
-│  │  - 测试验证 (Testing)                                              │   │
-│  │  - 质量门禁 (Quality Gate)                                        │   │
-│  │  - 验收确认 (Acceptance)                                          │   │
+│  │  - 影子探测 (Discovery Phase) ← 新增                              │   │
+│  │  - 工作记忆 (Working Memory) ← 新增                               │   │
+│  │  - 测试验证 (Testing)                                               │   │
+│  │  - 质量门禁 (Quality Gate)                                         │   │
+│  │  - 失败分类 (Failure Taxonomy) ← 新增                             │   │
+│  │  - 验收确认 (Acceptance)                                            │   │
 │  └───────────────────────────────────────────────────────────────────┘   │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -44,7 +50,7 @@
 
 ---
 
-## 2. 完整流程状态机
+## 2. 完整流程状态机（事件驱动版）
 
 ```
                               ┌─────────────────────────────────────────┐
@@ -54,83 +60,124 @@
                                                 ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                                                                             │
-│   ┌───────────────────────────────────────────────────────────────────┐    │
-│   │                    阶段 1: 理解需求 (Understand)                   │    │
-│   │  - 检索知识库                                                      │    │
-│   │  - 检索总 TODO                                                     │    │
-│   │  - 检查是否已有映射                                                  │    │
-│   │  - 输出: RequirementContext                                        │    │
-│   └───────────────────────────────────────────────────────────────────┘    │
-│                                     │                                      │
-│                                     ▼                                      │
-│                         总 TODO 映射存在?                                    │
-│                         ┌──────────┴──────────┐                          │
-│                         ▼                        ▼                          │
-│               ┌──────────────────┐    ┌──────────────────────────┐        │
-│               │ 是: 关联现有      │    │ 否: 建立新映射             │        │
-│               │    TODO          │    │    (提示用户确认)          │        │
-│               └────────┬─────────┘    └────────────┬─────────────┘        │
-│                        │                          │                       │
-│                        │                          ▼                       │
-│                        │               ┌──────────────────────────┐        │
-│                        │               │  阶段 2a: 建立 TODO 映射   │        │
-│                        │               │  - 创建总 TODO 条目        │        │
-│                        │               │  - 关联用户需求            │        │
-│                        │               │  - 标记为 pending          │        │
-│                        │               └────────────┬─────────────┘        │
-│                        │                          │                       │
-│                        ▼                          │                       │
 │   ┌───────────────────────────────────────────────────────────────────┐   │
-│   │              阶段 2: 分解需求 (Decompose)                          │   │
-│   │  - LLM 理解需求                                                   │   │
-│   │  - 检索相关文档和知识                                               │   │
-│   │  - 分解为原子子任务                                                 │   │
-│   │  - 创建子 TODO 链                                                  │   │
-│   │  - 记录任务依赖和顺序                                               │   │
+│   │              阶段 0: 任务谱系继承 (Lineage Inheritance) ← 新增     │   │
+│   │  - 检查父任务历史                                                    │   │
+│   │  - 继承 Invariants                                                   │   │
+│   │  - 继承 PostmortemContext                                           │   │
+│   │  - 输出: InheritedContext                                           │   │
 │   └───────────────────────────────────────────────────────────────────┘   │
 │                                     │                                      │
 │                                     ▼                                      │
 │   ┌───────────────────────────────────────────────────────────────────┐   │
-│   │              阶段 3: 执行开发 (Develop)                            │   │
+│   │              阶段 1: 理解需求 (Understand)                         │   │
+│   │  - 检索知识库                                                        │   │
+│   │  - 检索总 TODO                                                       │   │
+│   │  - 谱系继承                                                          │   │
+│   │  - 输出: RequirementContext                                         │   │
+│   └───────────────────────────────────────────────────────────────────┘   │
+│                                     │                                      │
+│                                     ▼                                      │
+│                         总 TODO 映射存在?                                   │
+│                         ┌──────────┴──────────┐                          │
+│                         ▼                        ▼                          │
+│               ┌──────────────────┐    ┌──────────────────────────┐      │
+│               │ 是: 关联现有      │    │ 否: 建立新映射             │      │
+│               │    TODO          │    │    (提示用户确认)          │      │
+│               └────────┬─────────┘    └────────────┬─────────────┘      │
+│                        │                          │                       │
+│                        │                          ▼                       │
+│                        │               ┌──────────────────────────┐      │
+│                        │               │  阶段 2a: 建立 TODO 映射  │      │
+│                        │               │  - 创建总 TODO 条目       │      │
+│                        │               │  - 关联需求               │      │
+│                        │               │  - 标记为 pending         │      │
+│                        │               └────────────┬─────────────┘      │
+│                        │                          │                       │
+│                        ▼                          │                       │
+│   ┌───────────────────────────────────────────────────────────────────┐   │
+│   │              阶段 2: 分解需求 (Decompose)                         │   │
+│   │  - LLM 理解需求                                                    │   │
+│   │  - 检索相关文档和知识                                               │   │
+│   │  - 继承的上下文                                                     │   │
+│   │  - 分解为原子子任务                                                 │   │
+│   │  - 创建子 TODO 链                                                   │   │
+│   │  - 记录任务依赖和顺序                                               │   │
+│   │  - 分解Lint校验 ← 新增 (非LLM确定性校验)                          │   │
+│   └───────────────────────────────────────────────────────────────────┘   │
+│                                     │                                      │
+│                                     ▼                                      │
+│   ┌───────────────────────────────────────────────────────────────────┐   │
+│   │              阶段 3: 影子探测 (Discovery Phase) ← 新增           │   │
+│   │  - Read-Only Impact Analysis                                       │   │
+│   │  - 生成 ImpactReport                                               │   │
+│   │  - 评估 VolatilityRisk                                             │   │
+│   │  - 决定是否需要升级验收                                             │   │
+│   │  触发条件: High Volatility 模块                                     │   │
+│   └───────────────────────────────────────────────────────────────────┘   │
+│                                     │                                      │
+│                                     ▼                                      │
+│   ┌───────────────────────────────────────────────────────────────────┐   │
+│   │              阶段 4: 工作记忆快照 (Working Memory) ← 新增        │   │
+│   │  - 生成 ContextSummary                                             │   │
+│   │  - 包含: active_files, api_surface, recent_failures, invariants  │   │
+│   │  - 只在 SubTask 执行期存在                                          │   │
+│   │  - 结束即销毁/归档                                                  │   │
+│   └───────────────────────────────────────────────────────────────────┘   │
+│                                     │                                      │
+│                                     ▼                                      │
+│   ┌───────────────────────────────────────────────────────────────────┐   │
+│   │              阶段 5: 执行开发 (Develop)                           │   │
 │   │  ┌───────────────────────────────────────────────────────────┐   │   │
-│   │  │ 子任务循环:                                                 │   │   │
-│   │  │  3.1 开发执行 - 编写代码                                     │   │   │
-│   │  │  3.2 单元测试 - 编写/运行测试                                │   │   │
-│   │  │  3.3 质量门禁 - cargo check/test/clippy                     │   │   │
-│   │  │  3.4 验证结果 - 通过/失败                                    │   │   │
+│   │  │ 子任务循环:                                                  │   │   │
+│   │  │  5.1 开发执行 - 编写代码 (基于 Working Memory)               │   │   │
+│   │  │  5.2 单元测试 - 编写/运行测试                                │   │   │
+│   │  │  5.3 质量门禁 - cargo check/test/clippy                     │   │   │
+│   │  │  5.4 验证结果 - 通过/失败                                    │   │   │
+│   │  │  5.5 失败分类 - Failure Taxonomy ← 新增                   │   │   │
 │   │  │          ↓ 失败                                               │   │   │
-│   │  │  3.5 重来机制 - 最多 N 次                                    │   │   │
+│   │  │  5.6 重来机制 - 最多 N 次                                    │   │   │
 │   │  │          ↓ 超过阈值                                           │   │   │
-│   │  │  3.6 人工介入 - 暂停/报告                                     │   │   │
+│   │  │  5.7 人工介入 - Human Correction ← 新增                   │   │   │
 │   │  └───────────────────────────────────────────────────────────┘   │   │
 │   └───────────────────────────────────────────────────────────────────┘   │
 │                                     │                                      │
 │                           所有子任务完成?                                    │
 │                           ┌──────────┴──────────┐                        │
 │                           ▼                        ▼                        │
-│                 ┌──────────────────┐    ┌──────────────────────────┐        │
-│                 │ 是              │    │ 否: 继续执行             │        │
-│                 └────────┬─────────┘    └────────────────────────┘        │
-│                          │                                               │
-│                          ▼                                               │
+│                 ┌──────────────────┐    ┌──────────────────────────┐    │
+│                 │ 是              │    │ 否: 继续执行              │    │
+│                 └────────┬─────────┘    └────────────────────────┘     │
+│                          │                                                │
+│                          ▼                                                │
 │   ┌───────────────────────────────────────────────────────────────────┐   │
-│   │              阶段 4: 验收 (Accept)                               │   │
+│   │              阶段 6: 验收 (Accept)                               │   │
 │   │  - 自动验收: 覆盖率 >= 80%, 所有测试通过                           │   │
 │   │  - 人工验收: 需要复核的业务逻辑                                     │   │
+│   │  - VolatilityRisk 触发加强版验收 ← 新增                          │   │
 │   │  - 输出: AcceptanceResult                                        │   │
 │   └───────────────────────────────────────────────────────────────────┘   │
 │                                     │                                      │
 │                          验收通过?                                          │
-│                          ┌──────────┴──────────┐                          │
+│                          ┌──────────┴──────────┐                        │
 │                          ▼                        ▼                        │
-│                ┌──────────────────┐    ┌──────────────────────────┐      │
-│                │ 是              │    │ 否: 修复/重来              │      │
-│                └────────┬─────────┘    └────────────────────────┘      │
-│                         │                                                  │
-│                         ▼                                                  │
+│                ┌──────────────────┐    ┌──────────────────────────┐    │
+│                │ 是              │    │ 否: 修复/重来              │    │
+│                └────────┬─────────┘    └────────────────────────┘    │
+│                         │                                                │
+│                         ▼                                                │
 │   ┌───────────────────────────────────────────────────────────────────┐   │
-│   │              阶段 5: 更新文档 (Document)                          │   │
-│   │  - 更新相关文档                                                    │   │
+│   │              阶段 7: 失败归因与固化 (Failure → Invariant) ← 新增 │   │
+│   │  - 失败分类: LogicError / TestGap / SpecAmbiguity / DecisionConflict │   │
+│   │  - Human Correction → Invariant ← 新增 (Gold Memory)            │   │
+│   │  - 生成 PostmortemContext ← 新增                                 │   │
+│   │  - 回灌到 KnowledgeBase                                          │   │
+│   └───────────────────────────────────────────────────────────────────┘   │
+│                                     │                                      │
+│                                     ▼                                      │
+│   ┌───────────────────────────────────────────────────────────────────┐   │
+│   │              阶段 8: 更新文档 (Document)                          │   │
+│   │  - 更新相关文档 (Fact Docs + Narrative Docs) ← 新增              │   │
 │   │  - 记录决策和变更                                                  │   │
 │   │  - 提升知识库稳定性                                                 │   │
 │   │  - 输出: DocumentChanges                                          │   │
@@ -138,9 +185,10 @@
 │                                     │                                      │
 │                                     ▼                                      │
 │   ┌───────────────────────────────────────────────────────────────────┐   │
-│   │              阶段 6: 完成 (Complete)                              │   │
+│   │              阶段 9: 完成 (Complete)                              │   │
 │   │  - 标记总 TODO 完成                                                │   │
 │   │  - 发送完成通知                                                    │   │
+│   │  - 更新 TaskLineage (为后续继承) ← 新增                           │   │
 │   │  - 输出: CompletionReport                                        │   │
 │   └───────────────────────────────────────────────────────────────────┘   │
 │                                                                             │
@@ -149,858 +197,602 @@
 
 ---
 
-## 3. 数据结构设计
+## 3. 工业级优化组件设计
 
-### 3.1 总 TODO 结构 (Project-Level)
-
-```rust
-// crates/core/src/todo/project_todo.rs
-
-/// 总 TODO - 项目级需求追踪
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProjectTodo {
-    /// 总 TODO ID
-    pub id: TodoId,
-
-    /// 需求标题
-    pub title: String,
-
-    /// 需求描述 (原始用户输入)
-    pub description: String,
-
-    /// 需求来源
-    pub source: RequirementSource,
-
-    /// 状态
-    pub state: TodoState,
-
-    /// 优先级
-    pub priority: TodoPriority,
-
-    /// 关联的子 TODO 链
-    pub task_chain: TaskChain,
-
-    /// 元数据
-    pub metadata: TodoMetadata,
-
-    /// 创建时间
-    pub created_at: Timestamp,
-
-    /// 更新时间
-    pub updated_at: Timestamp,
-
-    /// 完成时间
-    pub completed_at: Option<Timestamp>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum TodoState {
-    /// 待处理 - 刚创建
-    Pending,
-
-    /// 理解中 - 正在理解需求
-    Understanding,
-
-    /// 分解中 - 正在分解任务
-    Decomposing,
-
-    /// 开发中 - 子任务执行中
-    InProgress,
-
-    /// 验收中 - 待验收
-    AwaitingAcceptance,
-
-    /// 文档更新中
-    Documenting,
-
-    /// 已完成
-    Completed,
-
-    /// 失败
-    Failed,
-
-    /// 已取消
-    Cancelled,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum RequirementSource {
-    /// 用户输入
-    UserInput(String),
-
-    /// 需求文档
-    Document { path: String, line: u32 },
-
-    /// 会议纪要
-    MeetingNotes { date: Date, participants: Vec<String> },
-
-    /// GitHub Issue
-    GitHubIssue { owner: String, repo: String, number: u32 },
-
-    /// 其他
-    Other(String),
-}
-
-/// 子任务链
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskChain {
-    /// 根任务 ID
-    pub root_task_id: TaskId,
-
-    /// 子任务列表 (按执行顺序)
-    pub subtasks: Vec<SubTask>,
-
-    /// 依赖图
-    pub dependencies: DependencyGraph,
-
-    /// 当前执行位置
-    pub current_position: usize,
-}
-
-/// 子任务
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SubTask {
-    /// 子任务 ID
-    pub id: SubTaskId,
-
-    /// 标题
-    pub title: String,
-
-    /// 描述
-    pub description: String,
-
-    /// 状态
-    pub subtask_state: SubTaskState,
-
-    /// 优先级
-    pub priority: TodoPriority,
-
-    /// 验收标准
-    pub acceptance_criteria: Vec<String>,
-
-    /// 负责的 Agent
-    pub assignee: AgentId,
-
-    /// 依赖的子任务 ID
-    pub depends_on: Vec<SubTaskId>,
-
-    /// 实际步骤 (由 LLM 分解)
-    pub steps: Vec<TaskStep>,
-
-    /// 执行结果
-    pub result: Option<SubTaskResult>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum SubTaskState {
-    /// 待执行
-    Pending,
-
-    /// 准备中
-    Preparing,
-
-    /// 执行中
-    InProgress,
-
-    /// 验证中
-    Verifying,
-
-    /// 已完成
-    Completed,
-
-    /// 失败
-    Failed,
-
-    /// 跳过
-    Skipped,
-}
-```
-
-### 3.2 知识库集成结构
+### 3.1 Working Memory (工作记忆)
 
 ```rust
-// crates/core/src/memory/knowledge_base.rs
+// crates/core/src/memory/working_memory.rs
 
-/// 知识库 - 项目文档和代码知识管理
+/// 工作记忆 - 执行态认知边界
+/// 特点: 强生命周期、非检索型、工程优先
+
 #[derive(Debug, Clone)]
-pub struct KnowledgeBase {
-    /// 文档索引
-    documents: DocumentIndex,
+pub struct WorkingMemory {
+    /// 作用域: 当前子任务
+    pub scope: SubTaskId,
 
-    /// 代码知识
-    code_knowledge: CodeKnowledgeIndex,
+    /// 活跃文件
+    pub active_files: Vec<FileRef>,
 
-    /// 决策记录
-    decisions: DecisionRecordIndex,
+    /// API 表面
+    pub api_surface: Vec<ApiSymbol>,
 
-    /// 变更历史
-    change_history: ChangeHistory,
+    /// 最近失败摘要 (最近 3 次)
+    pub recent_failures: Vec<FailureSummary>,
+
+    /// TODO 约束
+    pub todo_constraints: ConstraintSet,
+
+    /// 不变量引用 (Gold Memory)
+    pub invariants: Vec<InvariantRef>,
+
+    /// 波动性提示
+    pub volatility_hint: VolatilityScore,
 }
 
-impl KnowledgeBase {
-    /// 检索相关文档
-    pub async fn retrieve_documents(
-        &self,
-        query: &str,
-    ) -> Result<Vec<DocumentRef>, KnowledgeError> {
-        // 1. 搜索项目文档
-        let docs = self.documents.search(query).await?;
-
-        // 2. 搜索代码知识
-        let code = self.code_knowledge.search(query).await?;
-
-        // 3. 搜索决策记录
-        let decisions = self.decisions.search(query).await?;
-
-        Ok(vec![docs, code, decisions].concat())
-    }
-
-    /// 检查需求是否已存在
-    pub async fn check_requirement_exists(
-        &self,
-        requirement: &str,
-    ) -> Result<Option<ProjectTodoRef>, KnowledgeError> {
-        // 1. 检查总 TODO
-        let existing = self.todo_index.find_similar(requirement).await?;
-
-        Ok(existing)
-    }
-
-    /// 更新文档
-    pub async fn update_document(
-        &self,
-        path: &Path,
-        changes: &DocumentChanges,
-    ) -> Result<DocumentVersion, KnowledgeError> {
-        // 1. 读取当前文档
-        let current = self.read_document(path).await?;
-
-        // 2. 应用变更
-        let updated = self.apply_changes(&current, changes)?;
-
-        // 3. 写入新版本
-        let version = self.write_version(path, &updated).await?;
-
-        // 4. 更新索引
-        self.documents.update_index(path, &version).await?;
-
-        // 5. 提升稳定性层级
-        self.promote_stability(path, MemoryStability::Canonical)?;
-
-        Ok(version)
-    }
-
-    /// 记录决策
-    pub async fn record_decision(
-        &self,
-        decision: &DecisionRecord,
-    ) -> Result<(), KnowledgeError> {
-        // 决策初始为 Verified，后续人工复核后为 Canonical
-        self.decisions.store(decision, MemoryStability::Verified)?;
-        Ok(())
-    }
-}
-
-/// 文档变更
-#[derive(Debug, Clone)]
-pub struct DocumentChanges {
-    /// 文档路径
-    pub path: PathBuf,
-
-    /// 变更类型
-    pub change_type: ChangeType,
-
-    /// 变更内容
-    pub content: Option<String>,
-
-    /// 变更原因
-    pub reason: String,
-
-    /// 关联的 TODO
-    pub todo_id: Option<TodoId>,
-
-    /// 变更摘要
-    pub summary: String,
-}
-```
-
----
-
-## 4. LLM 集成设计
-
-### 4.1 LLM 接口设计
-
-```rust
-// crates/core/src/llm/mod.rs
-
-use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
-
-/// LLM Provider Trait
-#[async_trait]
-pub trait LlmProvider: Send + Sync {
-    /// 发送聊天消息
-    async fn chat(&self, messages: &[LlmMessage]) -> Result<LlmResponse, LlmError>;
-
-    /// 流式聊天
-    async fn chat_stream(
-        &self,
-        messages: &[LlmMessage],
-    ) -> Result<impl Stream<Item = Result<String, LlmError>>, LlmError>;
-
-    /// 健康检查
-    async fn is_healthy(&self) -> bool;
-
-    /// 获取模型名称
-    fn model_name(&self) -> &str;
-}
-
-/// LLM 消息
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LlmMessage {
-    pub role: MessageRole,
-    pub content: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum MessageRole {
-    System,
-    User,
-    Assistant,
-}
-
-/// LLM 响应
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LlmResponse {
-    pub content: String,
-    pub usage: TokenUsage,
-    pub model: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TokenUsage {
-    pub prompt_tokens: u32,
-    pub completion_tokens: u32,
-    pub total_tokens: u32,
-}
-```
-
-### 4.2 需求理解服务
-
-```rust
-// crates/core/src/llm/requirement_understanding.rs
-
-/// 需求理解服务 - 阶段 1
-pub struct RequirementUnderstandingService {
-    llm_provider: Arc<dyn LlmProvider>,
-    knowledge_base: Arc<KnowledgeBase>,
-    todo_manager: Arc<TodoManager>,
-}
-
-impl RequirementUnderstandingService {
-    /// 理解用户需求
-    pub async fn understand(
-        &self,
-        user_input: &str,
-        context: &UnderstandingContext,
-    ) -> Result<UnderstandingResult, UnderstandingError> {
-        // 1. 检索知识库
-        let knowledge_context = self
-            .knowledge_base
-            .retrieve_documents(user_input)
-            .await?;
-
-        // 2. 检查总 TODO
-        let existing_mapping = self
-            .todo_manager
-            .find_similar_todo(user_input)
-            .await?;
-
-        // 3. LLM 分析需求
-        let system_prompt = self.build_system_prompt(&knowledge_context);
-
-        let messages = vec![
-            LlmMessage {
-                role: MessageRole::System,
-                content: system_prompt,
-            },
-            LlmMessage {
-                role: MessageRole::User,
-                content: format!(
-                    "用户需求: {}\n\n请分析这个需求:\n1. 核心功能是什么?\n2. 涉及哪些模块?\n3. 是否有现有 TODO 映射? {:?}",
-                    user_input,
-                    existing_mapping.as_ref().map(|t| t.id.to_string())
-                ),
-            },
-        ];
-
-        let response = self.llm_provider.chat(&messages).await?;
-
-        // 4. 解析结果
-        let analysis = self.parse_analysis(&response.content)?;
-
-        Ok(UnderstandingResult {
-            requirement: user_input.to_string(),
-            core_features: analysis.core_features,
-            involved_modules: analysis.involved_modules,
-            existing_todo_ref: existing_mapping,
-            knowledge_context,
-        })
-    }
-
-    fn build_system_prompt(&self, knowledge: &KnowledgeContext) -> String {
-        format!(
-            r#"你是一个专业的技术需求分析助手。
-请结合以下项目背景知识分析用户需求:
-
-项目文档:
-{}
-
-代码知识:
-{}
-
-决策记录:
-{}
-
-请分析用户需求的核心功能、涉及模块，并检查是否已有相关 TODO 映射。
-"#,
-            knowledge.documents,
-            knowledge.code_knowledge,
-            knowledge.decisions
-        )
-    }
-}
-
-/// 理解结果
-#[derive(Debug)]
-pub struct UnderstandingResult {
-    pub requirement: String,
-    pub core_features: Vec<String>,
-    pub involved_modules: Vec<String>,
-    pub existing_todo_ref: Option<ProjectTodoRef>,
-    pub knowledge_context: KnowledgeContext,
-}
-```
-
-### 4.3 TODO 映射服务
-
-```rust
-// crates/core/src/todo/mapping_service.rs
-
-/// TODO 映射服务 - 阶段 2
-pub struct TodoMappingService {
-    todo_manager: Arc<TodoManager>,
-    notifier: Arc<NotificationService>,
-}
-
-impl TodoMappingService {
-    /// 检查并建立 TODO 映射
-    pub async fn check_or_create_mapping(
-        &self,
-        requirement: &str,
-        understanding: &UnderstandingResult,
-    ) -> Result<TodoMappingResult, TodoError> {
-        // 1. 检查是否已有映射
-        if let Some(existing) = &understanding.existing_todo_ref {
-            return Ok(TodoMappingResult {
-                is_new: false,
-                todo_id: existing.id,
-                message: format!("已关联到现有 TODO: {}", existing.title),
-            });
+impl WorkingMemory {
+    /// 生成时机: Discovery Phase 完成之后
+    pub fn from_discovery(
+        impact_report: &ImpactReport,
+        failure_history: &[FailureSummary],
+        inherited_invariants: &[InvariantRef],
+    ) -> Self {
+        Self {
+            scope: impact_report.task_id.clone(),
+            active_files: impact_report.touched_files.clone(),
+            api_surface: impact_report.public_api_changes.clone(),
+            recent_failures: failure_history.iter().take(3).cloned().collect(),
+            todo_constraints: ConstraintSet::current(),
+            invariants: inherited_invariants.to_vec(),
+            volatility_hint: impact_report.volatility_risk.score(),
         }
+    }
 
-        // 2. 创建新映射
-        let new_todo = ProjectTodo {
-            id: TodoId::new(),
-            title: self.extract_title(requirement),
-            description: requirement.to_string(),
-            source: RequirementSource::UserInput(requirement.to_string()),
-            state: TodoState::Understanding,
-            priority: TodoPriority::Medium,
-            task_chain: TaskChain::new(),
-            metadata: TodoMetadata::default(),
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            completed_at: None,
+    /// 生命周期: SubTask 结束即销毁
+    pub fn archive(&self) -> ArchivedWorkingMemory {
+        ArchivedWorkingMemory {
+            task_id: self.scope.clone(),
+            compressed_context: self.compress(),
+            archived_at: Utc::now(),
+        }
+    }
+
+    fn compress(&self) -> CompressedContext {
+        // 极简压缩: 只保留摘要
+        CompressedContext {
+            file_count: self.active_files.len(),
+            api_count: self.api_surface.len(),
+            failure_pattern: self.recent_failures.first().map(|f| f.pattern()),
+            invariant_count: self.invariants.len(),
+        }
+    }
+}
+```
+
+### 3.2 Discovery Phase (影子探测)
+
+```rust
+// crates/runtime/src/discovery/mod.rs
+
+/// 影子探测阶段 - Read-Only 影响分析
+/// 职责: 在动手术前先照 X 光
+
+#[derive(Debug)]
+pub struct DiscoveryPhase {
+    fs_tool: FsTool,
+    git_tool: GitTool,
+    ast_scanner: AstScanner,
+}
+
+impl DiscoveryPhase {
+    /// 执行探测
+    pub async fn execute(
+        &self,
+        task: &TaskPlan,
+    ) -> Result<ImpactReport, DiscoveryError> {
+        // 1. 只读扫描
+        let file_changes = self.scan_files(task).await?;
+        let api_surface = self.scan_apis(task).await?;
+        let git_impact = self.analyze_git_impact(task).await?;
+
+        // 2. 生成影响报告
+        let report = ImpactReport {
+            touched_files: file_changes,
+            affected_modules: self.identify_modules(&file_changes),
+            public_api_changes: api_surface,
+            test_impact: self.assess_test_impact(&file_changes),
+            volatility_risk: self.calculate_volatility_risk(&file_changes),
+            git_impact,
         };
 
-        self.todo_manager.create(&new_todo).await?;
+        // 3. 如果高风险，自动触发加强版验收
+        if report.volatility_risk.is_high() {
+            self.trigger_enhanced_acceptance(&report)?;
+        }
 
-        // 3. 通知用户
-        self.notifier.notify(&Notification {
-            kind: NotificationKind::TodoCreated,
-            title: "新需求已创建 TODO",
-            message: format!("需求已映射到 TODO: {}", new_todo.title),
-            todo_id: Some(new_todo.id),
-        }).await;
+        Ok(report)
+    }
 
-        Ok(TodoMappingResult {
-            is_new: true,
-            todo_id: new_todo.id,
-            message: "已创建新的 TODO 映射，请确认需求描述是否准确".to_string(),
-        })
+    fn calculate_volatility_risk(&self, files: &[FileRef]) -> VolatilityScore {
+        // 评估修改对核心模块的影响
+        let core_modules = ["core/", "auth/", "payment/"];
+        let touched_core = files.iter().any(|f| {
+            core_modules.iter().any(|m| f.path.starts_with(m))
+        });
+
+        VolatilityScore {
+            base: if touched_core { 0.8 } else { 0.3 },
+            file_count_factor: (files.len() as f64 / 10.0).min(0.3),
+            test_coverage_factor: if self.has_test_coverage(files) { -0.2 } else { 0.1 },
+        }
+    }
+}
+
+/// 影响报告
+#[derive(Debug, Clone)]
+pub struct ImpactReport {
+    pub touched_files: Vec<FileRef>,
+    pub affected_modules: Vec<ModuleId>,
+    pub public_api_changes: Vec<ApiSymbol>,
+    pub test_impact: TestSurface,
+    pub volatility_risk: VolatilityScore,
+    pub git_impact: GitImpact,
+}
+
+#[derive(Debug, Clone)]
+pub struct VolatilityScore {
+    pub base: f64,
+    pub file_count_factor: f64,
+    pub test_coverage_factor: f64,
+}
+
+impl VolatilityScore {
+    pub fn score(&self) -> f64 {
+        (self.base + self.file_count_factor + self.test_coverage_factor)
+            .clamp(0.0, 1.0)
+    }
+
+    pub fn is_high(&self) -> bool {
+        self.score() > 0.7
     }
 }
 ```
 
-### 4.4 任务分解服务
+### 3.3 Failure Taxonomy (失败分类)
 
 ```rust
-// crates/core/src/llm/task_decomposition.rs
+// crates/core/src/error/taxonomy.rs
 
-/// 任务分解服务 - 阶段 3
-pub struct TaskDecompositionService {
-    llm_provider: Arc<dyn LlmProvider>,
-    knowledge_base: Arc<KnowledgeBase>,
-    todo_manager: Arc<TodoManager>,
+/// 失败分类 - 理解失败，而非盲目重试
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FailureTaxonomy {
+    /// 逻辑错误
+    LogicError {
+        location: FileRef,
+        expected: String,
+        actual: String,
+    },
+
+    /// 测试缺口
+    TestGap {
+        missing_tests: Vec<TestCase>,
+        coverage_delta: f64,
+    },
+
+    /// 规格歧义
+    SpecAmbiguity {
+        ambiguous_part: String,
+        possible_interpretations: Vec<String>,
+    },
+
+    /// 决策冲突
+    DecisionConflict {
+        previous_decision: DecisionId,
+        conflicting_change: ChangeId,
+    },
+
+    /// 工具失败
+    ToolFailure {
+        tool: String,
+        error: String,
+        is_transient: bool,
+    },
+
+    /// 人类纠正 ← 新增
+    HumanCorrection {
+        reason: String,
+        violated_assumption: String,
+        generated_invariant: Invariant,
+    },
 }
 
-impl TaskDecompositionService {
-    /// 分解需求为子任务
-    pub async fn decompose(
-        &self,
-        requirement: &str,
-        todo_id: TodoId,
-        context: &UnderstandingContext,
-    ) -> Result<DecompositionResult, DecompositionError> {
-        // 1. 更新状态为 Decomposing
-        self.todo_manager
-            .update_state(todo_id, TodoState::Decomposing)
-            .await?;
-
-        // 2. 检索相关文档和代码知识
-        let knowledge = self
-            .knowledge_base
-            .retrieve_documents(requirement)
-            .await?;
-
-        // 3. LLM 分解
-        let system_prompt = self.build_decomposition_prompt(&knowledge);
-
-        let messages = vec![
-            LlmMessage {
-                role: MessageRole::System,
-                content: system_prompt,
-            },
-            LlmMessage {
-                role: MessageRole::User,
-                content: format!(
-                    "请将以下需求分解为原子子任务:\n\n{}\n\n\
-                    要求:\n\
-                    1. 每个子任务必须是独立可执行的\n\
-                    2. 每个子任务必须有明确的验收标准\n\
-                    3. 考虑任务之间的依赖关系\n\
-                    4. 参考项目文档: {}",
-                    requirement,
-                    knowledge.summarize()
-                ),
-            },
-        ];
-
-        let response = self.llm_provider.chat(&messages).await?;
-
-        // 4. 解析为 TaskChain
-        let task_chain = self.parse_task_chain(&response.content)?;
-
-        // 5. 保存到 TODO
-        self.todo_manager
-            .update_task_chain(todo_id, &task_chain)
-            .await?;
-
-        // 6. 更新状态
-        self.todo_manager
-            .update_state(todo_id, TodoState::InProgress)
-            .await?;
-
-        Ok(DecompositionResult {
-            todo_id,
-            task_chain,
-            subtask_count: task_chain.subtasks.len(),
-        })
+impl FailureTaxonomy {
+    /// 根据分类决定下一步
+    pub fn should_retry(&self) -> bool {
+        match self {
+            FailureTaxonomy::LogicError => true,
+            FailureTaxonomy::TestGap => true,
+            FailureTaxonomy::SpecAmbiguity => false,  // 需要回阶段1
+            FailureTaxonomy::DecisionConflict => false, // 需要回阶段2
+            FailureTaxonomy::ToolFailure { is_transient, .. } => *is_transient,
+            FailureTaxonomy::HumanCorrection { .. } => false, // 产生 Invariant
+        }
     }
 
-    fn build_decomposition_prompt(&self, knowledge: &KnowledgeContext) -> String {
-        format!(
-            r#"你是一个专业的技术任务分解助手。
-请将用户需求分解为原子子任务。
+    /// 返回哪个阶段
+    pub fn fallback_stage(&self) -> WorkflowStage {
+        match self {
+            FailureTaxonomy::LogicError => WorkflowStage::Execution,
+            FailureTaxonomy::TestGap => WorkflowStage::Execution,
+            FailureTaxonomy::SpecAmbiguity => WorkflowStage::Understanding,
+            FailureTaxonomy::DecisionConflict => WorkflowStage::Mapping,
+            FailureTaxonomy::ToolFailure => WorkflowStage::CurrentStep,
+            FailureTaxonomy::HumanCorrection { .. } => WorkflowStage::固化,
+        }
+    }
+}
+```
 
-项目背景:
-{}
+### 3.4 Human → Invariant → Gold Memory
 
-代码结构:
-{}
+```rust
+// crates/core/src/memory/invariant.rs
 
-分解原则:
-1. 每个子任务应该是原子性的，可独立完成
-2. 每个子任务必须有:
-   - 清晰的标题
-   - 详细的描述
-   - 明确的验收标准 (至少 3 条)
-   - 预估的复杂度 (简单/中等/复杂)
-3. 考虑文件依赖和模块依赖
-4. 遵循测试驱动开发: 每个功能任务后应跟随测试任务
+/// 不变量约束 - 人类纠正固化为系统记忆
+/// 价值: "同一个坑填过一次，永远不会再掉进去"
 
-输出格式 (JSON):
-{{
-  "subtasks": [
-    {{
-      "title": "子任务标题",
-      "description": "详细描述",
-      "acceptance_criteria": ["标准1", "标准2", "标准3"],
-      "complexity": "simple|medium|complex",
-      "estimated_steps": 3,
-      "depends_on": []
-    }}
-  ],
-  "execution_order": [[0], [1, 2], [3]]  # 可并行/串行执行
-}}
-"#,
-            knowledge.documents,
-            knowledge.code_structure
-        )
+#[derive(Debug, Clone)]
+pub struct Invariant {
+    pub id: InvariantId,
+    pub scope: InvariantScope,
+    pub rule: FormalConstraint,
+    pub source: HumanCorrection,
+    pub priority: InvariantPriority,
+    pub created_at: Timestamp,
+}
+
+#[derive(Debug, Clone)]
+pub enum InvariantScope {
+    Module(ModuleId),
+    Api(ApiSymbol),
+    Project,
+}
+
+#[derive(Debug, Clone)]
+pub enum InvariantPriority {
+    Highest,    // 人类纠正产生
+    High,       // 系统推理
+    Medium,     // LLM 建议
+}
+
+impl Invariant {
+    /// 从人类纠正生成
+    pub fn from_human_correction(
+        correction: &HumanCorrection,
+        scope: InvariantScope,
+    ) -> Self {
+        Self {
+            id: InvariantId::new(),
+            scope,
+            rule: FormalConstraint::from自然_language(&correction.violated_assumption),
+            source: correction.clone(),
+            priority: InvariantPriority::Highest,
+            created_at: Utc::now(),
+        }
+    }
+
+    /// 注入到系统
+    pub async fn inject(&self, system: &mut System) {
+        // 1. 加入 Gold Memory
+        system.knowledge_base.add_gold_memory(self).await;
+
+        // 2. 挂载到未来 WorkingMemory
+        system.working_memory_tracker.register_invariant(self);
+
+        // 3. 影响 Decomposition Validator
+        system.decomposition_validator.add_invariant_constraint(self);
+
+        // 4. 影响 ModelSelector (高风险提示)
+        system.model_selector.mark_high_risk(self.scope.clone());
+    }
+}
+```
+
+### 3.5 模型自适应调度
+
+```rust
+// crates/core/src/llm/selector.rs
+
+/// 模型选择器 - 根据任务熵动态调度
+
+#[derive(Debug)]
+pub struct TaskEntropy {
+    /// 依赖深度
+    pub dependency_depth: u8,
+
+    /// 跨模块
+    pub cross_module: bool,
+
+    /// 波动性
+    pub volatility: VolatilityScore,
+
+    /// 不变量密度
+    pub invariant_density: u8,
+}
+
+impl TaskEntropy {
+    pub fn from_task(task: &TaskPlan, context: &ExecutionContext) -> Self {
+        Self {
+            dependency_depth: task.dependencies.len() as u8,
+            cross_module: task.involves_multiple_modules(),
+            volatility: context.volatility_hint.clone(),
+            invariant_density: context.invariants.len() as u8,
+        }
+    }
+}
+
+pub struct ModelSelector {
+    providers: HashMap<String, Arc<dyn LlmProvider>>,
+}
+
+impl ModelSelector {
+    pub fn select(&self, entropy: &TaskEntropy) -> Arc<dyn LlmProvider> {
+        // 风险-熵函数
+        match entropy {
+            // 低风险: 快速便宜模型
+            e if e.volatility.score() < 0.3 && e.invariant_density > 2 => {
+                self.providers.get("fast").unwrap().clone()
+            }
+
+            // 中等风险: 均衡模型
+            e if e.volatility.score() < 0.6 && !e.cross_module => {
+                self.providers.get("balanced").unwrap().clone()
+            }
+
+            // 高风险 / 跨模块 / 违反不变量: 最强模型
+            _ => self.providers.get("strong").unwrap().clone(),
+        }
+    }
+}
+```
+
+### 3.6 任务谱系继承
+
+```rust
+// crates/core/src/todo/lineage.rs
+
+/// 任务谱系 - 工程"老兵效应"
+
+#[derive(Debug, Clone)]
+pub struct TaskLineage {
+    /// 父任务 ID
+    pub parent: Option<TaskId>,
+
+    /// 继承的不变量
+    pub inherited_invariants: Vec<InvariantRef>,
+
+    /// 继承的失败模式
+    pub inherited_failures: Vec<FailurePattern>,
+
+    /// 继承的上下文
+    pub inherited_context: Option<ArchivedWorkingMemory>,
+}
+
+impl TaskLineage {
+    /// 检查是否是新任务的后继
+    pub async fn check_successor(
+        &self,
+        new_task: &TaskPlan,
+        kb: &KnowledgeBase,
+    ) -> Option<TaskLineage> {
+        // 1. 查找父任务
+        let parent = kb.find_related_completed_task(new_task).await?;
+
+        // 2. 继承不变量
+        let invariants = kb.get_invariants_for(parent.id).await;
+
+        // 3. 继承失败模式
+        let failures = kb.get_failure_patterns_for(parent.id).await;
+
+        // 4. 继承工作记忆
+        let context = kb.get_archived_context(parent.id).await;
+
+        Some(TaskLineage {
+            parent: Some(parent.id),
+            inherited_invariants: invariants,
+            inherited_failures: failures,
+            inherited_context: context,
+        })
     }
 }
 ```
 
 ---
 
-## 5. 完整执行引擎
+## 4. 事件驱动 Workflow Engine
 
 ```rust
 // crates/runtime/src/engine/workflow_engine.rs
 
-/// NDC 工作流引擎 - 整合所有阶段
+/// 事件驱动的 Workflow Engine
+/// 特点: 不是线性阶段，而是状态+触发器
+
 pub struct NdcWorkflowEngine {
-    /// 需求理解服务
-    understanding_service: Arc<RequirementUnderstandingService>,
-
-    /// TODO 映射服务
-    mapping_service: Arc<TodoMappingService>,
-
-    /// 任务分解服务
-    decomposition_service: Arc<TaskDecompositionService>,
-
-    /// 步骤执行引擎
-    step_engine: Arc<StepExecutionEngine>,
-
-    /// 验收服务
-    acceptance_service: Arc<AcceptanceService>,
-
-    /// 文档更新服务
-    documentation_service: Arc<DocumentationService>,
-
-    /// 通知服务
-    notifier: Arc<NotificationService>,
+    state_machine: WorkflowStateMachine,
+    trigger_handler: TriggerHandler,
+    artifact_registry: ArtifactRegistry,
 }
 
 impl NdcWorkflowEngine {
-    /// 执行完整工作流
-    pub async fn execute_workflow(
-        &self,
-        user_input: &str,
-    ) -> Result<WorkflowResult, WorkflowError> {
-        // ===== 阶段 1: 理解需求 =====
-        let understanding = self
-            .understanding_service
-            .understand(user_input, &UnderstandingContext::default())
-            .await?;
-
-        // ===== 阶段 2: 检查/建立 TODO 映射 =====
-        let mapping = self
-            .mapping_service
-            .check_or_create_mapping(user_input, &understanding)
-            .await?;
-
-        // ===== 阶段 3: 分解需求 =====
-        let decomposition = self
-            .decomposition_service
-            .decompose(user_input, mapping.todo_id, &understanding.context())
-            .await?;
-
-        // ===== 阶段 4: 执行子任务 =====
-        let execution_result = self
-            .execute_subtasks(mapping.todo_id, &decomposition.task_chain)
-            .await?;
-
-        if !execution_result.all_passed {
-            return Ok(WorkflowResult {
-                todo_id: mapping.todo_id,
-                status: WorkflowStatus::Failed,
-                subtask_results: execution_result.results,
-                message: "部分子任务失败，需要人工介入".to_string(),
-            });
-        }
-
-        // ===== 阶段 5: 验收 =====
-        let acceptance = self
-            .acceptance_service
-            .accept(mapping.todo_id, &execution_result)
-            .await?;
-
-        if !acceptance.passed {
-            return Ok(WorkflowResult {
-                todo_id: mapping.todo_id,
-                status: WorkflowStatus::NeedsRevision,
-                subtask_results: execution_result.results,
-                message: acceptance.feedback,
-            });
-        }
-
-        // ===== 阶段 6: 更新文档 =====
-        let doc_changes = self
-            .documentation_service
-            .update_for_completion(mapping.todo_id, &execution_result)
-            .await?;
-
-        // ===== 阶段 7: 完成 =====
-        self.complete_workflow(mapping.todo_id).await?;
-
-        Ok(WorkflowResult {
-            todo_id: mapping.todo_id,
-            status: WorkflowStatus::Completed,
-            subtask_results: execution_result.results,
-            document_changes: doc_changes,
-            message: "需求已完成，所有文档已更新".to_string(),
-        })
-    }
-
-    async fn execute_subtasks(
-        &self,
-        todo_id: TodoId,
-        task_chain: &TaskChain,
-    ) -> Result<ExecutionResult, WorkflowError> {
-        let mut results = Vec::new();
-
-        for subtask in &task_chain.subtasks {
-            // 执行单个子任务
-            let result = self
-                .step_engine
-                .execute_subtask(todo_id, subtask)
-                .await?;
-
-            results.push(result);
-
-            // 如果失败，检查是否需要停止
-            if !result.passed && result.blocking {
-                break;
+    /// 处理工作流事件
+    pub async fn handle_event(&mut self, event: WorkflowEvent) -> Result<(), Error> {
+        match event {
+            WorkflowEvent::TaskSubmitted(input) => {
+                self.on_task_submitted(input).await
+            }
+            WorkflowEvent::StageCompleted(stage, artifact) => {
+                self.on_stage_completed(stage, artifact).await
+            }
+            WorkflowEvent::FailureOccurred(failure) => {
+                self.on_failure_occurred(failure).await
+            }
+            WorkflowEvent::HumanIntervention(decision) => {
+                self.on_human_intervention(decision).await
+            }
+            WorkflowEvent::ArtifactChanged(artifact) => {
+                self.on_artifact_changed(artifact).await
             }
         }
-
-        Ok(ExecutionResult {
-            results,
-            all_passed: results.iter().all(|r| r.passed),
-        })
     }
+}
+
+/// 触发器类型
+enum WorkflowTrigger {
+    /// 状态满足
+    StateSatisfied(StateCondition),
+
+    /// 产物变化
+    ArtifactChanged(ArtifactId),
+
+    /// 决策修订
+    DecisionRevised(DecisionId),
+
+    /// 人类介入产生 Invariant
+    InvariantCreated(Invariant),
+}
+
+/// 产物注册表
+struct ArtifactRegistry {
+    // 追踪所有 Artifacts 及其版本
+    artifacts: HashMap<ArtifactId, ArtifactVersion>,
 }
 ```
 
 ---
 
-## 6. 配置设计
+## 5. 配置设计
 
 ```yaml
-# NDC 工程配置
+# NDC 工程配置 - 工业级优化版
+
 engineering:
-  # 阶段 1: 需求理解配置
+  # 阶段 0: 谱系继承
+  lineage:
+    enabled: true
+    inherit_invariants: true
+    inherit_failures: true
+    max_context_depth: 3
+
+  # 阶段 1: 需求理解
   understanding:
-    # LLM 超时 (秒)
     timeout: 60
-    # 最小相似度阈值 (判断是否已有 TODO)
     similarity_threshold: 0.8
 
-  # 阶段 2: TODO 映射配置
-  mapping:
-    # 是否自动创建 TODO
-    auto_create: true
-    # 创建后是否通知用户确认
-    notify_on_create: true
-
-  # 阶段 3: 任务分解配置
+  # 阶段 2: 任务分解
   decomposition:
-    # 最大子任务数
     max_subtasks: 20
-    # 最小子任务数
-    min_subtasks: 1
-    # LLM 超时 (秒)
-    timeout: 120
+    enable_lint: true  # 非LLM确定性校验
+    lint_rules:
+      - no_cyclic_dependency
+      - all_verifiable
+      - no_overly_broad
 
-  # 阶段 4: 执行配置
+  # 阶段 3: 影子探测
+  discovery:
+    enabled: true
+    required_for_high_volatility: true
+    risk_threshold: 0.7
+
+  # 阶段 4: 工作记忆
+  working_memory:
+    enabled: true
+    max_recent_failures: 3
+    auto_archive: true
+
+  # 阶段 5: 执行
   execution:
-    # 步骤执行最大重试次数
     max_retries: 3
-    #     quality_g质量门禁
-ates:
+    quality_gates:
       - "cargo check"
       - "cargo test --lib"
       - "cargo clippy"
 
-  # 阶段 5: 验收配置
+  # 阶段 6: 验收
   acceptance:
-    # 是否需要人工验收
     require_human: false
-    # 自动验收阈值
-    auto_approve:
-      test_coverage_min: 0.8
-      all_tests_pass: true
+    enhanced_for_high_risk: true
+    coverage_threshold: 0.8
 
-  # 阶段 6: 文档更新配置
-  documentation:
-    # 自动更新文档
-    auto_update: true
-    # 需要更新的文档类型
-    update_types:
-      - "README"
-      - "API_DOCS"
-      - "CHANGELOG"
+  # 阶段 7: 失败归因
+  failure_handling:
+    enable_taxonomy: true
+    human_to_invariant: true
+    invariant_priority: "highest"
 
-  # 阶段 7: 通知配置
-  notification:
-    # 完成时通知
-    notify_on_complete: true
-    # 失败时通知
-    notify_on_failure: true
-
-# LLM 配置
+# LLM 配置 - 模型自适应
 llm:
-  provider: "openai"
-  model: "gpt-4o"
-  temperature: 0.1
+  providers:
+    fast:
+      type: "gemini-flash"
+      cost_per_token: 0.0001
+    balanced:
+      type: "gpt-4o-mini"
+      cost_per_token: 0.0005
+    strong:
+      type: "gpt-4o"
+      cost_per_token: 0.005
 
-# 知识库配置
-knowledge:
-  # 文档路径
-  paths:
-    - "docs/"
-    - "README.md"
-    - "ARCHITECTURE.md"
-  # 排除路径
-  exclude:
-    - "target/"
-    - "*.log"
+  selector:
+    default_strategy: "risk-adjusted"
+    fallback_provider: "balanced"
 ```
 
 ---
 
-## 7. 状态流转总结表
+## 6. 状态流转总结
 
-| 阶段 | TodoState | 触发条件 | 后续动作 |
-|------|-----------|---------|---------|
-| 1 | Pending | 用户输入需求 | 进入 Understanding |
-| 2 | Understanding | 需求已理解 | 检查/建立 TODO 映射 |
-| 3 | Decomposing | TODO 已映射 | LLM 分解为子任务 |
-| 4 | InProgress | 分解完成 | 执行子任务 |
-| 5 | AwaitingAcceptance | 子任务完成 | 验收检查 |
-| 6 | Documenting | 验收通过 | 更新文档 |
-| 7 | Completed | 文档更新完成 | 通知用户 |
+| 阶段 | 名称 | 触发条件 | 关键产物 | 新增特性 |
+|------|------|---------|---------|---------|
+| 0 | 谱系继承 | 新任务开始 | InheritedContext | ✅ |
+| 1 | 理解需求 | 任务提交 | RequirementContext | - |
+| 2 | 分解需求 | 理解完成 | TaskChain + DecompositionLint | ✅ 非LLM校验 |
+| 3 | 影子探测 | 高Volatility | ImpactReport | ✅ Read-only |
+| 4 | 工作记忆 | 探测完成 | WorkingMemory | ✅ 精简上下文 |
+| 5 | 执行开发 | 记忆生成 | ExecutionResult | - |
+| 6 | 验收 | 执行完成 | AcceptanceResult | 加强版验收 |
+| 7 | 失败归因 | 验收失败 | Invariant + Postmortem | ✅ Human→Gold |
+| 8 | 更新文档 | 验收通过 | DocumentChanges | Fact/Narrative |
+| 9 | 完成 | 文档更新 | CompletionReport | 谱系更新 |
 
 ---
 
-## 8. 核心优势
+## 7. 实施优先级建议
 
-1. **知识驱动** - 每个决策都基于知识库
-2. **TODO 映射** - 需求可追溯，避免重复
-3. **原子分解** - 子任务独立可执行
-4. **强制质量** - 质量门禁贯穿始终
-5. **文档同步** - 代码变更驱动文档更新
-6. **用户闭环** - 完成通知形成闭环
+### 第一刀：Discovery Phase (影子探测)
+理由：
+- Working Memory 的前置条件
+- 风险控制第一道闸
+- 工程收益立竿见影
+
+### 第二刀：Working Memory + ContextSummarizer
+
+### 第三刀：Human → Invariant → Gold Memory
+
+---
+
+## 8. 核心优势总结
+
+| 维度 | 优化前 | 优化后 | 核心技术 |
+|------|-------|-------|---------|
+| **记忆** | 全量RAG | 动态Working Memory | 上下文剪裁 |
+| **错误** | 简单重试 | Failure Taxonomy | 分类→策略 |
+| **人类** | 阻塞处理 | Gold Memory | Invariant |
+| **执行** | 直接修改 | 影子探测+影响分析 | Read-only |
+| **资源** | 单一模型 | 自适应调度 | 路由算法 |
+| **复用** | 孤立任务 | 谱系继承 | 知识传递 |
+
+---
+
+> **一句话总结**: NDC 已从"工程控制系统"进化到"工业级自治系统"——具备理解失败、记住教训、自动进化能力。
