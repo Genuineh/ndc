@@ -55,6 +55,9 @@ pub use grep_tool::GrepTool;
 pub mod glob_tool;
 pub use glob_tool::GlobTool;
 
+pub mod permission;
+pub use permission::{PermissionSystem, PermissionRequest, PermissionResponse, PermissionConfig, PermissionError, PermissionType, DangerLevel, PermissionSystemBuilder};
+
 #[cfg(test)]
 mod tests {
     use super::*;

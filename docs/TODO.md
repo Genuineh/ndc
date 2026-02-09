@@ -585,7 +585,7 @@ async fn edit_and_check(file_path: &str, old: &str, new: &str) -> EditResult {
 - [x] Tool trait 定义 (crates/runtime/src/tools/mod.rs) - 已有
 - [x] Tool Registry (crates/runtime/src/tools/registry.rs) - 工具注册表 + 分类 + 统计
 - [x] JSON Schema 定义 (crates/runtime/src/tools/schema.rs) - Schema 构建器 + 验证器
-- [ ] 权限系统集成 - 待实现
+- [x] 权限系统集成 - Permission System (权限确认 + 危险操作检查)
 
 **P4.1 测试覆盖**: 22/22 通过
 - Schema 测试: 11/11 通过
@@ -594,6 +594,7 @@ async fn edit_and_check(file_path: &str, old: &str, new: &str) -> EditResult {
 **实现文件**:
 - crates/runtime/src/tools/registry.rs (ToolRegistry, ToolMetadata, RegistrySummary, PredefinedCategories)
 - crates/runtime/src/tools/schema.rs (JsonSchema, JsonSchemaProperty, ToolSchemaBuilder, SchemaValidator)
+- crates/runtime/src/tools/permission.rs (PermissionSystem, 危险操作检查)
 
 #### P4.2 核心工具 - ✅ 已完成
 - [x] list (目录列表)
@@ -618,16 +619,6 @@ async fn edit_and_check(file_path: &str, old: &str, new: &str) -> EditResult {
 - crates/runtime/src/tools/edit_tool.rs (EditTool)
 - crates/runtime/src/tools/grep_tool.rs (GrepTool)
 - crates/runtime/src/tools/glob_tool.rs (GlobTool)
-
-#### P4.2 核心工具
-- [ ] list (目录列表)
-- [ ] read (文件读取)
-- [ ] write (文件写入)
-- [ ] edit (智能编辑)
-- [ ] apply_patch (Patch 应用)
-- [ ] grep (内容搜索)
-- [ ] glob (文件匹配)
-- [ ] bash (Shell 执行)
 
 #### P4.3 增强功能
 - [ ] Bash 命令解析 (tree-sitter)
