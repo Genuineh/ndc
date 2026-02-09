@@ -36,6 +36,25 @@ pub use git::GitTool;
 pub mod shell;
 pub use shell::ShellTool;
 
+// P4.2 Core Tools
+pub mod list_tool;
+pub use list_tool::ListTool;
+
+pub mod read_tool;
+pub use read_tool::ReadTool;
+
+pub mod write_tool;
+pub use write_tool::WriteTool;
+
+pub mod edit_tool;
+pub use edit_tool::EditTool;
+
+pub mod grep_tool;
+pub use grep_tool::GrepTool;
+
+pub mod glob_tool;
+pub use glob_tool::GlobTool;
+
 #[cfg(test)]
 mod tests {
     use super::*;

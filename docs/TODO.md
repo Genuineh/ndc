@@ -595,6 +595,30 @@ async fn edit_and_check(file_path: &str, old: &str, new: &str) -> EditResult {
 - crates/runtime/src/tools/registry.rs (ToolRegistry, ToolMetadata, RegistrySummary, PredefinedCategories)
 - crates/runtime/src/tools/schema.rs (JsonSchema, JsonSchemaProperty, ToolSchemaBuilder, SchemaValidator)
 
+#### P4.2 核心工具 - ✅ 已完成
+- [x] list (目录列表)
+- [x] read (文件读取)
+- [x] write (文件写入)
+- [x] edit (智能编辑) - 多策略匹配
+- [x] grep (内容搜索)
+- [x] glob (文件匹配)
+
+**P4.2 测试覆盖**: 36/36 通过
+- ListTool: 4/4 测试通过
+- ReadTool: 6/6 测试通过
+- WriteTool: 7/7 测试通过
+- EditTool: 5/5 测试通过
+- GrepTool: 8/8 测试通过
+- GlobTool: 6/6 测试通过
+
+**实现文件**:
+- crates/runtime/src/tools/list_tool.rs (ListTool)
+- crates/runtime/src/tools/read_tool.rs (ReadTool)
+- crates/runtime/src/tools/write_tool.rs (WriteTool)
+- crates/runtime/src/tools/edit_tool.rs (EditTool)
+- crates/runtime/src/tools/grep_tool.rs (GrepTool)
+- crates/runtime/src/tools/glob_tool.rs (GlobTool)
+
 #### P4.2 核心工具
 - [ ] list (目录列表)
 - [ ] read (文件读取)
