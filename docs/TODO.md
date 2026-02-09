@@ -78,18 +78,18 @@ ndc/
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ 组件                     │ 文件                          │ 优先级       │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ Working Memory           │ memory/working_memory.rs     │ P2           │
+│ Working Memory           │ memory/working_memory.rs     │ P2 ✅ DONE  │
 │ Discovery Phase          │ discovery/mod.rs             │ P1 ✅ DONE  │
 │ Failure Taxonomy        │ error/taxonomy.rs            │ P2           │
 │ Invariant (Gold Memory) │ memory/invariant.rs          │ P3           │
 │ Model Selector           │ llm/selector.rs             │ P3           │
-│ Task Lineage            │ todo/lineage.rs              │ P2           │
+│ Task Lineage            │ todo/lineage.rs              │ P2 ✅ DONE  │
 │ Event-Driven Engine     │ engine/mod.rs               │ P2           │
-│ Decomposition Lint      │ llm/decomposition/lint.rs    │ P2           │
+│ Decomposition Lint      │ llm/decomposition/lint.rs    │ P2 ✅ DONE  │
 └─────────────────────────────────────────────────────────────────────────────┘
 
 P1 = 第一刀 (Discovery Phase) - ✅ 已验收通过 (ec499ab)
-P2 = 第二刀 (Working Memory + Saga)
+P2 = 第二刀 (Working Memory + Saga) - ✅ 已完成
 P3 = 第三刀 (Invariant + Telemetry)
 ```
 
@@ -300,14 +300,16 @@ cargo build
 - [x] Hard Constraints 生成
 - [x] Read-only Tool 限制
 
-### 中期 (P2) - 进行中
+### 中期 (P2) - ✅ 已完成
 - [x] Working Memory 设计 (crates/core/src/memory/working_memory.rs)
 - [x] Saga Pattern 实现 (crates/runtime/src/execution/mod.rs)
-- [ ] Task Lineage 继承 (todo/lineage.rs)
-- [ ] Decomposition Lint (llm/decomposition/lint.rs)
+- [x] Task Lineage 继承 (todo/lineage.rs)
+- [x] Decomposition Lint (llm/decomposition/lint.rs)
 
 **Working Memory 测试**: 5/5 通过
 **Saga Pattern 测试**: 7/7 通过
+**Lineage 测试**: 5/5 通过
+**Decomposition Lint 测试**: 5/5 通过
 
 **实现文件**:
 - crates/core/src/memory/working_memory.rs (WorkingMemory, AbstractHistory, LlmContext)
@@ -320,5 +322,5 @@ cargo build
 
 ---
 
-最后更新: 2026-02-09 (P2 进行中 - Working Memory + Saga Pattern 已完成)
-标签: #ndc #llm #industrial-grade #autonomous #p1-complete #p2-progress
+最后更新: 2026-02-09 (P2 已完成 - Working Memory + Saga Pattern + Task Lineage + Decomposition Lint)
+标签: #ndc #llm #industrial-grade #autonomous #p1-complete #p2-complete

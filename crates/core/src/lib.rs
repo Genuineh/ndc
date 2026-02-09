@@ -5,18 +5,24 @@
 //! - Intent/Verdict: 决策引擎类型
 //! - Agent: 角色与权限
 //! - Memory: 记忆与稳定性
+//! - TODO: 任务追踪
+//! - LLM: 集成与分解
 
 mod task;
 mod intent;
 mod agent;
 mod memory;
 mod config;
+mod todo;
+mod llm;
 
 pub use task::*;
 pub use intent::*;
 pub use agent::*;
 pub use memory::*;
 pub use config::*;
+pub use todo::*;
+pub use llm::*;
 
 // Re-export commonly used types to avoid conflicts
 pub use agent::AgentId;
