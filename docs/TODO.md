@@ -80,17 +80,17 @@ ndc/
 ├─────────────────────────────────────────────────────────────────────────────┤
 │ Working Memory           │ memory/working_memory.rs     │ P2 ✅ DONE  │
 │ Discovery Phase          │ discovery/mod.rs             │ P1 ✅ DONE  │
-│ Failure Taxonomy        │ error/taxonomy.rs            │ P2           │
-│ Invariant (Gold Memory) │ memory/invariant.rs          │ P3           │
-│ Model Selector           │ llm/selector.rs             │ P3           │
+│ Failure Taxonomy        │ error/taxonomy.rs            │ P2 ✅ DONE  │
+│ Invariant (Gold Memory) │ memory/invariant.rs          │ P3 ✅ DONE  │
+│ Model Selector           │ llm/selector.rs             │ P3 ✅ DONE  │
 │ Task Lineage            │ todo/lineage.rs              │ P2 ✅ DONE  │
-│ Event-Driven Engine     │ engine/mod.rs               │ P2           │
+│ Event-Driven Engine     │ engine/mod.rs               │ P3 ✅ DONE  │
 │ Decomposition Lint      │ llm/decomposition/lint.rs    │ P2 ✅ DONE  │
 └─────────────────────────────────────────────────────────────────────────────┘
 
 P1 = 第一刀 (Discovery Phase) - ✅ 已验收通过 (ec499ab)
 P2 = 第二刀 (Working Memory + Saga) - ✅ 已完成
-P3 = 第三刀 (Invariant + Telemetry)
+P3 = 第三刀 (Invariant + Telemetry) - ✅ 已完成
 ```
 
 ---
@@ -315,12 +315,22 @@ cargo build
 - crates/core/src/memory/working_memory.rs (WorkingMemory, AbstractHistory, LlmContext)
 - crates/runtime/src/execution/mod.rs (SagaPlan, SagaStep, UndoAction, CompensationAction)
 
-### 长期 (P3)
-- [ ] Invariant Gold Memory (memory/invariant.rs)
-- [ ] Model Selector (llm/selector.rs)
-- [ ] Event-Driven Engine (engine/mod.rs)
+### 长期 (P3) - ✅ 已完成
+- [x] Invariant Gold Memory (memory/invariant.rs)
+- [x] Model Selector (llm/selector.rs)
+- [x] Event-Driven Engine (engine/mod.rs)
+
+**P3 测试覆盖**: 20/20 通过
+- Invariant Gold Memory: 7/7 测试通过
+- Model Selector: 9/9 测试通过
+- Event-Driven Engine: 8/8 测试通过
+
+**实现文件**:
+- crates/core/src/memory/invariant.rs (GoldMemory, GoldInvariant, GoldMemoryService)
+- crates/core/src/llm/selector.rs (ModelSelector, TaskCharacteristics, LlmProvider)
+- crates/runtime/src/engine/mod.rs (EventEngine, EventEmitter, Workflow)
 
 ---
 
-最后更新: 2026-02-09 (P2 已完成 - Working Memory + Saga Pattern + Task Lineage + Decomposition Lint)
-标签: #ndc #llm #industrial-grade #autonomous #p1-complete #p2-complete
+最后更新: 2026-02-09 (P3 已完成 - Invariant Gold Memory + Model Selector + Event-Driven Engine)
+标签: #ndc #llm #industrial-grade #autonomous #p1-complete #p2-complete #p3-complete

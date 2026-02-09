@@ -18,6 +18,7 @@ pub mod workflow;
 pub mod executor;
 pub mod discovery;
 pub mod execution;
+pub mod engine;
 
 pub use tools::{Tool, ToolResult, ToolError, ToolManager, ToolContext};
 pub use verify::QualityGateRunner;
@@ -49,4 +50,17 @@ pub use execution::{
     StepStatus,
     RollbackError,
     SagaSummary,
+};
+pub use engine::{
+    EventEngine,
+    EventEmitter,
+    Event,
+    EventType,
+    EventId,
+    EventData,
+    EventListener,
+    Workflow,
+    WorkflowState,
+    TransitionError,
+    EventEngineSummary,
 };

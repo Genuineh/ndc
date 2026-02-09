@@ -1,8 +1,10 @@
 //! Memory types and stability levels
 
 mod working_memory;
+mod invariant;
 
 pub use working_memory::*;
+pub use invariant::*;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
