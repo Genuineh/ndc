@@ -79,7 +79,7 @@ ndc/
 │ 组件                     │ 文件                          │ 优先级       │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │ Working Memory           │ memory/working_memory.rs     │ P2           │
-│ Discovery Phase          │ discovery/mod.rs             │ P1 ⭐       │
+│ Discovery Phase          │ discovery/mod.rs             │ P1 ⭐ DONE  │
 │ Failure Taxonomy        │ error/taxonomy.rs            │ P2           │
 │ Invariant (Gold Memory) │ memory/invariant.rs          │ P3           │
 │ Model Selector           │ llm/selector.rs             │ P3           │
@@ -88,7 +88,7 @@ ndc/
 │ Decomposition Lint      │ llm/decomposition/lint.rs    │ P2           │
 └─────────────────────────────────────────────────────────────────────────────┘
 
-P1 = 第一刀 (Discovery Phase)
+P1 = 第一刀 (Discovery Phase) - ✅ 已完成
 P2 = 第二刀
 P3 = 第三刀
 ```
@@ -276,22 +276,25 @@ cargo build
 
 ## 下一步工作
 
-### 短期 (P1)
-- [ ] Discovery Phase 实现
-- [ ] ImpactReport 结构
-- [ ] VolatilityScore 计算
+### 短期 (P1) - ✅ 已完成
+- [x] Discovery Phase 实现 (crates/runtime/src/discovery/)
+- [x] ImpactReport 结构 (impact_report.rs)
+- [x] VolatilityScore 计算 (heatmap.rs)
+- [x] Hard Constraints 生成
+- [x] Read-only Tool 限制
 
 ### 中期 (P2)
-- [ ] Working Memory 设计
-- [ ] Task Lineage 继承
-- [ ] Decomposition Lint
+- [ ] Working Memory 设计 (memory/working_memory.rs)
+- [ ] Task Lineage 继承 (todo/lineage.rs)
+- [ ] Decomposition Lint (llm/decomposition/lint.rs)
+- [ ] Saga Pattern 实现
 
 ### 长期 (P3)
-- [ ] Invariant Gold Memory
-- [ ] Model Selector
-- [ ] Event-Driven Engine
+- [ ] Invariant Gold Memory (memory/invariant.rs)
+- [ ] Model Selector (llm/selector.rs)
+- [ ] Event-Driven Engine (engine/mod.rs)
 
 ---
 
-最后更新: 2026-02-06 (LLM 集成 - 工业级自治系统)
+最后更新: 2026-02-09 (Discovery Phase P1 完成)
 标签: #ndc #llm #industrial-grade #autonomous

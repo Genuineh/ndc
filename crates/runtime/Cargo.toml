@@ -7,7 +7,7 @@ authors = ["Jerry"]
 
 [features]
 default = []
-sqlite = ["rusqlite", "uuid"]
+sqlite = ["rusqlite"]
 
 [dependencies]
 # Async runtime
@@ -29,6 +29,7 @@ tracing-subscriber = "0.3"
 
 # ID generation
 ulid = { version = "1", features = ["serde"] }
+uuid = { version = "1", features = ["serde"] }
 
 # Time
 chrono = { version = "0.4", features = ["serde"] }
@@ -39,7 +40,6 @@ ndc-decision = { path = "../decision" }
 
 # SQLite (optional)
 rusqlite = { version = "0.32", optional = true, features = ["bundled"] }
-uuid = { version = "1", optional = true, features = ["serde"] }
 
 [dev-dependencies]
 tempfile = "3"
