@@ -8,7 +8,7 @@
 ndc/
 ├── core/              # [核心] 统一模型 + LLM Provider + TODO 管理 + Memory ✅
 ├── decision/          # [大脑] 决策引擎 ✅ 已完成
-├── runtime/           # [身体] 执行与验证 + Workflow Engine ⏳
+├── runtime/           # [身体] 执行与验证 + Workflow + Discovery ⏳
 └── interface/         # [触觉] 交互层 (CLI + REPL + Daemon) ✅ 已完成
 ```
 
@@ -64,10 +64,10 @@ ndc/
 1. 理解需求 → 检索知识库 + 检查 TODO
 2. 建立映射 → 关联/创建总 TODO
 3. 分解任务 → LLM 分解 + 非LLM确定性校验
-4. 影子探测 → Read-Only 影响分析 ← 新增
-5. 工作记忆 → 精简上下文 ← 新增
+4. 影子探测 → Read-Only 影响分析 ← ✅ P1 已完成
+5. 工作记忆 → 精简上下文 ← P2
 6. 执行开发 → 质量门禁 + 重来机制
-7. 失败归因 → Human Correction → Invariant ← 新增
+7. 失败归因 → Human Correction → Invariant ← P3
 8. 更新文档 → Fact/Narrative
 9. 完成 → 谱系更新
 ```
@@ -79,7 +79,7 @@ ndc/
 │ 组件                     │ 文件                          │ 优先级       │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │ Working Memory           │ memory/working_memory.rs     │ P2           │
-│ Discovery Phase          │ discovery/mod.rs             │ P1 ⭐ DONE  │
+│ Discovery Phase          │ discovery/mod.rs             │ P1 ✅ DONE  │
 │ Failure Taxonomy        │ error/taxonomy.rs            │ P2           │
 │ Invariant (Gold Memory) │ memory/invariant.rs          │ P3           │
 │ Model Selector           │ llm/selector.rs             │ P3           │
@@ -88,9 +88,9 @@ ndc/
 │ Decomposition Lint      │ llm/decomposition/lint.rs    │ P2           │
 └─────────────────────────────────────────────────────────────────────────────┘
 
-P1 = 第一刀 (Discovery Phase) - ✅ 已完成
-P2 = 第二刀
-P3 = 第三刀
+P1 = 第一刀 (Discovery Phase) - ✅ 已验收通过 (ec499ab)
+P2 = 第二刀 (Working Memory + Saga)
+P3 = 第三刀 (Invariant + Telemetry)
 ```
 
 ---
@@ -111,8 +111,7 @@ crates/core/src/
 │   │   ├── mod.rs          # 分解服务
 │   │   ├── planner.rs      # 任务规划
 │   │   └── lint.rs         # 非LLM校验 ⭐
-│   ├── selector.rs          # 模型自适应 ⭐
-│   └── discovery.rs         # 影子探测 ⭐
+│   └── selector.rs          # 模型自适应 ⭐
 │
 ├── todo/
 │   ├── mod.rs              # TODO 模块
@@ -137,8 +136,11 @@ crates/runtime/src/
 │   ├── execution.rs        # 执行引擎
 │   └── acceptance.rs       # 验收
 │
-├── discovery/
-│   └── mod.rs              # 影子探测 ⭐
+├── discovery/              # ✅ P1 已完成
+│   ├── mod.rs              # DiscoveryService
+│   ├── heatmap.rs          # VolatilityHeatmap
+│   ├── hard_constraints.rs  # HardConstraints
+│   └── impact_report.rs    # ImpactReport
 │
 └── documentation/
     └── updater.rs         # 文档更新
@@ -148,12 +150,12 @@ crates/runtime/src/
 
 ## 实施优先级
 
-### ⭐ 第一刀：Discovery Phase (影子探测)
+### ⭐ 第一刀：Discovery Phase (影子探测) ✅ 已验收通过
 
 ```
 职责: 在动手前先照 X 光
 触发: 高 Volatility 模块
-产物: ImpactReport
+产物: ImpactReport + HardConstraints
 
 核心约束:
 - 只读扫描 (fs read / grep / ls)
@@ -167,10 +169,22 @@ discovery:
 ```
 
 **验收标准**:
-- [ ] ImpactReport 结构
-- [ ] VolatilityScore 计算
-- [ ] Read-only Tool 限制
-- [ ] 触发加强验收逻辑
+- [x] ImpactReport 结构 (impact_report.rs:ImpactReport)
+- [x] VolatilityScore 计算 (heatmap.rs:VolatilityHeatmap)
+- [x] Hard Constraints 生成 (hard_constraints.rs:HardConstraints)
+- [x] 强制回归测试注入 (hard_constraints.rs:RegressionTest)
+- [x] 隐性耦合检测 (hard_constraints.rs:CouplingWarning)
+- [x] 触发加强验收逻辑 (mod.rs:should_generate_constraints)
+
+**测试覆盖**: 15/15 通过
+
+**实现文件**:
+- crates/runtime/src/discovery/mod.rs (DiscoveryService)
+- crates/runtime/src/discovery/heatmap.rs (VolatilityHeatmap)
+- crates/runtime/src/discovery/hard_constraints.rs (HardConstraints)
+- crates/runtime/src/discovery/impact_report.rs (ImpactReport)
+
+**提交**: ec499ab feat: 实现 Discovery Phase (P1) - 波动热力图 + 硬约束
 
 ---
 
@@ -296,5 +310,5 @@ cargo build
 
 ---
 
-最后更新: 2026-02-09 (Discovery Phase P1 完成)
-标签: #ndc #llm #industrial-grade #autonomous
+最后更新: 2026-02-09 (Discovery Phase P1 已验收通过)
+标签: #ndc #llm #industrial-grade #autonomous #p1-complete
