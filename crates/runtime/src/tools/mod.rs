@@ -5,9 +5,27 @@
 //! - Safe Git operations
 //! - Safe Shell command execution
 //! - All operations validated and logged
+//!
+//! Architecture:
+//! - Tool trait: Unified interface for all tools
+//! - ToolRegistry: Dynamic tool registration and management
+//! - JSON Schema: LLM-friendly parameter definitions
 
 mod trait_mod;
 pub use trait_mod::{Tool, ToolResult, ToolError, ToolContext, ToolManager, ToolMetadata};
+
+pub mod schema;
+pub use schema::{
+    JsonSchema,
+    JsonSchemaProperty,
+    ToolSchemaBuilder,
+    SchemaValidator,
+    ValidationResult,
+    generate_tool_description,
+};
+
+pub mod registry;
+pub use registry::{ToolRegistry, ToolMetadata as RegistryToolMetadata, RegistrySummary, PredefinedCategories};
 
 pub mod fs;
 pub use fs::FsTool;

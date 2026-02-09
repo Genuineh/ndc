@@ -581,11 +581,19 @@ async fn edit_and_check(file_path: &str, old: &str, new: &str) -> EditResult {
 
 ### 实施计划
 
-#### P4.1 基础设施
-- [ ] Tool trait 定义 (crates/runtime/src/tools/mod.rs)
-- [ ] Tool Registry (crates/runtime/src/tools/registry.rs)
-- [ ] JSON Schema 定义 (crates/runtime/src/tools/schema.rs)
-- [ ] 权限系统集成
+#### P4.1 基础设施 - ✅ 已完成
+- [x] Tool trait 定义 (crates/runtime/src/tools/mod.rs) - 已有
+- [x] Tool Registry (crates/runtime/src/tools/registry.rs) - 工具注册表 + 分类 + 统计
+- [x] JSON Schema 定义 (crates/runtime/src/tools/schema.rs) - Schema 构建器 + 验证器
+- [ ] 权限系统集成 - 待实现
+
+**P4.1 测试覆盖**: 22/22 通过
+- Schema 测试: 11/11 通过
+- Registry 测试: 11/11 通过
+
+**实现文件**:
+- crates/runtime/src/tools/registry.rs (ToolRegistry, ToolMetadata, RegistrySummary, PredefinedCategories)
+- crates/runtime/src/tools/schema.rs (JsonSchema, JsonSchemaProperty, ToolSchemaBuilder, SchemaValidator)
 
 #### P4.2 核心工具
 - [ ] list (目录列表)
