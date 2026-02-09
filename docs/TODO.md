@@ -120,11 +120,11 @@ crates/core/src/
 │   ├── mapping_service.rs   # 映射服务
 │   └── lineage.rs          # 谱系继承 ⭐
 │
-├── memory/
+├── memory/                 # ✅ P2 Working Memory 已完成
 │   ├── mod.rs
 │   ├── knowledge_base.rs    # 知识库
-│   ├── working_memory.rs   # 工作记忆 ⭐
-│   └── invariant.rs        # Gold Memory ⭐
+│   ├── working_memory.rs   # WorkingMemory ⭐
+│   └── invariant.rs        # Gold Memory ⭐ P3
 │
 └── error/
     └── taxonomy.rs         # 失败分类 ⭐
@@ -141,6 +141,9 @@ crates/runtime/src/
 │   ├── heatmap.rs          # VolatilityHeatmap
 │   ├── hard_constraints.rs  # HardConstraints
 │   └── impact_report.rs    # ImpactReport
+│
+├── execution/              # ✅ P2 Saga Pattern 已完成
+│   └── mod.rs              # SagaPlan, UndoAction
 │
 └── documentation/
     └── updater.rs         # 文档更新
@@ -297,11 +300,18 @@ cargo build
 - [x] Hard Constraints 生成
 - [x] Read-only Tool 限制
 
-### 中期 (P2)
-- [ ] Working Memory 设计 (memory/working_memory.rs)
+### 中期 (P2) - 进行中
+- [x] Working Memory 设计 (crates/core/src/memory/working_memory.rs)
+- [x] Saga Pattern 实现 (crates/runtime/src/execution/mod.rs)
 - [ ] Task Lineage 继承 (todo/lineage.rs)
 - [ ] Decomposition Lint (llm/decomposition/lint.rs)
-- [ ] Saga Pattern 实现
+
+**Working Memory 测试**: 5/5 通过
+**Saga Pattern 测试**: 7/7 通过
+
+**实现文件**:
+- crates/core/src/memory/working_memory.rs (WorkingMemory, AbstractHistory, LlmContext)
+- crates/runtime/src/execution/mod.rs (SagaPlan, SagaStep, UndoAction, CompensationAction)
 
 ### 长期 (P3)
 - [ ] Invariant Gold Memory (memory/invariant.rs)
@@ -310,5 +320,5 @@ cargo build
 
 ---
 
-最后更新: 2026-02-09 (Discovery Phase P1 已验收通过)
-标签: #ndc #llm #industrial-grade #autonomous #p1-complete
+最后更新: 2026-02-09 (P2 进行中 - Working Memory + Saga Pattern 已完成)
+标签: #ndc #llm #industrial-grade #autonomous #p1-complete #p2-progress

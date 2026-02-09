@@ -1,5 +1,9 @@
 //! Memory types and stability levels
 
+mod working_memory;
+
+pub use working_memory::*;
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use chrono::{DateTime, Utc};

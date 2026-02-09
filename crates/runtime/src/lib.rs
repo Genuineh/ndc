@@ -7,6 +7,7 @@
 //! - Workflow management
 //! - Storage
 //! - Discovery phase (impact analysis, volatility heatmap, hard constraints)
+//! - Saga Pattern (rollback support)
 
 pub mod tools;
 pub mod verify;
@@ -16,6 +17,7 @@ pub mod storage_sqlite;
 pub mod workflow;
 pub mod executor;
 pub mod discovery;
+pub mod execution;
 
 pub use tools::{Tool, ToolResult, ToolError, ToolManager, ToolContext};
 pub use verify::QualityGateRunner;
@@ -36,4 +38,15 @@ pub use discovery::{
     ImpactReport,
     ImpactScope,
     Complexity,
+};
+pub use execution::{
+    SagaPlan,
+    SagaStep,
+    SagaId,
+    StepId,
+    UndoAction,
+    CompensationAction,
+    StepStatus,
+    RollbackError,
+    SagaSummary,
 };
