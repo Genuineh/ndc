@@ -70,6 +70,18 @@ pub use webfetch::WebFetchTool;
 pub mod websearch;
 pub use websearch::WebSearchTool;
 
+// P4.3 Bash Parsing
+pub mod bash_parsing;
+pub use bash_parsing::{
+    BashParser,
+    BashPermissionRequest,
+    ParsedBashCommand,
+    CommandType,
+    FileOperation,
+    FileOpType,
+    BashDangerLevel,
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;

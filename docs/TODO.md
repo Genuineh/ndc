@@ -623,15 +623,17 @@ async fn edit_and_check(file_path: &str, old: &str, new: &str) -> EditResult {
 #### P4.3 增强功能 - ✅ 已完成
 - [x] 输出截断与磁盘保存 - 大输出自动截断并保存到磁盘
 - [x] LSP 诊断集成 - rust-analyzer/eslint/pyright 支持
-- [x] Shell 命令白名单 - 简化命令白名单模式
+- [x] Bash 命令解析 - 命令解析 + 危险模式检测 + 文件操作提取
 
-**P4.3 测试覆盖**: 10/10 通过
+**P4.3 测试覆盖**: 29/29 通过
 - OutputTruncator: 5/5 测试通过
 - LspDiagnostics: 5/5 测试通过
+- BashParser: 19/19 测试通过
 
 **实现文件**:
 - crates/runtime/src/tools/output_truncation.rs (OutputTruncator, TruncatedOutput)
 - crates/runtime/src/tools/lsp.rs (LspClient, LspDiagnostics, Diagnostic)
+- crates/runtime/src/tools/bash_parsing.rs (BashParser, FileOperation, BashDangerLevel)
 
 #### P4.4 高级工具 - ✅ 已完成
 - [x] webfetch (HTTP 获取) - GET/POST/PUT/DELETE 支持
@@ -648,10 +650,10 @@ async fn edit_and_check(file_path: &str, old: &str, new: &str) -> EditResult {
 - crates/runtime/src/tools/webfetch.rs (WebFetchTool)
 - crates/runtime/src/tools/websearch.rs (WebSearchTool)
 
-**P4 Tool System 总测试覆盖**: 288/288 通过
+**P4 Tool System 总测试覆盖**: 307/307 通过
 - P4.1 基础设施: 22/22 (Schema + Registry)
 - P4.2 核心工具: 36/36 (list/read/write/edit/grep/glob)
-- P4.3 增强功能: 10/10 (OutputTruncation + LSP)
+- P4.3 增强功能: 29/29 (OutputTruncation + LSP + BashParsing)
 - P4.4 高级工具: 7/7 (webfetch + websearch)
 - 其他工具测试: 213/213 (fs/shell/git等)
 
@@ -662,6 +664,7 @@ async fn edit_and_check(file_path: &str, old: &str, new: &str) -> EditResult {
 - [x] 危险操作前请求权限
 - [x] 大输出自动截断并保存
 - [x] webfetch/websearch 工具可用
+- [x] Bash 命令解析 - 危险命令自动识别
 
 ### 测试覆盖
 
@@ -669,10 +672,10 @@ async fn edit_and_check(file_path: &str, old: &str, new: &str) -> EditResult {
 - [x] 智能编辑匹配测试
 - [x] 权限系统测试
 - [x] 输出截断测试
+- [x] Bash 命令解析测试
 - [x] 端到端工具调用测试
 
 ### 待实现功能
-- [ ] Bash 命令解析 (tree-sitter) - P4.3 待完成
 - [ ] 文件锁定 (File locking)
 
 ---
