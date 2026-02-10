@@ -8,7 +8,7 @@
 ndc/
 ├── core/              # [核心] 统一模型 + LLM Provider + TODO 管理 + Memory ✅
 ├── decision/          # [大脑] 决策引擎 ✅ 已完成
-├── runtime/           # [身体] 执行与验证 + Workflow + Discovery ⏳
+├── runtime/           # [身体] 执行与验证 + Tool System + MCP ✅ 已完成
 └── interface/         # [触觉] 交互层 (CLI + REPL + Daemon) ✅ 已完成
 ```
 
@@ -144,11 +144,9 @@ crates/runtime/src/
 │   ├── web/               # 网络工具 (webfetch/websearch)
 │   └── git/               # Git 工具
 
-├── mcp/                    # ⏳ P5 MCP 集成 (Rust)
-│   ├── mod.rs             # MCP 主模块
-│   ├── client.rs          # MCP Client
-│   ├── transport/         # 传输层 (stdio/http/sse)
-│   └── auth/              # OAuth 认证
+├── mcp/                    # ✅ P5 MCP 集成 (Rust)
+│   ├── mod.rs             # MCP 主模块 (Transport + OAuth + Manager)
+│   └── transport/         # 传输层 (stdio/http/sse)
 
 └── skill/                  # ⏳ P5 Skills 系统 (Rust)
     ├── mod.rs             # Skills 主模块
@@ -866,15 +864,18 @@ async fn complete(prompt: &str, tools: &[Tool]) -> Result<Completion> {
 
 ### 实施计划
 
-#### P5.1 MCP 基础设施 - ⏳ 进行中
+#### P5.1 MCP 基础设施 - ✅ 已完成
 - [x] MCP 主模块 (crates/runtime/src/mcp/mod.rs)
-- [x] Transport 层 (crates/runtime/src/mcp/transport/mod.rs)
-- [ ] OAuth 认证流程 - 待实现
-- [ ] 工具/Prompts/Resources 同步 - 待完善
+- [x] Transport 层 (StdioTransport, HttpTransport)
+- [x] OAuth 认证流程 (McpOAuthConfig, token 获取)
+- [x] 工具/Prompts/Resources 同步
+- [x] JSON-RPC 消息处理
 
-**P5.1 实现文件**:
-- crates/runtime/src/mcp/mod.rs (McpManager, McpServerConfig, McpTool)
-- crates/runtime/src/mcp/transport/mod.rs (JsonRpcMessage, TransportConfig)
+**P5.1 测试覆盖**: 5/5 通过
+- McpManager: 5/5 测试通过
+
+**实现文件**:
+- crates/runtime/src/mcp/mod.rs (McpManager, McpServerConfig, McpTool, McpTransport, StdioTransport, HttpTransport)
 
 #### P5.2 Skills 系统 - ✅ 已完成
 - [x] SKILL.md 解析器
