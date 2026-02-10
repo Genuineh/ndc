@@ -58,6 +58,12 @@ pub use glob_tool::GlobTool;
 pub mod permission;
 pub use permission::{PermissionSystem, PermissionRequest, PermissionResponse, PermissionConfig, PermissionError, PermissionType, DangerLevel, PermissionSystemBuilder};
 
+pub mod output_truncation;
+pub use output_truncation::{OutputTruncator, TruncatedOutput, TruncationConfig, read_partial_output};
+
+pub mod lsp;
+pub use lsp::{LspClient, LspDiagnostics, Diagnostic, DiagnosticSeverity, DiagnosticSummary};
+
 #[cfg(test)]
 mod tests {
     use super::*;

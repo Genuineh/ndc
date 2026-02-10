@@ -46,5 +46,8 @@ ndc-decision = { path = "../decision" }
 # SQLite (optional)
 rusqlite = { version = "0.32", optional = true, features = ["bundled"] }
 
+# Utilities
+tempfile = "3"
+
 [dev-dependencies]
 tempfile = "3"
