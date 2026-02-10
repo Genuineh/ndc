@@ -64,6 +64,12 @@ pub use output_truncation::{OutputTruncator, TruncatedOutput, TruncationConfig, 
 pub mod lsp;
 pub use lsp::{LspClient, LspDiagnostics, Diagnostic, DiagnosticSeverity, DiagnosticSummary};
 
+pub mod webfetch;
+pub use webfetch::WebFetchTool;
+
+pub mod websearch;
+pub use websearch::WebSearchTool;
+
 #[cfg(test)]
 mod tests {
     use super::*;

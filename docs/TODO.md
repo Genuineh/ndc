@@ -634,11 +634,17 @@ async fn edit_and_check(file_path: &str, old: &str, new: &str) -> EditResult {
 - crates/runtime/src/tools/output_truncation.rs (OutputTruncator, TruncatedOutput)
 - crates/runtime/src/tools/lsp.rs (LspClient, LspDiagnostics, Diagnostic)
 
-#### P4.4 高级工具
-- [ ] webfetch (HTTP 获取)
-- [ ] websearch (网络搜索)
-- [ ] git_status (Git 状态)
-- [ ] git_commit (Git 提交)
+#### P4.4 高级工具 - ✅ 已完成
+- [x] webfetch (HTTP 获取) - GET/POST/PUT/DELETE 支持
+- [x] websearch (网络搜索) - DuckDuckGo API 集成
+- [x] git_status (Git 状态) - 已有实现
+- [x] git_commit (Git 提交) - 已有实现
+
+**P4.4 测试覆盖**: 复用现有测试
+
+**新增实现文件**:
+- crates/runtime/src/tools/webfetch.rs (WebFetchTool)
+- crates/runtime/src/tools/websearch.rs (WebSearchTool)
 
 ### 验收标准
 
@@ -906,7 +912,7 @@ skills:
 
 ---
 
-最后更新: 2026-02-09 (P3 已完成 - P4 Tool System + P5 MCP/Skills 规划中)
-标签: #ndc #llm #industrial-grade #autonomous #p1-complete #p2-complete #p3-complete #p4-planning #p5-planning
+最后更新: 2026-02-10 (P4 Tool System 已完成 - 准备 P5 MCP/Skills)
+标签: #ndc #llm #industrial-grade #autonomous #p1-complete #p2-complete #p3-complete #p4-complete #p5-planning
 
 > **Note**: NDC 是全自动智能系统，不使用 OpenCode 的 Agent 模式（需要人工干预）和 Instruction Prompts（智能化执行）。
