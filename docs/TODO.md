@@ -664,7 +664,7 @@ async fn edit_and_check(file_path: &str, old: &str, new: &str) -> EditResult {
 
 ---
 
-## 第五刀：MCP + Skills 集成 (P5) - ⏳ 规划中
+## 第五刀：MCP + Skills 集成 (P5) - ⏳ 实现中
 
 > **参考**: [OpenCode MCP](https://github.com/anomalyco/opencode/tree/dev/packages/opencode/src/mcp) | [OpenCode Skills](https://github.com/anomalyco/opencode/tree/dev/packages/opencode/src/skill)
 
@@ -850,20 +850,26 @@ async fn complete(prompt: &str, tools: &[Tool]) -> Result<Completion> {
 
 ### 实施计划
 
-#### P5.1 MCP 基础设施 ⭐
-- [ ] MCP Client 实现 (Rust)
-- [ ] Transport 层 (stdio/http/sse)
-- [ ] OAuth 认证流程
-- [ ] 工具/Prompts/Resources 同步
-- [ ] 动态工具发现
+#### P5.1 MCP 基础设施 - ⏳ 进行中
+- [x] MCP 主模块 (crates/runtime/src/mcp/mod.rs)
+- [x] Transport 层 (crates/runtime/src/mcp/transport/mod.rs)
+- [ ] OAuth 认证流程 - 待实现
+- [ ] 工具/Prompts/Resources 同步 - 待完善
 
-#### P5.2 Skills 系统
-- [ ] SKILL.md 解析器 (Rust)
-- [ ] Skills 注册表
-- [ ] 多路径自动发现
-- [ ] Skills 执行引擎
+**P5.1 实现文件**:
+- crates/runtime/src/mcp/mod.rs (McpManager, McpServerConfig, McpTool)
+- crates/runtime/src/mcp/transport/mod.rs (JsonRpcMessage, TransportConfig)
 
-#### P5.3 Provider 抽象
+#### P5.2 Skills 系统 - ✅ 已完成
+- [x] SKILL.md 解析器
+- [x] Skills 注册表
+- [x] 多路径自动发现
+- [ ] Skills 执行引擎 - 待实现
+
+**P5.2 实现文件**:
+- crates/runtime/src/skill/mod.rs (Skill, SkillRegistry)
+
+#### P5.3 Provider 抽象 - ⏳ 规划中
 - [ ] Provider Trait 定义
 - [ ] OpenAI/Anthropic 实现
 - [ ] 模型列表管理

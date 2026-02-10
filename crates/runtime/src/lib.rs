@@ -19,6 +19,8 @@ pub mod executor;
 pub mod discovery;
 pub mod execution;
 pub mod engine;
+pub mod mcp;
+pub mod skill;
 
 pub use tools::{Tool, ToolResult, ToolError, ToolManager, ToolContext};
 pub use verify::QualityGateRunner;
@@ -63,4 +65,19 @@ pub use engine::{
     WorkflowState,
     TransitionError,
     EventEngineSummary,
+};
+pub use mcp::{
+    McpManager,
+    McpServerConfig,
+    McpServerType,
+    McpTool,
+    McpPrompt,
+    McpResource,
+    McpResult,
+};
+pub use skill::{
+    Skill,
+    SkillRegistry,
+    SkillParameter,
+    SkillExample,
 };
