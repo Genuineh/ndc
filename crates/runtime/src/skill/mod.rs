@@ -1,4 +1,11 @@
 //! Skills System - Markdown-based skill definitions
+//!
+//! Responsibilities:
+//! - Skill discovery and loading from filesystem
+//! - Skill metadata parsing (YAML frontmatter)
+//! - Template variable substitution
+//! - Skill execution engine
+//! - Integration with LLM and tool system
 
 use glob::glob;
 use serde::{Deserialize, Serialize};
@@ -6,6 +13,9 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use tracing::{debug, info, warn};
+
+pub mod executor;
+pub use executor::{SkillExecutor, SkillExecutionContext, SkillResult};
 
 /// Skill definition
 #[derive(Debug, Clone, Serialize, Deserialize)]

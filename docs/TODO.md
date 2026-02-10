@@ -881,10 +881,18 @@ async fn complete(prompt: &str, tools: &[Tool]) -> Result<Completion> {
 - [x] SKILL.md 解析器
 - [x] Skills 注册表
 - [x] 多路径自动发现
-- [ ] Skills 执行引擎 - 待实现
+- [x] Skills 执行引擎
+- [x] 模板变量替换
+- [x] LLM 技能集成
+- [x] 技能链执行
 
-**P5.2 实现文件**:
-- crates/runtime/src/skill/mod.rs (Skill, SkillRegistry)
+**P5.2 测试覆盖**: 12/12 通过
+- SkillRegistry: 5/5 测试通过
+- SkillExecutor: 12/12 测试通过
+
+**实现文件**:
+- crates/runtime/src/skill/mod.rs (Skill, SkillRegistry, SkillParameter, SkillExample)
+- crates/runtime/src/skill/executor.rs (SkillExecutor, SkillExecutionContext, SkillResult)
 
 #### P5.3 Provider 抽象 - ⏳ 规划中
 - [ ] Provider Trait 定义
