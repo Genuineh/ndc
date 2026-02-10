@@ -2,6 +2,40 @@
 
 > **重要更新 (2026-02-10)**: 所有 P1-P5 功能已完成，E2E测试套件已完善！🎉
 
+## 快速开始
+
+```bash
+# 1. 构建项目
+cargo build --release
+
+# 2. 运行 CLI 帮助
+./target/release/ndc --help
+
+# 3. 创建第一个任务
+./target/release/ndc create "我的第一个任务" -d "描述"
+
+# 4. 启动 REPL 交互模式
+./target/release/ndc repl
+
+# 5. 运行测试
+cargo test --release
+```
+
+## 常用命令速查
+
+| 功能 | 命令 | 说明 |
+|------|------|------|
+| 创建任务 | `ndc create "标题" -d "描述"` | 创建新任务 |
+| 列出任务 | `ndc list` | 查看所有任务 |
+| 任务状态 | `ndc status <id>` | 查看任务状态 |
+| 执行任务 | `ndc run <id>` | 执行任务 |
+| 同步执行 | `ndc run <id> --sync` | 等待任务完成 |
+| 回滚任务 | `ndc rollback <id> latest` | 回滚到上一个快照 |
+| 查看日志 | `ndc logs <id>` | 查看执行日志 |
+| 搜索记忆 | `ndc search "关键词"` | 搜索历史知识 |
+| REPL 模式 | `ndc repl` | 交互式对话开发 |
+| 系统状态 | `ndc status-system` | 查看系统状态 |
+
 ## 架构概览
 
 ```
@@ -53,6 +87,48 @@ ndc/
 | **interface** | repl.rs | ✅ | REPL mode |
 | **interface** | e2e_tests.rs | ✅ | E2E tests |
 | **interface** | grpc_client.rs | ✅ | gRPC client SDK |
+
+---
+
+## 开发指南
+
+### 添加新命令
+
+1. 在 `crates/interface/src/cli.rs` 中添加命令处理函数
+2. 在 `bin/main.rs` 中注册命令
+3. 在 `bin/tests/e2e/mod.rs` 中添加 E2E 测试
+4. 运行测试验证: `cargo test --test e2e`
+
+### 添加新工具
+
+1. 在 `crates/runtime/src/tools/` 中创建新工具文件
+2. 实现 `Tool` trait
+3. 在 `tools/mod.rs` 中注册工具
+4. 添加对应的测试
+
+### 运行测试
+
+```bash
+# 所有测试
+cargo test --release
+
+# E2E 测试
+cargo test --test e2e --release
+
+# 特定测试
+cargo test --test e2e test_create_basic
+
+# 带输出运行
+cargo test --test e2e --release -- --nocapture
+```
+
+### 代码检查
+
+```bash
+cargo check
+cargo clippy
+cargo fmt
+```
 
 ---
 
@@ -1084,7 +1160,60 @@ skills:
 
 ---
 
-最后更新: 2026-02-10 (P6 文件锁定已完成 - 183/183 测试通过 🎉)
+最后更新: 2026-02-10 (E2E 测试套件已完善 - 393/393 测试通过 🎉)
 标签: #ndc #llm #industrial-grade #autonomous #p1-complete #p2-complete #p3-complete #p4-complete #p5-complete #p6-complete
+
+---
+
+## 快速参考
+
+### 目录结构
+
+```
+ndc/
+├── bin/
+│   ├── main.rs           # CLI 入口
+│   └── tests/e2e/        # E2E 测试 (38个)
+├── crates/
+│   ├── interface/        # CLI/REPL/Daemon
+│   │   ├── cli.rs        # 命令行
+│   │   ├── repl.rs       # 交互模式
+│   │   └── grpc.rs       # gRPC 服务
+│   ├── core/             # 核心模型
+│   │   ├── task.rs       # 任务模型
+│   │   ├── intent.rs     # 意图/裁决
+│   │   ├── memory.rs     # 记忆系统
+│   │   └── llm/          # LLM 集成
+│   ├── decision/         # 决策引擎
+│   └── runtime/          # 执行引擎
+│       ├── executor.rs   # 执行器
+│       ├── tools/        # 工具集
+│       └── verify/       # 质量门禁
+├── docs/                 # 文档
+└── Cargo.toml
+```
+
+### 常用命令
+
+```bash
+# 构建
+cargo build --release
+
+# 测试
+cargo test --release
+cargo test --test e2e --release
+
+# 运行
+./target/release/ndc --help
+./target/release/ndc repl
+```
+
+### 相关文档
+
+- [README.md](../README.md) - 项目概述
+- [USER_GUIDE.md](./USER_GUIDE.md) - 详细使用指南
+- [GRPC_CLIENT.md](./GRPC_CLIENT.md) - gRPC 客户端
+- [LLM_INTEGRATION.md](./LLM_INTEGRATION.md) - LLM 集成
+- [E2E_TEST_PLAN_V2.md](./E2E_TEST_PLAN_V2.md) - 测试计划
 
 > **Note**: NDC 是全自动智能系统，不使用 OpenCode 的 Agent 模式（需要人工干预）和 Instruction Prompts（智能化执行）。
