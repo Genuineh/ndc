@@ -894,11 +894,24 @@ async fn complete(prompt: &str, tools: &[Tool]) -> Result<Completion> {
 - crates/runtime/src/skill/mod.rs (Skill, SkillRegistry, SkillParameter, SkillExample)
 - crates/runtime/src/skill/executor.rs (SkillExecutor, SkillExecutionContext, SkillResult)
 
-#### P5.3 Provider 抽象 - ⏳ 规划中
-- [ ] Provider Trait 定义
-- [ ] OpenAI/Anthropic 实现
-- [ ] 模型列表管理
-- [ ] Token 计算
+#### P5.3 Provider 抽象 - ✅ 已完成
+- [x] Provider Trait 定义
+- [x] OpenAI 实现 (OpenAiProvider)
+- [x] Anthropic 实现 (AnthropicProvider)
+- [x] Azure OpenAI 支持
+- [x] Token 计算 (SimpleTokenCounter)
+- [x] 统一的 Request/Response 结构
+- [x] Streaming 支持
+
+**P5.3 测试覆盖**: 7/7 通过
+- Provider 核心类型序列化测试: 7/7 通过
+- SimpleTokenCounter 测试: 3/3 通过
+
+**实现文件**:
+- crates/core/src/llm/provider/mod.rs (Provider trait, 核心类型)
+- crates/core/src/llm/provider/openai.rs (OpenAiProvider)
+- crates/core/src/llm/provider/anthropic.rs (AnthropicProvider)
+- crates/core/src/llm/provider/token_counter.rs (SimpleTokenCounter)
 
 ### 配置示例
 
