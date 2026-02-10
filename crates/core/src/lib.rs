@@ -26,6 +26,7 @@ pub use llm::*;
 
 // Re-export commonly used types to avoid conflicts
 pub use agent::AgentId;
+pub use intent::KnowledgeType;
 
 #[cfg(test)]
 mod tests {
