@@ -1,6 +1,23 @@
 # NDC - 智能开发助手
 
 > NDC (Nardos Development Client) - 智能开发助手，帮助你通过自然语言完成编码任务。
+> **AI Agent**: 基于工具的 AI Agent 系统，支持反馈循环确保任务质量。
+
+## 核心特性
+
+### 🤖 AI Agent 系统 (P7)
+
+- **工具化架构**: 将内部流程暴露为 AI 可调用的工具
+- **反馈循环**: AI 完成后系统验证，未完成则要求继续
+- **流式响应**: 实时展示 AI 思考过程
+- **权限控制**: 危险操作需要人工确认
+
+### 📦 模块化设计
+
+- **core**: 核心模型 + LLM Provider + AI Agent
+- **decision**: 决策引擎
+- **runtime**: 执行引擎 + 工具系统 + MCP + Skills
+- **interface**: CLI + REPL + Daemon
 
 ## 快速开始
 

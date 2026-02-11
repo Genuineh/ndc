@@ -5,20 +5,32 @@
 //! - 意图解析（LLM-powered）
 //! - 任务自动创建与执行
 //! - 上下文保持
+//! - AI Agent 模式集成
 //!
 //! LLM 集成说明：
 //! - REPL 通过 LLM Provider 进行意图解析
 //! - 使用 /model 命令切换不同的 LLM Provider
 //! - 支持的 Provider: MiniMax, OpenRouter, OpenAI, Anthropic, Ollama
+//!
+//! Agent 模式说明：
+//! - 使用 /agent on 启用 AI Agent 模式
+//! - AI Agent 可以直接调用工具完成任务
+//! - 使用 /agent off 禁用 Agent 模式
 
 use std::path::PathBuf;
 use std::io::{self, BufRead, Write};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use ndc_core::{AgentRole, TaskId};
-use ndc_runtime::{Executor};
+use ndc_runtime::{Executor, tools::ToolRegistry};
 use tracing::{info, warn};
 use std::collections::HashMap;
+
+// Agent mode integration
+use crate::agent_mode::{
+    AgentModeManager,
+    handle_agent_command,
+};
 
 /// REPL 配置
 #[derive(Debug, Clone)]
@@ -157,14 +169,18 @@ pub async fn run_repl(history_file: PathBuf, executor: Arc<Executor>) {
     let config = ReplConfig::new(history_file);
     let mut state = ReplState::new();
 
-    info!("Starting NDC REPL with LLM-powered intent parsing");
+    // 创建 Agent Mode Manager
+    let tool_registry = Arc::new(ToolRegistry::new());
+    let agent_manager = Arc::new(AgentModeManager::new(executor.clone(), tool_registry));
+
+    info!("Starting NDC REPL with LLM-powered intent parsing and AI Agent support");
 
     // 打印欢迎信息
     println!(r#"
 ╔═══════════════════════════════════════════════════════════════════════════════════╗
-║  NDC - Neo Development Companion (LLM-Powered REPL)                            ║
-║  Features: LLM Intent Parsing | Auto Task Creation | Context Persistence       ║
-║  Type 'help' for commands, 'exit' to quit                                     ║
+║  NDC - Neo Development Companion (LLM-Powered REPL + AI Agent)                  ║
+║  Features: LLM Intent Parsing | Auto Task Creation | AI Agent Mode             ║
+║  Type '/help' for commands, '/agent help' for AI Agent, 'exit' to quit         ║
 ╚═══════════════════════════════════════════════════════════════════════════════════╝
 "#);
 
@@ -186,7 +202,14 @@ pub async fn run_repl(history_file: PathBuf, executor: Arc<Executor>) {
             println!("Type 'exit' to quit or 'new' to start a new session.");
         }
 
-        print!("{}", config.prompt);
+        // 根据Agent状态调整提示符
+        let prompt = if agent_manager.is_enabled().await {
+            "ndc[agent]> ".to_string()
+        } else {
+            config.prompt.clone()
+        };
+
+        print!("{}", prompt);
         io::stdout().flush().unwrap();
 
         input.clear();
@@ -202,9 +225,23 @@ pub async fn run_repl(history_file: PathBuf, executor: Arc<Executor>) {
 
                 // 处理命令或对话
                 if input.starts_with('/') {
-                    handle_command(input, &config, &mut state, executor.clone()).await;
+                    // 检查是否是 /agent 命令
+                    if input.starts_with("/agent") {
+                        if let Err(e) = handle_agent_command(input, &agent_manager).await {
+                            println!("[Agent Error] {}", e);
+                        }
+                    } else {
+                        handle_command(input, &config, &mut state, executor.clone()).await;
+                    }
                 } else {
-                    handle_dialogue(input, &config, &mut state, executor.clone()).await;
+                    // 检查 Agent 模式是否启用
+                    if agent_manager.is_enabled().await {
+                        // Agent 模式 - 由 AI 处理
+                        handle_agent_dialogue(input, &agent_manager).await;
+                    } else {
+                        // 普通 REPL 模式 - 意图解析
+                        handle_dialogue(input, &config, &mut state, executor.clone()).await;
+                    }
                 }
             }
             Err(e) => {
@@ -304,6 +341,47 @@ async fn handle_dialogue(input: &str, config: &ReplConfig, state: &mut ReplState
             if config.auto_create_task {
                 create_task_from_input(&parsed.description, state, executor).await;
             }
+        }
+    }
+}
+
+// ===== Agent 对话处理 =====
+
+/// 处理 Agent 模式下的用户输入
+async fn handle_agent_dialogue(input: &str, agent_manager: &Arc<AgentModeManager>) {
+    println!("\n🤖 Processing...");
+
+    match agent_manager.process_input(input).await {
+        Ok(response) => {
+            println!("\n{}\n", response.content);
+
+            if !response.tool_calls.is_empty() {
+                let tool_names: Vec<&str> = response.tool_calls.iter()
+                    .map(|t| t.name.as_str())
+                    .collect();
+                println!("🔧 Tools used: {}", tool_names.join(", "));
+            }
+
+            if response.is_complete {
+                println!("✅ Task completed!");
+            }
+
+            if let Some(verification) = response.verification_result {
+                match verification {
+                    ndc_core::VerificationResult::Completed => {
+                        println!("✅ Verification passed!");
+                    }
+                    ndc_core::VerificationResult::Incomplete { reason } => {
+                        println!("⚠️  Incomplete: {}", reason);
+                    }
+                    ndc_core::VerificationResult::QualityGateFailed { reason } => {
+                        println!("❌ Quality gate failed: {}", reason);
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            println!("\n❌ Agent Error: {}", e);
         }
     }
 }

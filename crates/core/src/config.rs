@@ -115,8 +115,11 @@ impl Default for LlmConfig {
     }
 }
 
-/// Provider 配置
+/// Provider 配置 (YAML 反序列化用)
+/// 注意：与 llm/provider/mod.rs 中的 ProviderConfig 不同
+/// 此版本用于 YAML 配置文件，所有字段为 Option
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(from = "YamlProviderConfigHelper", into = "YamlProviderConfigHelper")]
 pub struct ProviderConfig {
     pub name: String,
     #[serde(rename = "type")]
@@ -131,14 +134,124 @@ pub struct ProviderConfig {
     pub capabilities: Option<Vec<String>>,
 }
 
+/// Helper for YAML serialization/deserialization
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+struct YamlProviderConfigHelper {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub provider_type: String,
+    pub model: Option<String>,
+    pub base_url: Option<String>,
+    pub api_key: Option<String>,
+    pub organization: Option<String>,
+    pub temperature: Option<f32>,
+    pub max_tokens: Option<u32>,
+    pub timeout: Option<u64>,
+    pub capabilities: Option<Vec<String>>,
+}
+
+impl From<YamlProviderConfigHelper> for ProviderConfig {
+    fn from(helper: YamlProviderConfigHelper) -> Self {
+        Self {
+            name: helper.name,
+            provider_type: match helper.provider_type.as_str() {
+                "openai" | "OpenAi" => ProviderType::OpenAi,
+                "anthropic" | "Anthropic" => ProviderType::Anthropic,
+                "azure" | "Azure" => ProviderType::Azure,
+                "ollama" | "Ollama" => ProviderType::Ollama,
+                "minimax" | "MiniMax" => ProviderType::MiniMax,
+                "openrouter" | "OpenRouter" => ProviderType::OpenRouter,
+                "local" | "Local" => ProviderType::Local,
+                _ => ProviderType::Custom(helper.provider_type),
+            },
+            model: helper.model,
+            base_url: helper.base_url,
+            api_key: helper.api_key,
+            organization: helper.organization,
+            temperature: helper.temperature,
+            max_tokens: helper.max_tokens,
+            timeout: helper.timeout,
+            capabilities: helper.capabilities,
+        }
+    }
+}
+
+impl From<ProviderConfig> for YamlProviderConfigHelper {
+    fn from(config: ProviderConfig) -> Self {
+        Self {
+            name: config.name,
+            provider_type: match &config.provider_type {
+                ProviderType::OpenAi => "openai".to_string(),
+                ProviderType::Anthropic => "anthropic".to_string(),
+                ProviderType::Azure => "azure".to_string(),
+                ProviderType::Ollama => "ollama".to_string(),
+                ProviderType::MiniMax => "minimax".to_string(),
+                ProviderType::OpenRouter => "openrouter".to_string(),
+                ProviderType::Local => "local".to_string(),
+                ProviderType::Custom(s) => s.clone(),
+            },
+            model: config.model,
+            base_url: config.base_url,
+            api_key: config.api_key,
+            organization: config.organization,
+            temperature: config.temperature,
+            max_tokens: config.max_tokens,
+            timeout: config.timeout,
+            capabilities: config.capabilities,
+        }
+    }
+}
+
+/// Provider 类型枚举 (YAML 配置用)
+/// 注意：与 llm/provider/mod.rs 中的 ProviderType 保持一致
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "String", into = "String")]
 pub enum ProviderType {
-    Openai,
+    #[serde(rename = "openai")]
+    OpenAi,
+    #[serde(rename = "anthropic")]
     Anthropic,
-    Minimax,
+    #[serde(rename = "azure")]
+    Azure,
+    #[serde(rename = "ollama")]
     Ollama,
-    Custom,
+    #[serde(rename = "minimax")]
+    MiniMax,
+    #[serde(rename = "openrouter")]
+    OpenRouter,
+    #[serde(rename = "local")]
+    Local,
+    Custom(String),
+}
+
+impl From<String> for ProviderType {
+    fn from(s: String) -> Self {
+        match s.to_lowercase().as_str() {
+            "openai" => ProviderType::OpenAi,
+            "anthropic" => ProviderType::Anthropic,
+            "azure" => ProviderType::Azure,
+            "ollama" => ProviderType::Ollama,
+            "minimax" => ProviderType::MiniMax,
+            "openrouter" => ProviderType::OpenRouter,
+            "local" => ProviderType::Local,
+            _ => ProviderType::Custom(s),
+        }
+    }
+}
+
+impl From<ProviderType> for String {
+    fn from(pt: ProviderType) -> Self {
+        match pt {
+            ProviderType::OpenAi => "openai".to_string(),
+            ProviderType::Anthropic => "anthropic".to_string(),
+            ProviderType::Azure => "azure".to_string(),
+            ProviderType::Ollama => "ollama".to_string(),
+            ProviderType::MiniMax => "minimax".to_string(),
+            ProviderType::OpenRouter => "openrouter".to_string(),
+            ProviderType::Local => "local".to_string(),
+            ProviderType::Custom(s) => s,
+        }
+    }
 }
 
 /// OpenAI 专用配置

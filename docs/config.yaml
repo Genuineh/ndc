@@ -4,6 +4,37 @@
 # 路径: ~/.ndc/config.yaml 或项目根目录 .ndc.yaml
 
 # ============================================
+# AI Agent 配置 (P7)
+# ============================================
+agent:
+  # 是否启用 AI Agent
+  enabled: true
+
+  # 默认 Provider (minimax, openrouter, openai, anthropic, ollama)
+  provider: "openai"
+
+  # 默认模型
+  model: "gpt-4o"
+
+  # 最大工具调用次数 (防止无限循环)
+  max_tool_calls: 50
+
+  # 最大重试次数
+  max_retries: 3
+
+  # 是否启用流式响应
+  streaming: true
+
+  # 超时时间 (秒)
+  timeout: 300
+
+  # 是否自动验证任务完成
+  auto_verify: true
+
+  # 危险操作是否需要权限
+  require_permission_for_dangerous: true
+
+# ============================================
 # LLM 配置
 # ============================================
 llm:

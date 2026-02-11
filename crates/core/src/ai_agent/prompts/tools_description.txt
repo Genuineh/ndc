@@ -1,0 +1,27 @@
+## Tool Usage Guidelines
+
+### Reading Files
+- Use `file_read` to examine existing code
+- Use `content_grep` to search for specific patterns
+- Use `file_glob` to find files matching patterns
+
+### Making Changes
+- Use `file_edit` for small, targeted changes
+- Use `file_write` for creating new files or complete rewrites
+- Always read a file before editing it
+
+### Testing
+- Use `run_tests` after making code changes
+- Check test output and fix failures
+- Run specific tests with the `target` parameter
+
+### Git Operations
+- Use `git_status` to check what changed
+- Use `git_commit` to save your work with a clear message
+- Don't commit without testing first
+
+### Task Management
+- Use `ndc_task_create` to create new tasks
+- Use `ndc_task_update` to update task status
+- Use `ndc_task_list` to see all tasks
+- Use `ndc_task_verify` to verify task completion

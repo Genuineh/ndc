@@ -22,3 +22,6 @@ target
 
 # NDC runtime cache
 .ndc/
+
+# OpenCode reference (for documentation only)
+opencode/

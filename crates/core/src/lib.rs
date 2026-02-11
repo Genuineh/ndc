@@ -11,6 +11,7 @@
 mod task;
 mod intent;
 mod agent;
+mod ai_agent;
 mod memory;
 mod config;
 mod todo;
@@ -19,6 +20,7 @@ mod llm;
 pub use task::*;
 pub use intent::*;
 pub use agent::*;
+pub use ai_agent::*;
 pub use memory::*;
 pub use todo::*;
 pub use llm::*;

@@ -13,6 +13,7 @@
 pub mod cli;
 pub mod repl;
 pub mod daemon;
+pub mod agent_mode;
 
 #[cfg(feature = "grpc")]
 pub mod generated;
@@ -32,6 +33,11 @@ mod e2e_tests;
 pub use cli::{run_cli, CliConfig};
 pub use repl::{run_repl, ReplConfig, ReplState};
 pub use daemon::run_daemon;
+pub use agent_mode::{
+    AgentModeManager, AgentModeConfig, AgentModeState,
+    AgentModeStatus, PermissionRule,
+    handle_agent_command, show_agent_status,
+};
 
 #[cfg(feature = "grpc")]
 pub use grpc_client::{NdcClient, ClientConfig, create_client, ClientError};

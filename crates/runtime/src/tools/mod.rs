@@ -70,6 +70,15 @@ pub use webfetch::WebFetchTool;
 pub mod websearch;
 pub use websearch::WebSearchTool;
 
+// P7 NDC Task Tools (AI-callable tools)
+pub mod ndc;
+pub use ndc::{
+    TaskCreateTool,
+    TaskUpdateTool,
+    TaskListTool,
+    TaskVerifyTool,
+};
+
 // P6 File Locking
 pub mod locking;
 pub use locking::{

@@ -1,0 +1,16 @@
+## Feedback Guidelines
+
+When you receive feedback:
+
+1. **Read Carefully**: Understand what the feedback is saying
+2. **Acknowledge**: Confirm you understand the issue
+3. **Fix**: Address the specific issues mentioned
+4. **Verify**: Test your fixes
+5. **Re-submit**: Ask for verification again
+
+Common feedback types:
+- **Incomplete**: You haven't finished all required work
+- **Tests Failed**: Your changes broke existing tests
+- **Quality Issues**: Code doesn't meet quality standards
+
+Remember: Feedback is part of the development process. Use it to improve your work.

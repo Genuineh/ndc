@@ -1,10 +1,95 @@
 # NDC LLM 对接设计文档
 
 > **状态**: LLM-only 架构 - NDC 使用 LLM 进行意图解析，不支持正则表达式回退
+> **AI Agent**: 已实现基于工具的 AI Agent 系统，支持反馈循环
+
+---
+
+## AI Agent 系统 (P7)
+
+NDC 现已实现完整的 AI Agent 系统，将内部流程暴露为 AI 可调用的工具。
+
+### 核心组件
+
+```
+crates/core/src/ai_agent/
+├── mod.rs              # Agent 错误类型、元数据
+├── orchestrator.rs     # Agent Orchestrator - 中央控制器
+├── session.rs          # Session Manager - 会话管理
+├── verifier.rs         # Task Verifier - 任务验证与反馈循环
+└── prompts.rs          # System Prompt 构建器
+```
+
+### 架构设计
+
+```rust
+// Agent Orchestrator
+use ndc_core::ai_agent::{
+    AgentOrchestrator, AgentConfig, AgentRequest, AgentResponse,
+    ToolExecutor, TaskVerifier, VerificationResult
+};
+
+// 创建 Agent
+let orchestrator = AgentOrchestrator::new(
+    llm_provider,           // LLM Provider
+    tool_executor,          // 工具执行器
+    task_verifier,          // 任务验证器
+    AgentConfig::default(), // 配置
+);
+
+// 处理用户请求
+let response = orchestrator.process(AgentRequest {
+    user_input: "Create a new API endpoint".to_string(),
+    session_id: None,
+    working_dir: Some(PathBuf::from("./src")),
+    role: Some(AgentRole::Implementer),
+    active_task_id: None,
+}).await?;
+```
+
+### 反馈循环系统
+
+AI Agent 实现了强大的反馈循环机制：
+
+1. **用户输入** → AI 理解并制定计划
+2. **AI 执行** → 调用工具完成任务
+3. **系统验证** → TaskVerifier 验证完成情况
+4. **反馈生成** → 如果未完成，生成继续指令
+5. **AI 继续** → 根据反馈继续工作
+6. **循环** → 直到验证通过
+
+```rust
+pub enum VerificationResult {
+    Completed,                    // 任务已完成
+    Incomplete { reason: String },    // 任务未完成
+    QualityGateFailed { reason: String }, // 质量门禁失败
+}
+```
+
+### NDC Tools (AI 可调用)
+
+将内部系统功能暴露为 AI 工具：
+
+| 工具名称 | 功能 | 权限 |
+|---------|------|------|
+| `ndc_task_create` | 创建新任务 | Normal |
+| `ndc_task_update` | 更新任务状态 | Normal |
+| `ndc_task_list` | 列出任务 | Normal |
+| `ndc_task_verify` | 验证任务完成 | Normal |
+| `file_read` | 读取文件 | Normal |
+| `file_write` | 写入文件 | Dangerous |
+| `file_edit` | 编辑文件 | Dangerous |
+| `run_tests` | 运行测试 | Normal |
+| `git_status` | Git 状态 | Normal |
+| `git_commit` | Git 提交 | Dangerous |
+
+---
 
 ## 当前实现
 
-### 意图解析
+### 意图解析 (已废弃，由 AI Agent 替代)
+
+NDC REPL 现在使用完整的 AI Agent 系统，而不是简单的意图解析。
 
 NDC REPL 使用 LLM Provider 进行智能意图解析：
 
