@@ -366,6 +366,17 @@ export OPENAI_MODEL="gpt-4"
 export ANTHROPIC_API_KEY="sk-ant-..."
 export ANTHROPIC_MODEL="claude-3-opus-20240229"
 
+# MiniMax
+export MINIMAX_API_KEY="your-minimax-api-key"
+export MINIMAX_GROUP_ID="your-group-id"  # 可选
+export MINIMAX_MODEL="m2.1-0107"
+
+# OpenRouter
+export OPENROUTER_API_KEY="your-openrouter-key"
+export OPENROUTER_MODEL="anthropic/claude-3.5-sonnet"
+export OPENROUTER_SITE_URL="https://your-site.com"  # 可选
+export OPENROUTER_APP_NAME="YourAppName"  # 可选
+
 # Ollama (本地)
 export OLLAMA_MODEL="llama2"
 export OLLAMA_URL="http://localhost:11434"
@@ -378,7 +389,7 @@ export OLLAMA_URL="http://localhost:11434"
 
 llm:
   enabled: true
-  provider: "openai"  # openai, anthropic, ollama, none
+  provider: "openai"  # openai, anthropic, minimax, openrouter, ollama, none
   model: "gpt-4"
   temperature: 0.1
   max_tokens: 2048
@@ -391,6 +402,220 @@ llm:
   # Anthropic 专用
   anthropic:
     api_key: "${ANTHROPIC_API_KEY}"
+
+  # MiniMax 专用
+  minimax:
+    api_key: "${MINIMAX_API_KEY}"
+    group_id: "${MINIMAX_GROUP_ID}"
+
+  # OpenRouter 专用
+  openrouter:
+    api_key: "${OPENROUTER_API_KEY}"
+    site_url: "${OPENROUTER_SITE_URL}"
+    app_name: "${OPENROUTER_APP_NAME}"
+```
+
+---
+
+## MiniMax Provider
+
+MiniMax 是国内领先的 AI 模型提供商，提供高性能的 M2.1 系列模型。
+
+### 支持的模型
+
+| 模型 | 描述 | 上下文长度 |
+|------|------|-----------|
+| `m2.1-0107` | MiniMax M2.1 主力模型 | 32k |
+| `abab6.5s-chat` | 高性能对话模型 | 8k |
+| `abab6.5-chat` | 标准对话模型 | 8k |
+| `abab5.5-chat` | 上一代对话模型 | 8k |
+
+### 使用示例
+
+```rust
+use ndc_core::llm::provider::{MiniMaxProvider, create_minimax_config};
+use std::sync::Arc;
+
+// 创建配置
+let config = create_minimax_config(
+    "your-api-key".to_string(),
+    Some("your-group-id".to_string()),  // Group ID (可选)
+    Some("m2.1-0107".to_string()),      // 模型 (可选)
+);
+
+// 创建 Provider
+let token_counter = Arc::new(SimpleTokenCounter::new());
+let provider = MiniMaxProvider::new(config, token_counter);
+
+// 或者使用 with_group_id
+let provider = MiniMaxProvider::with_group_id(
+    config,
+    token_counter,
+    "your-group-id".to_string(),
+);
+```
+
+### API 端点
+
+- **基础 URL**: `https://api.minimax.chat/v1`
+- **对话接口**: `/text/chatcompletion_v2`
+- **模型列表**: `/models`
+
+### 认证方式
+
+MiniMax 使用 Bearer Token 认证，可选的 GroupId 头：
+
+```
+Authorization: Bearer {api_key}
+GroupId: {group_id}
+```
+
+### 获取 API Key
+
+1. 访问 [MiniMax 开放平台](https://api.minimax.chat/)
+2. 注册/登录账号
+3. 创建应用获取 API Key
+4. 获取 Group ID (可选)
+
+---
+
+## OpenRouter Provider
+
+OpenRouter 是一个统一的 LLM API 网关，提供对多个 AI 提供商的访问。
+
+### 支持的提供商
+
+OpenRouter 支持 100+ 模型，包括：
+
+| 提供商 | 模型示例 |
+|--------|---------|
+| Anthropic | `anthropic/claude-3.5-sonnet`, `claude-3-opus`, `claude-3-haiku` |
+| OpenAI | `openai/gpt-4o`, `gpt-4o-mini`, `gpt-4-turbo` |
+| Google | `google/gemini-pro-1.5`, `gemini-flash` |
+| Meta | `meta-llama/llama-3.1-405b-instruct` |
+| Mistral AI | `mistralai/mistral-large`, `mixtral` |
+
+### 使用示例
+
+```rust
+use ndc_core::llm::provider::{OpenRouterProvider, create_openrouter_config};
+use std::sync::Arc;
+
+// 创建配置
+let config = create_openrouter_config(
+    "your-openrouter-key".to_string(),
+    Some("anthropic/claude-3.5-sonnet".to_string()),  // 模型
+    Some("https://your-site.com".to_string()),           // 站点 URL (可选)
+    Some("YourAppName".to_string()),                     // 应用名称 (可选)
+);
+
+// 创建 Provider
+let token_counter = Arc::new(SimpleTokenCounter::new());
+let provider = OpenRouterProvider::new(config, token_counter);
+
+// 或者使用 with_site_info
+let provider = OpenRouterProvider::with_site_info(
+    config,
+    token_counter,
+    Some("https://your-site.com".to_string()),
+    Some("YourAppName".to_string()),
+);
+```
+
+### 动态获取模型列表
+
+OpenRouter 支持从 API 动态获取可用模型：
+
+```rust
+// 获取所有可用模型
+let models = provider.list_models().await?;
+
+for model in models {
+    println!("Model: {} - Owned by: {}", model.id, model.owned_by);
+}
+```
+
+### API 端点
+
+- **基础 URL**: `https://openrouter.ai/api/v1`
+- **对话接口**: `/chat/completions`
+- **模型列表**: `/models`
+
+### 请求头
+
+OpenRouter 使用以下自定义头：
+
+```
+Authorization: Bearer {api_key}
+HTTP-Referer: {site_url}
+X-Title: {app_name}
+X-Organization: {organization}  # 可选
+```
+
+### 获取 API Key
+
+1. 访问 [OpenRouter.ai](https://openrouter.ai/)
+2. 注册/登录账号
+3. 获取 API Key
+4. 设置应用信息以在排行榜中显示
+
+---
+
+## 使用建议
+
+### 1. 国内环境（推荐 MiniMax）
+
+MiniMax 是国内访问速度最快的选项：
+
+```bash
+export MINIMAX_API_KEY="your-api-key"
+export MINIMAX_GROUP_ID="your-group-id"
+
+ndc repl --llm minimax --model m2.1-0107
+```
+
+### 2. 多模型访问（推荐 OpenRouter）
+
+OpenRouter 提供统一接口访问多个模型：
+
+```bash
+export OPENROUTER_API_KEY="your-key"
+
+# 使用 Claude
+ndc repl --llm openrouter --model anthropic/claude-3.5-sonnet
+
+# 使用 GPT-4o
+ndc repl --llm openrouter --model openai/gpt-4o
+
+# 使用 Gemini
+ndc repl --llm openrouter --model google/gemini-pro-1.5
+```
+
+### 3. 本地开发（Ollama）
+
+完全免费、隐私保护的本地模型：
+
+```bash
+# 安装 Ollama
+curl -fsSL https://ollama.ai/install.sh | sh
+
+# 下载模型
+ollama pull llama2
+ollama pull codellama
+
+# 启动
+export OLLAMA_MODEL="codellama"
+ndc repl
+```
+
+### 4. 混合模式
+
+根据场景选择不同 Provider：
+
+```rust
+// 检测 LLM 可用性，自动选择
+let provider = detect_best_provider().await;
+let repl = Repl::new().with_llm(provider);
 ```
 
 ---
