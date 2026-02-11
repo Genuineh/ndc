@@ -9,10 +9,14 @@
 
 pub mod openai;
 pub mod anthropic;
+pub mod minimax;
+pub mod openrouter;
 pub mod token_counter;
 
 pub use openai::{OpenAiProvider, create_openai_config, create_azure_config};
 pub use anthropic::{AnthropicProvider, create_anthropic_config};
+pub use minimax::{MiniMaxProvider, create_minimax_config};
+pub use openrouter::{OpenRouterProvider, create_openrouter_config};
 pub use token_counter::{SimpleTokenCounter, TokenCountError};
 
 use serde::{Deserialize, Serialize};
@@ -205,6 +209,10 @@ pub enum ProviderType {
     Ollama,
     #[serde(rename = "local")]
     Local,
+    #[serde(rename = "minimax")]
+    MiniMax,
+    #[serde(rename = "openrouter")]
+    OpenRouter,
 }
 
 /// Streaming callback
