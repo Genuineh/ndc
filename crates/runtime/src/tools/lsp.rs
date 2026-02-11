@@ -9,7 +9,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
-use tracing::debug;
 
 /// LSP diagnostic severity
 #[derive(Debug, Clone, PartialEq)]

@@ -3,7 +3,23 @@
 mod working_memory;
 mod invariant;
 
-pub use working_memory::*;
+// Re-export working memory types, excluding duplicates with invariant module
+pub use working_memory::{
+    SubTaskId,
+    WorkingMemory,
+    AbstractHistory,
+    RawCurrent,
+    FailurePattern,
+    TrajectoryState,
+    ApiSurface,
+    ApiKind,
+    StepContext,
+    VersionedInvariant,
+    VersionTag,
+    LlmContext,
+};
+
+// Re-export all invariant types (using invariant module's definitions)
 pub use invariant::*;
 
 use serde::{Deserialize, Serialize};

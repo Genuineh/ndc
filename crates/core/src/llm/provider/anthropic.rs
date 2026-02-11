@@ -271,7 +271,7 @@ impl LlmProvider for AnthropicProvider {
             .map_err(|e| ProviderError::Network { source: e })?
             .bytes_stream();
 
-        let mut full_response: Option<CompletionResponse> = None;
+        let full_response: Option<CompletionResponse> = None;
 
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|e| ProviderError::Network { source: e })?;

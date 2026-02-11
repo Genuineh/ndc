@@ -5,7 +5,7 @@
 //! - Parse search results
 //! - Return formatted results
 
-use super::{Tool, ToolResult, ToolError, ToolContext};
+use super::{Tool, ToolResult, ToolError};
 use std::time::Duration;
 use tracing::debug;
 

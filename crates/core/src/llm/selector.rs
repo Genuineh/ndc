@@ -234,10 +234,10 @@ impl ModelSelector {
         };
 
         // Complexity score
-        let complexity_score = ((characteristics.file_count as f32 / 10.0)
+        let complexity_score = (characteristics.file_count as f32 / 10.0)
             .min(1.0) * 0.4
             + (characteristics.subtask_count as f32 / 20.0).min(1.0) * 0.3
-            + (if characteristics.is_cross_module { 0.3 } else { 0.0 }));
+            + if characteristics.is_cross_module { 0.3 } else { 0.0 };
 
         // High invariant density = simpler task
         let invariant_penalty = 1.0 - characteristics.invariant_density;

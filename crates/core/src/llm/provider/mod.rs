@@ -18,7 +18,6 @@ pub use token_counter::{SimpleTokenCounter, TokenCountError};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use async_trait::async_trait;
 use thiserror::Error;
 
 /// Provider-specific errors
@@ -277,7 +276,7 @@ impl StreamHandler for NoOpStreamHandler {
 }
 
 /// Convert provider error from external error
-pub fn map_provider_error(error: reqwest::Error, provider: &str) -> ProviderError {
+pub fn map_provider_error(error: reqwest::Error, _provider: &str) -> ProviderError {
     if let Some(status) = error.status() {
         match status.as_u16() {
             401 => ProviderError::Auth {

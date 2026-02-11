@@ -1,6 +1,7 @@
 //! Todo module - Task tracking and lineage
 
 pub mod lineage;
+pub mod mapping_service;
 
 pub use lineage::{
     TaskLineage,
@@ -11,4 +12,15 @@ pub use lineage::{
     LineageConfig,
     LineageError,
     LineageSummary,
+};
+
+pub use mapping_service::{
+    TodoMappingService,
+    UserIntent,
+    TodoItem,
+    TodoStatus,
+    TodoPriority,
+    IntentPriority,
+    MappingResult,
+    TodoUpdate,
 };

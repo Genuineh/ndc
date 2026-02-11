@@ -21,6 +21,7 @@ pub mod execution;
 pub mod engine;
 pub mod mcp;
 pub mod skill;
+pub mod documentation;
 
 pub use tools::{Tool, ToolResult, ToolError, ToolManager, ToolContext};
 pub use verify::QualityGateRunner;
@@ -80,4 +81,14 @@ pub use skill::{
     SkillRegistry,
     SkillParameter,
     SkillExample,
+};
+pub use documentation::{
+    DocUpdater,
+    DocUpdaterConfig,
+    Fact,
+    FactCategory,
+    Narrative,
+    DocUpdateRequest,
+    DocUpdateType,
+    DocUpdateResult,
 };

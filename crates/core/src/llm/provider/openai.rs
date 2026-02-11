@@ -11,7 +11,7 @@ use reqwest::{Client, StatusCode};
 use std::sync::Arc;
 
 /// OpenAI API versions
-const OPENAI_API_VERSION: &str = "2024-02-15-preview";
+const _OPENAI_API_VERSION: &str = "2024-02-15-preview";
 
 /// OpenAI Provider
 #[derive(Clone)]

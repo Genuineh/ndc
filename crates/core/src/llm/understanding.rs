@@ -198,11 +198,13 @@ pub struct KnowledgeUnderstandingService {
 #[derive(Debug, Clone)]
 pub struct UnderstandingConfig {
     /// Minimum confidence threshold
-    min_confidence: f32,
+    #[allow(dead_code)]
+    _min_confidence: f32,
     /// Maximum knowledge items to retrieve
     max_knowledge_items: usize,
     /// Entity extraction patterns
-    entity_patterns: HashMap<EntityType, Vec<String>>,
+    #[allow(dead_code)]
+    _entity_patterns: HashMap<EntityType, Vec<String>>,
 }
 
 impl Default for UnderstandingConfig {
@@ -215,9 +217,9 @@ impl Default for UnderstandingConfig {
         patterns.insert(EntityType::Config, vec!["config".to_string(), "setting".to_string(), "configuration".to_string()]);
 
         Self {
-            min_confidence: 0.5,
+            _min_confidence: 0.5,
             max_knowledge_items: 10,
-            entity_patterns: patterns,
+            _entity_patterns: patterns,
         }
     }
 }
@@ -508,7 +510,7 @@ impl KnowledgeUnderstandingService {
     }
 
     /// Retrieve relevant knowledge for a requirement
-    async fn retrieve_knowledge(&self, requirement: &Requirement) -> Vec<KnowledgeItem> {
+    async fn retrieve_knowledge(&self, _requirement: &Requirement) -> Vec<KnowledgeItem> {
         let knowledge = self.knowledge.read().unwrap();
         let mut relevant: Vec<_> = knowledge.values().cloned().collect();
 
@@ -600,7 +602,7 @@ impl KnowledgeUnderstandingService {
 
         let quality_score = requirement.quality.overall;
 
-        (entity_score * 0.3 + knowledge_score * 0.3 + quality_score * 0.4)
+        entity_score * 0.3 + knowledge_score * 0.3 + quality_score * 0.4
     }
 
     /// Add knowledge to the service

@@ -6,7 +6,6 @@
 //! - Save full output to disk
 //! - Provide offset/limit for partial reads
 
-use std::fs::File;
 use std::path::PathBuf;
 use tempfile::TempDir;
 use tracing::warn;

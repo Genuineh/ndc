@@ -6,7 +6,7 @@
 //! - Support headers and methods
 //! - Parse response status
 
-use super::{Tool, ToolResult, ToolError, ToolContext};
+use super::{Tool, ToolResult, ToolError};
 use std::time::Duration;
 use tracing::debug;
 
@@ -18,7 +18,8 @@ pub struct WebFetchTool {
     /// Maximum content size (bytes)
     max_content_size: usize,
     /// Follow redirects
-    follow_redirects: bool,
+    #[allow(dead_code)]
+    _follow_redirects: bool,
 }
 
 impl WebFetchTool {
@@ -26,7 +27,7 @@ impl WebFetchTool {
         Self {
             timeout_seconds: 30,
             max_content_size: 1024 * 1024, // 1MB
-            follow_redirects: true,
+            _follow_redirects: true,
         }
     }
 

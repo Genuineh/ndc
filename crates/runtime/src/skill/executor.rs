@@ -301,7 +301,7 @@ impl SkillExecutor {
 
         // Simple key=value parsing
         if let Some(re) = Regex::new(r"--([a-zA-Z_][a-zA-Z0-9_]*)\s+(\S+)").ok().as_ref() {
-            for cap in re.captures(invocation) {
+            if let Some(cap) = re.captures(invocation) {
                 if let (Some(key_match), Some(value_match)) = (cap.get(1), cap.get(2)) {
                     params.insert(key_match.as_str().to_string(), value_match.as_str().to_string());
                 }

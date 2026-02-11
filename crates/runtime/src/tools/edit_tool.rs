@@ -11,7 +11,6 @@
 
 use async_trait::async_trait;
 use std::path::PathBuf;
-use regex::Regex;
 use tracing::debug;
 
 use super::{Tool, ToolResult, ToolError, ToolMetadata};
@@ -78,7 +77,7 @@ impl EditTool {
             // 单行: 找到尾部trim后匹配的行
             for (i, line) in content.lines().enumerate() {
                 if line.trim_end() == old_trimmed {
-                    let start = content[..]
+                    let _start = content[..]
                         .find(line)
                         .map(|p| content[..p + line.rfind(line.trim_end()).unwrap_or(0)].len())
                         .unwrap_or(0);
@@ -90,7 +89,7 @@ impl EditTool {
         } else {
             // 多行: 检查每行是否匹配
             if let Some(start_idx) = content.lines().position(|l| l.trim_end() == old_lines[0]) {
-                let end_idx = start_idx + old_lines.len();
+                let _end_idx = start_idx + old_lines.len();
                 let matched_lines: Vec<&str> = content.lines().skip(start_idx).take(old_lines.len()).collect();
 
                 if matched_lines.len() == old_lines.len() &&
@@ -144,7 +143,7 @@ impl EditTool {
     }
 
     /// 策略4: 空白字符标准化匹配
-    fn match_whitespace_normalized(&self, content: &str, old: &str) -> Option<(usize, usize)> {
+    fn match_whitespace_normalized(&self, _content: &str, _old: &str) -> Option<(usize, usize)> {
         None
     }
 
@@ -290,8 +289,6 @@ use tokio::fs;
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use std::fs::File;
-    use std::io::Write;
 
     #[tokio::test]
     async fn test_edit_simple() {

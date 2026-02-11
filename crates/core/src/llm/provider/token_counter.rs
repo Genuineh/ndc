@@ -75,7 +75,7 @@ impl Default for SimpleTokenCounter {
 #[async_trait::async_trait]
 impl TokenCounter for SimpleTokenCounter {
     fn count_messages(&self, messages: &[Message], model: &str) -> usize {
-        let ratio = self.get_ratio(model);
+        let _ratio = self.get_ratio(model);
         let mut total = 0;
 
         // Count tokens for each message

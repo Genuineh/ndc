@@ -20,9 +20,13 @@ pub use task::*;
 pub use intent::*;
 pub use agent::*;
 pub use memory::*;
-pub use config::*;
 pub use todo::*;
 pub use llm::*;
+// Re-export config types (ProviderConfig and ProviderType come from llm/provider)
+pub use config::{
+    NdcConfig, LlmConfig, OpenAiConfig, AnthropicConfig, MiniMaxConfig,
+    OllamaConfig, ReplConfig, RuntimeConfig, StorageConfig,
+};
 
 // Re-export commonly used types to avoid conflicts
 pub use agent::AgentId;

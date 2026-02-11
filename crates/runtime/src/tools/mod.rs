@@ -70,6 +70,19 @@ pub use webfetch::WebFetchTool;
 pub mod websearch;
 pub use websearch::WebSearchTool;
 
+// P6 File Locking
+pub mod locking;
+pub use locking::{
+    FileLockManager,
+    FileLock,
+    LockOwner,
+    LockType,
+    LockError,
+    LockRequest,
+    LockResult,
+    EditToolWithLocking,
+};
+
 // P4.3 Bash Parsing
 pub mod bash_parsing;
 pub use bash_parsing::{

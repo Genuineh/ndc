@@ -1295,6 +1295,8 @@ name = "ndc"
 version = "0.1.0"
 dependencies = [
  "ndc-interface",
+ "ndc-runtime",
+ "tempfile",
  "tokio",
 ]
 
