@@ -120,7 +120,7 @@ ndc repl
 
 ### REPL 意图解析
 
-NDC REPL 支持多种开发意图：
+NDC REPL 使用 LLM 进行智能意图解析：
 
 | 意图类型 | 示例 | 说明 |
 |----------|------|------|
@@ -129,6 +129,11 @@ NDC REPL 支持多种开发意图：
 | **查看状态** | `查看日志` | 查看执行日志 |
 | **Git 操作** | `查看 git 状态` | Git 操作 |
 | **代码操作** | `修改配置文件` | 文件操作 |
+
+**LLM 配置**:
+- 使用 `/model` 命令切换 Provider 和模型
+- 支持的 Provider: MiniMax, OpenRouter, OpenAI, Anthropic, Ollama
+- 环境变量使用 `NDC_` 前缀避免冲突
 
 ### REPL 完整示例
 

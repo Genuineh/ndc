@@ -7,10 +7,10 @@
 # LLM 配置
 # ============================================
 llm:
-  # 是否启用 LLM（NDC 纯 LLM 驱动，无正则 fallback）
+  # 是否启用 LLM（NDC 纯 LLM 驱动，LLM-only 架构）
   enabled: true
 
-  # 默认 Provider
+  # 默认 Provider (minimax, openrouter, openai, anthropic, ollama)
   provider: "openai"
 
   # 默认模型
@@ -19,8 +19,8 @@ llm:
   # API 基础 URL（可选，覆盖默认值）
   # base_url: "https://api.openai.com/v1"
 
-  # API Key（推荐使用环境变量）
-  # api_key: "${OPENAI_API_KEY}"
+  # API Key（推荐使用 NDC_ 前缀环境变量）
+  # api_key: "${NDC_OPENAI_API_KEY}"
 
   # 组织 ID（OpenAI 专用）
   # organization: "org-xxx"
@@ -62,21 +62,33 @@ llm:
     openai:
       type: "openai"
       model: "gpt-4o"
-      # api_key: "${OPENAI_API_KEY}"
+      # api_key: "${NDC_OPENAI_API_KEY}"
       # organization: "org-xxx"
 
     # Anthropic Provider (Claude 3)
     anthropic:
       type: "anthropic"
       model: "claude-3-5-sonnet-20241022"
-      # api_key: "${ANTHROPIC_API_KEY}"
+      # api_key: "${NDC_ANTHROPIC_API_KEY}"
 
     # MiniMax Provider
     minimax:
       type: "minimax"
-      model: "abab6.5s-chat"
-      # api_key: "${MINIMAX_API_KEY}"
-      # base_url: "https://api.minimax.chat/v1/text/chatcompletion_v2"
+      model: "m2.1-0107"
+      # api_key: "${NDC_MINIMAX_API_KEY}"
+      # group_id: "${NDC_MINIMAX_GROUP_ID}"
+
+    # OpenRouter Provider
+    openrouter:
+      type: "openrouter"
+      model: "anthropic/claude-3.5-sonnet"
+      # api_key: "${NDC_OPENROUTER_API_KEY}"
+
+    # Ollama Provider (本地)
+    ollama:
+      type: "ollama"
+      model: "llama3"
+      # base_url: "http://localhost:11434"
 
 # ============================================
 # REPL 配置
