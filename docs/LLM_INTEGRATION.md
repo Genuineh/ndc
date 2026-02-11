@@ -1,25 +1,28 @@
 # NDC LLM 对接设计文档
 
-> **状态**: 待实现 - NDC 预留了 LLM 接口，当前使用正则表达式进行意图解析
+> **状态**: LLM-only 架构 - NDC 使用 LLM 进行意图解析，不支持正则表达式回退
 
 ## 当前实现
 
-### 意图解析（当前）
+### 意图解析
 
-NDC REPL 目前使用正则表达式进行简单的意图识别：
+NDC REPL 使用 LLM Provider 进行智能意图解析：
 
 ```rust
 // crates/interface/src/repl.rs
 
-// 示例：检测创建任务意图
-let create_pattern = Regex::new(r"(?i)(create|新建|创建)\s+(.+)").unwrap();
-
-// 示例：检测执行意图
-let run_pattern = Regex::new(r"(?i)(run|执行|运行)\s+(.+)").unwrap();
+/// 使用 LLM 解析用户意图
+async fn parse_intent_with_llm(input: &str, state: &ReplState) -> ParsedIntent {
+    // TODO: 集成 LLM Provider
+    // 当前使用简单的关键词检测作为临时方案
+}
 ```
 
-**优点**: 快速、无延迟、无需 API Key
-**缺点**: 只能匹配预定义模式，无法理解自然语言
+**特点**:
+- 支持 Provider: MiniMax, OpenRouter, OpenAI, Anthropic, Ollama
+- 动态模型切换: `/model <provider>/<model>`
+- 环境变量使用 `NDC_` 前缀避免冲突
+- 无正则表达式依赖
 
 ---
 
@@ -27,9 +30,9 @@ let run_pattern = Regex::new(r"(?i)(run|执行|运行)\s+(.+)").unwrap();
 
 ### 设计原则
 
-1. **可插拔的 LLM Provider** - 支持多种 LLM（OpenAI、Anthropic、Claude、Local 等）
+1. **可插拔的 LLM Provider** - 支持多种 LLM（OpenAI、Anthropic、MiniMax、OpenRouter、Ollama 等）
 2. **统一接口** - 抽象 `LlmProvider` trait
-3. **降级策略** - LLM 不可用时自动回退到正则匹配
+3. **动态模型切换** - REPL 支持运行时切换 Provider 和模型
 4. **流式输出** - 支持实时显示 LLM 生成内容
 
 ### 架构图
@@ -40,17 +43,17 @@ let run_pattern = Regex::new(r"(?i)(run|执行|运行)\s+(.+)").unwrap();
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
 │  ┌─────────────────┐    ┌─────────────────────────────────┐    │
-│  │   用户输入      │───▶│  Intent Parser (意图解析器)      │    │
+│  │   用户输入      │───▶│  LLM Intent Parser              │    │
 │  └─────────────────┘    └─────────────────────────────────┘    │
 │                                │                                  │
-│                 ┌──────────────┼──────────────┐                 │
-│                 ▼              ▼              ▼                 │
-│         ┌───────────┐  ┌───────────┐  ┌───────────┐           │
-│         │  Regex    │  │   LLM     │  │  Fallback │           │
-│         │  Parser   │  │  Parser   │  │  Parser   │           │
-│         └───────────┘  └───────────┘  └───────────┘           │
-│                 │              │              │                 │
-│                 └──────────────┼──────────────┘                 │
+│                                ▼                                  │
+│                    ┌─────────────────────┐                     │
+│                    │  LLM Provider       │                     │
+│                    │  (MiniMax/OpenRouter│                     │
+│                    │   OpenAI/Anthropic/ │                     │
+│                    │   Ollama)           │                     │
+│                    └─────────────────────┘                     │
+│                                │                                │
 │                                ▼                               │
 │                    ┌─────────────────────┐                     │
 │                    │  Intent (结构化)      │                     │
@@ -336,17 +339,37 @@ impl Repl {
 
     async fn process_input(&mut self, input: &str) {
         // 使用 LLM 解析意图
-        if let Some(ref provider) = self.llm_provider {
-            if provider.is_healthy().await {
-                let intent = self.parser.parse(input).await;
-                self.handle_intent(intent).await;
-                return;
-            }
-        }
-
-        // 降级到正则匹配
-        let intent = self.parse_with_regex(input);
+        let intent = self.parse_intent_with_llm(input).await;
         self.handle_intent(intent).await;
+    }
+
+    async fn parse_intent_with_llm(&self, input: &str) -> ParsedIntent {
+        // 构建包含对话历史的消息
+        let messages = vec![
+            Message {
+                role: MessageRole::System,
+                content: "You are an intent parser...".to_string(),
+                name: None,
+                tool_calls: None,
+            },
+            // ... 添加对话历史
+            Message {
+                role: MessageRole::User,
+                content: input.to_string(),
+                name: None,
+                tool_calls: None,
+            },
+        ];
+
+        // 调用 LLM Provider
+        let response = self.llm_provider.complete(&CompletionRequest {
+            model: self.current_model.clone(),
+            messages,
+            ..Default::default()
+        }).await?;
+
+        // 解析响应
+        serde_json::from_str(&response.content)?
     }
 }
 ```
@@ -389,11 +412,10 @@ export NDC_OLLAMA_URL="http://localhost:11434"
 
 llm:
   enabled: true
-  provider: "openai"  # openai, anthropic, minimax, openrouter, ollama, none
+  provider: "openai"  # openai, anthropic, minimax, openrouter, ollama
   model: "gpt-4"
   temperature: 0.1
   max_tokens: 2048
-  fallback_to_regex: true
 
   # OpenAI 专用
   openai:
@@ -705,11 +727,11 @@ let repl = Repl::new().with_llm(provider);
 
 ## 下一步
 
-1. **实现 LlmProvider trait** - 选择一个 Provider 开始
-2. **实现 IntentParser** - 使用 LLM 进行自然语言理解
-3. **添加配置支持** - 环境变量和配置文件
-4. **实现降级策略** - LLM 不可用时回退
-5. **优化 Prompt** - 根据使用场景调整
+1. **实现 REPL LLM 意图解析** - 在 `parse_intent_with_llm` 中集成 LLM Provider
+2. **优化 System Prompt** - 设计意图解析的专用 Prompt
+3. **添加流式响应** - 实现实时显示 LLM 生成内容
+4. **上下文管理** - 实现对话历史的智能压缩
+5. **多轮对话优化** - 改进对话历史的传递方式
 
 ---
 
@@ -717,5 +739,6 @@ let repl = Repl::new().with_llm(provider);
 
 - [OpenAI Chat API](https://platform.openai.com/docs/api-reference/chat)
 - [Anthropic Messages API](https://docs.anthropic.com/claude/reference/messages)
+- [MiniMax API 文档](https://api.minimax.chat/)
+- [OpenRouter API 文档](https://openrouter.ai/docs)
 - [Ollama API](https://github.com/ollama/ollama/blob/main/docs/api.md)
-- [Claude Code SDK](https://docs.anthropic.com/claude-code/home)

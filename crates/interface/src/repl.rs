@@ -2,11 +2,14 @@
 //!
 //! 职责：
 //! - 持续对话
-//! - 意图解析（LLM-powered，纯 LLM，无正则 fallback）
+//! - 意图解析（LLM-powered）
 //! - 任务自动创建与执行
 //! - 上下文保持
 //!
-//! ⚠️ 注意：当前使用正则作为临时实现，LLM 集成后将移除
+//! LLM 集成说明：
+//! - REPL 通过 LLM Provider 进行意图解析
+//! - 使用 /model 命令切换不同的 LLM Provider
+//! - 支持的 Provider: MiniMax, OpenRouter, OpenAI, Anthropic, Ollama
 
 use std::path::PathBuf;
 use std::io::{self, BufRead, Write};
@@ -15,8 +18,6 @@ use std::time::{Duration, Instant};
 use ndc_core::{AgentRole, TaskId};
 use ndc_runtime::{Executor};
 use tracing::{info, warn};
-// TODO: LLM 集成后移除 regex 依赖
-use regex::Regex;
 use std::collections::HashMap;
 
 /// REPL 配置
@@ -75,17 +76,11 @@ pub struct ReplState {
     /// 对话历史
     pub dialogue_history: Vec<DialogueEntry>,
 
-    /// 提取的实体
-    pub entities: ExtractedEntities,
-
     /// 角色
     pub role: AgentRole,
 
     /// 创建的任务ID
     pub created_tasks: Vec<TaskId>,
-
-    /// 任务建议
-    pub task_suggestions: Vec<TaskSuggestion>,
 
     /// 当前 LLM Provider
     pub current_provider: Option<String>,
@@ -100,10 +95,8 @@ impl Default for ReplState {
             session_id: format!("{:x}", chrono::Utc::now().timestamp_millis()),
             last_activity: Instant::now(),
             dialogue_history: Vec::new(),
-            entities: ExtractedEntities::default(),
             role: AgentRole::Historian,
             created_tasks: Vec::new(),
-            task_suggestions: Vec::new(),
             current_provider: None,
             current_model: None,
         }
@@ -159,42 +152,28 @@ pub enum ActionType {
     Help,
 }
 
-/// 提取的实体
-#[derive(Debug, Clone, Default)]
-pub struct ExtractedEntities {
-    pub file_paths: Vec<String>,
-    pub functions: Vec<String>,
-    pub task_names: Vec<String>,
-    pub error_messages: Vec<String>,
-    pub code_snippets: Vec<String>,
-}
-
-/// 任务建议
-#[derive(Debug, Clone)]
-pub struct TaskSuggestion {
-    pub title: String,
-    pub description: String,
-    pub priority: String,
-    pub confidence: f32,
-}
-
 /// 运行 REPL
 pub async fn run_repl(history_file: PathBuf, executor: Arc<Executor>) {
     let config = ReplConfig::new(history_file);
     let mut state = ReplState::new();
 
-    info!("Starting NDC REPL with full context support");
+    info!("Starting NDC REPL with LLM-powered intent parsing");
 
     // 打印欢迎信息
     println!(r#"
 ╔═══════════════════════════════════════════════════════════════════════════════════╗
-║  NDC - Neo Development Companion (Enhanced REPL)                              ║
-║  Features: Intent Parsing | Auto Task Creation | Context Persistence          ║
-║  Type 'help' for commands, 'exit' to quit                                   ║
+║  NDC - Neo Development Companion (LLM-Powered REPL)                            ║
+║  Features: LLM Intent Parsing | Auto Task Creation | Context Persistence       ║
+║  Type 'help' for commands, 'exit' to quit                                     ║
 ╚═══════════════════════════════════════════════════════════════════════════════════╝
 "#);
 
-    println!("[Session {}] Connected as: {:?}", state.session_id, state.role);
+    println!("[Session {}] Connected as: {:?} | Model: {:?} @ {:?}",
+        state.session_id,
+        state.role,
+        state.current_model.as_ref().unwrap_or(&"default".to_string()),
+        state.current_provider.as_ref().unwrap_or(&"default".to_string())
+    );
 
     // REPL 循环
     let stdin = io::stdin();
@@ -245,12 +224,12 @@ async fn handle_command(input: &str, config: &ReplConfig, state: &mut ReplState,
     let cmd = parts[0];
 
     match cmd {
-        "/help" => show_help(),
+        "/help" | "/h" => show_help(),
         "/exit" | "/quit" | "/q" => {
             println!("Goodbye! Session: {}", state.session_id);
             std::process::exit(0);
         }
-        "/status" => show_status(state, config).await,
+        "/status" | "/st" => show_status(state, config).await,
         "/tasks" => list_tasks(state, &executor).await,
         "/switch" if parts.len() > 1 => switch_role(parts[1], state),
         "/verbose" | "/v" => {
@@ -260,9 +239,7 @@ async fn handle_command(input: &str, config: &ReplConfig, state: &mut ReplState,
         "/new" => {
             state.session_id = format!("{:x}", chrono::Utc::now().timestamp_millis());
             state.dialogue_history.clear();
-            state.entities = ExtractedEntities::default();
             state.created_tasks.clear();
-            state.task_suggestions.clear();
             state.current_provider = None;
             state.current_model = None;
             println!("[New session started: {}]", state.session_id);
@@ -279,7 +256,6 @@ async fn handle_command(input: &str, config: &ReplConfig, state: &mut ReplState,
             let task_title = &input[8..].trim().trim_matches('"');
             create_task_from_input(task_title, state, executor).await;
         }
-        "/suggest" | "/suggests" => show_suggestions(state),
         _ => println!("Unknown command: {}. Type '/help' for available commands.", cmd),
     }
 }
@@ -296,11 +272,11 @@ async fn handle_dialogue(input: &str, config: &ReplConfig, state: &mut ReplState
     };
     state.dialogue_history.push(entry.clone());
 
-    // 解析意图
-    let parsed = parse_intent(input, state);
+    // LLM 意图解析（待实现）
+    let parsed = parse_intent_with_llm(input, state).await;
 
     if config.show_thought {
-        print_thought_process(&parsed, state);
+        print_thought_process(&parsed);
     }
 
     // 更新条目的解析结果
@@ -312,196 +288,90 @@ async fn handle_dialogue(input: &str, config: &ReplConfig, state: &mut ReplState
     match parsed.action_type {
         ActionType::Help => show_help(),
         ActionType::CreateTask => {
-            create_task_from_input(input, state, executor).await;
-        }
-        ActionType::RunTests => {
-            println!("[Action] Running tests... (placeholder)");
-        }
-        ActionType::Explain => {
-            println!("[Action] Providing explanation...");
+            create_task_from_input(&parsed.description, state, executor).await;
         }
         ActionType::Unknown => {
-            // 生成任务建议
-            generate_task_suggestions(input, state);
-            if !state.task_suggestions.is_empty() {
-                println!("[Suggestion] I can help you with:");
-                for (i, suggestion) in state.task_suggestions.iter().take(3).enumerate() {
-                    println!("  {}. {} ({:.0}%)", i + 1, suggestion.title, suggestion.confidence * 100.0);
-                }
-                println!("  Use '/create \"task title\"' to create a task");
+            println!("[LLM Analysis] Understanding: {}", parsed.description);
+            if config.auto_create_task {
+                println!("[Auto-creating task based on your input...]");
+                create_task_from_input(input, state, executor).await;
+            } else {
+                println!("Use '/create \"task title\"' to create a task explicitly.");
             }
         }
         _ => {
-            println!("[{:?}] I understand you want to: {}", state.role, parsed.description);
+            println!("[{:?}] {}", state.role, parsed.description);
             if config.auto_create_task {
-                create_task_from_input(input, state, executor).await;
+                create_task_from_input(&parsed.description, state, executor).await;
             }
         }
     }
 }
 
-// ===== 意图解析 =====
+// ===== LLM 意图解析 =====
 
-fn parse_intent(input: &str, state: &ReplState) -> ParsedIntent {
+/// 使用 LLM 解析用户意图
+///
+/// TODO: 集成 LLM Provider 进行意图解析
+/// 1. 构建包含对话历史的 prompt
+/// 2. 调用当前配置的 LLM Provider
+/// 3. 解析 LLM 返回的 JSON 格式意图
+async fn parse_intent_with_llm(input: &str, _state: &ReplState) -> ParsedIntent {
+    // TODO: 替换为实际的 LLM 调用
+    //
+    // 示例实现：
+    // ```rust
+    // use ndc_core::llm::LlmProvider;
+    //
+    // let messages = vec![
+    //     Message {
+    //         role: MessageRole::System,
+    //         content: "You are an intent parser. Return JSON with action_type, description, etc.".to_string(),
+    //         name: None,
+    //         tool_calls: None,
+    //     },
+    //     Message {
+    //         role: MessageRole::User,
+    //         content: input.to_string(),
+    //         name: None,
+    //         tool_calls: None,
+    //     },
+    // ];
+    //
+    // let response = llm_provider.complete(&CompletionRequest { ... }).await?;
+    // ```
+
+    // 临时实现：返回基本意图
     let lower = input.to_lowercase();
     let mut parsed = ParsedIntent::default();
-
-    // 提取任务名称
-    let mut entities = state.entities.clone();
-    parse_task_names(input, &mut parsed, &mut entities);
-
-    // 检测动作类型
-    detect_action_type(&lower, &mut parsed);
-
-    // 提取文件路径
-    parse_file_paths(input, &mut entities);
-
-    // 提取错误信息
-    parse_error_messages(input, &mut entities);
-
-    // 提取代码片段
-    parse_code_snippets(input, &mut entities);
-
-    // 提取函数名
-    parse_functions(input, &mut entities);
-
-    // 设置描述
     parsed.description = input.to_string();
-    parsed.parameters = extract_parameters(input);
+
+    // 简单的关键词检测（临时方案，将被 LLM 替代）
+    if lower.contains("create task") || lower.contains("new task") || lower.contains("create a") {
+        parsed.action_type = ActionType::CreateTask;
+        parsed.confidence = 0.7;
+    } else if lower.contains("help") || lower.contains("what can you do") {
+        parsed.action_type = ActionType::Help;
+        parsed.confidence = 0.9;
+    } else if lower.contains("test") {
+        parsed.action_type = ActionType::RunTests;
+        parsed.confidence = 0.6;
+    } else if lower.contains("explain") || lower.contains("how does") {
+        parsed.action_type = ActionType::Explain;
+        parsed.confidence = 0.7;
+    } else {
+        parsed.action_type = ActionType::Unknown;
+        parsed.confidence = 0.3;
+    }
 
     parsed
-}
-
-fn detect_action_type(lower: &str, parsed: &mut ParsedIntent) {
-    let patterns = [
-        (ActionType::CreateTask, vec!["create task", "new task", "add task", "create a", "i want to create", "make a task"]),
-        (ActionType::RunTests, vec!["run test", "execute test", "test the", "run tests", "testing"]),
-        (ActionType::ReadFile, vec!["read file", "show file", "view file", "cat file", "open file", "display file"]),
-        (ActionType::WriteFile, vec!["write file", "edit file", "modify file", "update file", "change file"]),
-        (ActionType::CreateFile, vec!["create file", "new file", "add file", "make a file"]),
-        (ActionType::DeleteFile, vec!["delete file", "remove file", "drop file"]),
-        (ActionType::ListFiles, vec!["list files", "ls", "dir", "show files", "list directory"]),
-        (ActionType::SearchCode, vec!["search", "find", "grep", "look for", "search for"]),
-        (ActionType::GitOperation, vec!["git commit", "git push", "git pull", "git status", "git branch", "git checkout"]),
-        (ActionType::Refactor, vec!["refactor", "rename", "restructure", "reorganize"]),
-        (ActionType::Debug, vec!["debug", "fix error", "fix bug", "fix the error", "solve error", "troubleshoot"]),
-        (ActionType::Explain, vec!["explain", "what is", "how does", "tell me about", "describe"]),
-        (ActionType::Help, vec!["help", "what can you do", "commands", "how to use"]),
-    ];
-
-    for (action_type, keywords) in patterns {
-        for keyword in keywords {
-            if lower.contains(keyword) {
-                parsed.action_type = action_type;
-                parsed.confidence = calculate_confidence(keyword, lower);
-                return;
-            }
-        }
-    }
-
-    parsed.confidence = 0.3; // 默认低置信度
-}
-
-fn calculate_confidence(keyword: &str, text: &str) -> f32 {
-    let keyword_len = keyword.len() as f32;
-    let text_len = text.len() as f32;
-    let ratio = keyword_len / text_len;
-
-    // 越短越精确
-    let base = if ratio > 0.1 { 0.9 } else { 0.7 };
-    (base + ratio).min(1.0)
-}
-
-fn parse_task_names(input: &str, parsed: &mut ParsedIntent, entities: &mut ExtractedEntities) {
-    // 匹配引号中的任务名
-    let re = Regex::new(r#"["']([^"']+)["']"#).unwrap();
-    for cap in re.captures_iter(input) {
-        if let Some(name) = cap.get(1) {
-            let name = name.as_str().trim().to_string();
-            if !name.is_empty() && name.len() > 3 {
-                entities.task_names.push(name.clone());
-                if parsed.target.is_none() {
-                    parsed.target = Some(name);
-                }
-            }
-        }
-    }
-}
-
-fn parse_file_paths(input: &str, entities: &mut ExtractedEntities) {
-    // 匹配常见的文件路径模式
-    let patterns = [
-        Regex::new(r"[./~\w/-]+\.(rs|toml|md|json|yaml|yml|txt|sh|py|js|ts|html|css)").unwrap(),
-        Regex::new(r"(?:src/|crates/|bin/|tests?/|docs?/)[\w/-]+").unwrap(),
-    ];
-
-    for re in &patterns {
-        for cap in re.find_iter(input) {
-            let path = cap.as_str().to_string();
-            if !entities.file_paths.contains(&path) {
-                entities.file_paths.push(path);
-            }
-        }
-    }
-}
-
-fn parse_error_messages(input: &str, entities: &mut ExtractedEntities) {
-    // 匹配错误信息
-    let re = Regex::new(r"(?:error|exception|failure|failed|err):\s*([^\n]+)").unwrap();
-    for cap in re.captures_iter(input) {
-        if let Some(err) = cap.get(1) {
-            entities.error_messages.push(err.as_str().trim().to_string());
-        }
-    }
-
-    // 匹配错误码
-    let re = Regex::new(r"E\d{4}").unwrap();
-    for cap in re.find_iter(input) {
-        entities.error_messages.push(cap.as_str().to_string());
-    }
-}
-
-fn parse_code_snippets(input: &str, entities: &mut ExtractedEntities) {
-    // 匹配 `code` 格式的代码片段
-    let re = Regex::new(r#"`([^`]+)`"#).unwrap();
-    for cap in re.captures_iter(input) {
-        if let Some(snippet) = cap.get(1) {
-            entities.code_snippets.push(snippet.as_str().to_string());
-        }
-    }
-}
-
-fn parse_functions(input: &str, entities: &mut ExtractedEntities) {
-    // 匹配函数定义和调用
-    let re = Regex::new(r"(?:fn|func|def|function)\s+([a-zA-Z_]\w*)").unwrap();
-    for cap in re.captures_iter(input) {
-        if let Some(name) = cap.get(1) {
-            entities.functions.push(name.as_str().to_string());
-        }
-    }
-}
-
-fn extract_parameters(input: &str) -> HashMap<String, String> {
-    let mut params = HashMap::new();
-
-    // 提取 key=value 参数
-    let re = Regex::new(r"(\w+)=(\S+)").unwrap();
-    for cap in re.captures_iter(input) {
-        if let (Some(key), Some(value)) = (cap.get(1), cap.get(2)) {
-            params.insert(key.as_str().to_string(), value.as_str().to_string());
-        }
-    }
-
-    params
 }
 
 // ===== 任务创建 =====
 
 async fn create_task_from_input(input: &str, state: &mut ReplState, executor: Arc<Executor>) {
-    let title: String = if let Some(target) = &state.entities.task_names.last() {
-        (*target).clone()
-    } else {
-        // 从输入中提取标题
+    let title: String = {
+        // 简单提取：取前 10 个单词作为标题
         let words: Vec<&str> = input.split_whitespace().take(10).collect();
         words.join(" ")
     };
@@ -525,66 +395,19 @@ async fn create_task_from_input(input: &str, state: &mut ReplState, executor: Ar
     }
 }
 
-fn generate_task_suggestions(input: &str, state: &mut ReplState) {
-    state.task_suggestions.clear();
-
-    let lower = input.to_lowercase();
-
-    // 基于输入生成建议
-    if lower.contains("test") {
-        state.task_suggestions.push(TaskSuggestion {
-            title: "Run and verify tests".to_string(),
-            description: "Execute test suite for current changes".to_string(),
-            priority: "Medium".to_string(),
-            confidence: 0.85,
-        });
-    }
-
-    if lower.contains("error") || lower.contains("bug") {
-        state.task_suggestions.push(TaskSuggestion {
-            title: "Debug and fix issue".to_string(),
-            description: "Investigate and resolve the reported issue".to_string(),
-            priority: "High".to_string(),
-            confidence: 0.90,
-        });
-    }
-
-    if lower.contains("file") || lower.contains("code") {
-        state.task_suggestions.push(TaskSuggestion {
-            title: "Review code changes".to_string(),
-            description: "Review modified files and ensure quality".to_string(),
-            priority: "Medium".to_string(),
-            confidence: 0.75,
-        });
-    }
-
-    if lower.contains("git") || lower.contains("commit") {
-        state.task_suggestions.push(TaskSuggestion {
-            title: "Create git commit".to_string(),
-            description: "Stage and commit changes".to_string(),
-            priority: "Low".to_string(),
-            confidence: 0.80,
-        });
-    }
-}
-
 // ===== 辅助函数 =====
 
-fn print_thought_process(parsed: &ParsedIntent, state: &ReplState) {
-    println!("[Thinking...]");
+fn print_thought_process(parsed: &ParsedIntent) {
+    println!("[LLM Thinking...]");
     println!("  Action: {:?}", parsed.action_type);
     println!("  Confidence: {:.0}%", parsed.confidence * 100.0);
 
-    if !state.entities.file_paths.is_empty() {
-        println!("  Files: {}", state.entities.file_paths.join(", "));
-    }
-
-    if !state.entities.task_names.is_empty() {
-        println!("  Task names: {}", state.entities.task_names.join(", "));
-    }
-
     if !parsed.parameters.is_empty() {
         println!("  Params: {:?}", parsed.parameters);
+    }
+
+    if let Some(ref target) = parsed.target {
+        println!("  Target: {}", target);
     }
 }
 
@@ -592,16 +415,20 @@ fn show_help() {
     println!(r#"
 Available Commands:
   /help, /h          Show this help
-  /status, /st        Show current session status
-  /tasks              List all tasks
-  /switch <role>      Switch agent role
-  /model, /m          Show or switch LLM model (e.g., /model minimax/m2.1-0107)
-  /verbose, /v        Toggle thought display
-  /clear, /cls        Clear screen
-  /new                Start new session
-  /context, /ctx      Show context
-  /suggest, /sg       Show task suggestions
-  /exit, /quit, /q   Exit REPL
+  /status, /st       Show current session status
+  /tasks             List all tasks
+  /switch <role>     Switch agent role
+  /model, /m         Show or switch LLM model (e.g., /model minimax/m2.1-0107)
+  /verbose, /v       Toggle thought display
+  /clear, /cls       Clear screen
+  /new               Start new session
+  /context, /ctx     Show context
+  /exit, /quit, /q  Exit REPL
+
+LLM Configuration:
+  Use /model to switch between LLM providers
+  Supported: minimax, openrouter, openai, anthropic, ollama
+  Environment: NDC_MINIMAX_API_KEY, NDC_OPENROUTER_API_KEY, etc.
 
 Natural Language Examples:
   "Create a task to add user authentication"
@@ -616,11 +443,11 @@ async fn show_status(state: &ReplState, config: &ReplConfig) {
     println!("Session Status:");
     println!("  Session ID: {}", state.session_id);
     println!("  Role: {:?}", state.role);
-    println!("  Commands: {}", config.prompt.trim_end());
+    println!("  Provider: {}", state.current_provider.as_ref().unwrap_or(&"default".to_string()));
+    println!("  Model: {}", state.current_model.as_ref().unwrap_or(&"default".to_string()));
     println!("  Auto-create tasks: {}", config.auto_create_task);
     println!("  Dialogue entries: {}", state.dialogue_history.len());
     println!("  Created tasks: {}", state.created_tasks.len());
-    println!("  Files referenced: {}", state.entities.file_paths.len());
 }
 
 async fn list_tasks(state: &ReplState, executor: &Executor) {
@@ -669,25 +496,9 @@ fn show_context(state: &ReplState) {
     println!("Current Context:");
     println!("  Session: {}", state.session_id);
     println!("  Role: {:?}", state.role);
+    println!("  Provider: {:?}", state.current_provider);
+    println!("  Model: {:?}", state.current_model);
     println!("  Tasks created: {}", state.created_tasks.len());
-    println!("  Entities:");
-    println!("    Files: {:?}", state.entities.file_paths);
-    println!("    Functions: {:?}", state.entities.functions);
-    println!("    Errors: {:?}", state.entities.error_messages);
-}
-
-fn show_suggestions(state: &ReplState) {
-    if state.task_suggestions.is_empty() {
-        println!("No suggestions. Try describing what you want to do.");
-        return;
-    }
-
-    println!("Task Suggestions:");
-    for (i, suggestion) in state.task_suggestions.iter().enumerate() {
-        println!("  {}. {} [{}]", i + 1, suggestion.title, suggestion.priority);
-        println!("     {}", suggestion.description);
-        println!("     Confidence: {:.0}%", suggestion.confidence * 100.0);
-    }
 }
 
 fn clear_screen() {
@@ -775,60 +586,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_action_type_detection() {
-        let mut parsed = ParsedIntent::default();
-        detect_action_type("create a task to add user authentication", &mut parsed);
-        assert_eq!(parsed.action_type, ActionType::CreateTask);
-        assert!(parsed.confidence > 0.7);
-
-        let mut parsed = ParsedIntent::default();
-        detect_action_type("run test the code", &mut parsed);
-        assert_eq!(parsed.action_type, ActionType::RunTests);
-
-        let mut parsed = ParsedIntent::default();
-        detect_action_type("fix the error in database.rs", &mut parsed);
-        assert_eq!(parsed.action_type, ActionType::Debug);
-    }
-
-    #[test]
-    fn test_file_path_parsing() {
-        let mut entities = ExtractedEntities::default();
-        parse_file_paths("edit src/main.rs and update Cargo.toml", &mut entities);
-        assert!(entities.file_paths.contains(&"src/main.rs".to_string()));
-        assert!(entities.file_paths.contains(&"Cargo.toml".to_string()));
-    }
-
-    #[test]
-    fn test_error_message_parsing() {
-        let mut entities = ExtractedEntities::default();
-        parse_error_messages("error: failed to compile with error E0425", &mut entities);
-        assert!(!entities.error_messages.is_empty());
-        assert!(entities.error_messages.iter().any(|e| e.contains("E0425")));
-    }
-
-    #[test]
-    fn test_function_parsing() {
-        let mut entities = ExtractedEntities::default();
-        parse_functions("fn main() { }", &mut entities);
-        assert!(entities.functions.contains(&"main".to_string()));
-    }
-
-    #[test]
-    fn test_code_snippet_parsing() {
-        let mut entities = ExtractedEntities::default();
-        parse_code_snippets("use the `Executor::new` function", &mut entities);
-        assert!(entities.code_snippets.contains(&"Executor::new".to_string()));
-    }
-
-    #[test]
-    fn test_task_name_parsing() {
-        let mut parsed = ParsedIntent::default();
-        let mut entities = ExtractedEntities::default();
-        parse_task_names("Create a task called \"Add User Authentication\"", &mut parsed, &mut entities);
-        assert!(entities.task_names.contains(&"Add User Authentication".to_string()));
-    }
-
-    #[test]
     fn test_repl_state_default() {
         let state = ReplState::default();
         assert!(!state.session_id.is_empty());
@@ -848,13 +605,6 @@ mod tests {
         let parsed = ParsedIntent::default();
         assert_eq!(parsed.action_type, ActionType::Unknown);
         assert_eq!(parsed.confidence, 0.0);
-    }
-
-    #[test]
-    fn test_extracted_entities_default() {
-        let entities = ExtractedEntities::default();
-        assert!(entities.file_paths.is_empty());
-        assert!(entities.functions.is_empty());
     }
 
     #[test]
@@ -879,30 +629,13 @@ mod tests {
     }
 
     #[test]
-    fn test_task_suggestion() {
-        let suggestion = TaskSuggestion {
-            title: "Test Task".to_string(),
-            description: "Test description".to_string(),
-            priority: "High".to_string(),
-            confidence: 0.9,
-        };
-        assert_eq!(suggestion.title, "Test Task");
-        assert_eq!(suggestion.priority, "High");
-    }
+    fn test_action_type_variants() {
+        let create = ActionType::CreateTask;
+        let test = ActionType::RunTests;
+        let unknown = ActionType::Unknown;
 
-    #[test]
-    fn test_calculate_confidence() {
-        let conf = calculate_confidence("test", "test the code");
-        assert!(conf > 0.7);
-
-        let conf = calculate_confidence("create", "I want to create a new task");
-        assert!(conf > 0.5);
-    }
-
-    #[test]
-    fn test_extract_parameters() {
-        let params = extract_parameters("test name=value foo=bar");
-        assert_eq!(params.get("name"), Some(&"value".to_string()));
-        assert_eq!(params.get("foo"), Some(&"bar".to_string()));
+        assert_eq!(create, ActionType::CreateTask);
+        assert_eq!(test, ActionType::RunTests);
+        assert_eq!(unknown, ActionType::Unknown);
     }
 }

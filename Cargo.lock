@@ -1346,7 +1346,6 @@ dependencies = [
  "ndc-runtime",
  "prost",
  "ratatui",
- "regex",
  "serde",
  "serde_json",
  "tempfile",
