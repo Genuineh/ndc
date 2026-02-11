@@ -129,7 +129,21 @@ cargo test --test e2e test_create_basic
 
 - Rust 1.70+
 - Cargo
-- (可选) OpenAI/Anthropic API Key 用于 LLM 功能
+- (可选) LLM API Key 用于 AI 功能
+
+## LLM Provider 支持
+
+NDC 支持多个 LLM 提供商：
+
+| Provider | 推荐模型 | 特点 |
+|----------|---------|------|
+| **MiniMax** | `m2.1-0107` | 国内高速，M2.1 系列 |
+| **OpenRouter** | `anthropic/claude-3.5-sonnet` | 统一访问 100+ 模型 |
+| **OpenAI** | `gpt-4o` | GPT-4o 系列 |
+| **Anthropic** | `claude-3-opus` | Claude 系列 |
+| **Ollama** | `llama3` | 本地免费模型 |
+
+详细配置请参考 [LLM 集成说明](docs/LLM_INTEGRATION.md)。
 
 ## 许可证
 
