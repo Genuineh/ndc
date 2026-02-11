@@ -86,6 +86,12 @@ pub struct ReplState {
 
     /// 任务建议
     pub task_suggestions: Vec<TaskSuggestion>,
+
+    /// 当前 LLM Provider
+    pub current_provider: Option<String>,
+
+    /// 当前 LLM 模型
+    pub current_model: Option<String>,
 }
 
 impl Default for ReplState {
@@ -98,6 +104,8 @@ impl Default for ReplState {
             role: AgentRole::Historian,
             created_tasks: Vec::new(),
             task_suggestions: Vec::new(),
+            current_provider: None,
+            current_model: None,
         }
     }
 }
@@ -255,15 +263,24 @@ async fn handle_command(input: &str, config: &ReplConfig, state: &mut ReplState,
             state.entities = ExtractedEntities::default();
             state.created_tasks.clear();
             state.task_suggestions.clear();
+            state.current_provider = None;
+            state.current_model = None;
             println!("[New session started: {}]", state.session_id);
         }
         "/context" | "/ctx" => show_context(state),
+        "/model" | "/m" => {
+            if parts.len() > 1 {
+                switch_model(parts[1], state);
+            } else {
+                show_model_info(state);
+            }
+        }
         "/create" if parts.len() > 1 => {
             let task_title = &input[8..].trim().trim_matches('"');
             create_task_from_input(task_title, state, executor).await;
         }
         "/suggest" | "/suggests" => show_suggestions(state),
-        _ => println!("Unknown command: {}", cmd),
+        _ => println!("Unknown command: {}. Type '/help' for available commands.", cmd),
     }
 }
 
@@ -578,6 +595,7 @@ Available Commands:
   /status, /st        Show current session status
   /tasks              List all tasks
   /switch <role>      Switch agent role
+  /model, /m          Show or switch LLM model (e.g., /model minimax/m2.1-0107)
   /verbose, /v        Toggle thought display
   /clear, /cls        Clear screen
   /new                Start new session
@@ -675,6 +693,81 @@ fn show_suggestions(state: &ReplState) {
 fn clear_screen() {
     print!("\x1B[2J\x1B[3J\x1B[H");
     let _ = io::stdout().flush();
+}
+
+fn show_model_info(state: &ReplState) {
+    println!("Current Model Configuration:");
+    println!("  Provider: {}", state.current_provider.as_ref().unwrap_or(&"default".to_string()));
+    println!("  Model: {}", state.current_model.as_ref().unwrap_or(&"default".to_string()));
+    println!();
+    println!("Available providers: openai, anthropic, minimax, openrouter, ollama");
+    println!();
+    println!("Usage: /model <provider>[/<model>]");
+    println!();
+    println!("Examples:");
+    println!("  /model minimax");
+    println!("  /model minimax/m2.1-0107");
+    println!("  /model openrouter");
+    println!("  /model openrouter/anthropic/claude-3.5-sonnet");
+    println!("  /model openai/gpt-4o");
+    println!();
+    println!("Environment Variables (with NDC_ prefix):");
+    println!("  NDC_OPENAI_API_KEY, NDC_OPENAI_MODEL");
+    println!("  NDC_ANTHROPIC_API_KEY, NDC_ANTHROPIC_MODEL");
+    println!("  NDC_MINIMAX_API_KEY, NDC_MINIMAX_GROUP_ID, NDC_MINIMAX_MODEL");
+    println!("  NDC_OPENROUTER_API_KEY, NDC_OPENROUTER_MODEL");
+    println!("  NDC_OLLAMA_MODEL, NDC_OLLAMA_URL");
+}
+
+fn switch_model(model_spec: &str, state: &mut ReplState) {
+    let parts: Vec<&str> = model_spec.split('/').collect();
+
+    match parts.first() {
+        Some(&"minimax") => {
+            state.current_provider = Some("minimax".to_string());
+            state.current_model = parts.get(1)
+                .map(|s| s.to_string())
+                .or_else(|| Some("m2.1-0107".to_string()));
+            println!("[Switched to MiniMax: {}]", state.current_model.as_ref().unwrap());
+        }
+        Some(&"openrouter") => {
+            state.current_provider = Some("openrouter".to_string());
+            state.current_model = parts.get(1)
+                .map(|s| s.to_string())
+                .or_else(|| Some("anthropic/claude-3.5-sonnet".to_string()));
+            println!("[Switched to OpenRouter: {}]", state.current_model.as_ref().unwrap());
+        }
+        Some(&"openai") => {
+            state.current_provider = Some("openai".to_string());
+            state.current_model = parts.get(1)
+                .map(|s| s.to_string())
+                .or_else(|| Some("gpt-4o".to_string()));
+            println!("[Switched to OpenAI: {}]", state.current_model.as_ref().unwrap());
+        }
+        Some(&"anthropic") => {
+            state.current_provider = Some("anthropic".to_string());
+            state.current_model = parts.get(1)
+                .map(|s| s.to_string())
+                .or_else(|| Some("claude-3-opus".to_string()));
+            println!("[Switched to Anthropic: {}]", state.current_model.as_ref().unwrap());
+        }
+        Some(&"ollama") => {
+            state.current_provider = Some("ollama".to_string());
+            state.current_model = parts.get(1)
+                .map(|s| s.to_string())
+                .or_else(|| Some("llama3".to_string()));
+            println!("[Switched to Ollama: {}]", state.current_model.as_ref().unwrap());
+        }
+        Some(provider) => {
+            state.current_provider = Some(provider.to_string());
+            state.current_model = parts.get(1).map(|s| s.to_string());
+            println!("[Switched to {}: {:?}]", provider, state.current_model);
+        }
+        None => {
+            println!("Usage: /model <provider>[/<model>]");
+            println!("Run /model to see available providers.");
+        }
+    }
 }
 
 #[cfg(test)]

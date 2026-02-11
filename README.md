@@ -143,6 +143,25 @@ NDC 支持多个 LLM 提供商：
 | **Anthropic** | `claude-3-opus` | Claude 系列 |
 | **Ollama** | `llama3` | 本地免费模型 |
 
+### 快速配置
+
+所有环境变量使用 `NDC_` 前缀避免冲突：
+
+```bash
+# MiniMax (国内推荐)
+export NDC_MINIMAX_API_KEY="your-key"
+export NDC_MINIMAX_MODEL="m2.1-0107"
+
+# OpenRouter (多模型)
+export NDC_OPENROUTER_API_KEY="your-key"
+export NDC_OPENROUTER_MODEL="anthropic/claude-3.5-sonnet"
+
+# 在 REPL 中动态切换
+ndc repl
+> /model minimax/m2.1-0107
+> /model openrouter/anthropic/claude-3.5-sonnet
+```
+
 详细配置请参考 [LLM 集成说明](docs/LLM_INTEGRATION.md)。
 
 ## 许可证

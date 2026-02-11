@@ -355,31 +355,31 @@ impl Repl {
 
 ## 配置
 
-### 环境变量
+### 环境变量（使用 NDC_ 前缀避免冲突）
 
 ```bash
 # OpenAI
-export OPENAI_API_KEY="sk-..."
-export OPENAI_MODEL="gpt-4"
+export NDC_OPENAI_API_KEY="sk-..."
+export NDC_OPENAI_MODEL="gpt-4"
 
 # Anthropic
-export ANTHROPIC_API_KEY="sk-ant-..."
-export ANTHROPIC_MODEL="claude-3-opus-20240229"
+export NDC_ANTHROPIC_API_KEY="sk-ant-..."
+export NDC_ANTHROPIC_MODEL="claude-3-opus-20240229"
 
 # MiniMax
-export MINIMAX_API_KEY="your-minimax-api-key"
-export MINIMAX_GROUP_ID="your-group-id"  # 可选
-export MINIMAX_MODEL="m2.1-0107"
+export NDC_MINIMAX_API_KEY="your-minimax-api-key"
+export NDC_MINIMAX_GROUP_ID="your-group-id"  # 可选
+export NDC_MINIMAX_MODEL="m2.1-0107"
 
 # OpenRouter
-export OPENROUTER_API_KEY="your-openrouter-key"
-export OPENROUTER_MODEL="anthropic/claude-3.5-sonnet"
-export OPENROUTER_SITE_URL="https://your-site.com"  # 可选
-export OPENROUTER_APP_NAME="YourAppName"  # 可选
+export NDC_OPENROUTER_API_KEY="your-openrouter-key"
+export NDC_OPENROUTER_MODEL="anthropic/claude-3.5-sonnet"
+export NDC_OPENROUTER_SITE_URL="https://your-site.com"  # 可选
+export NDC_OPENROUTER_APP_NAME="YourAppName"  # 可选
 
 # Ollama (本地)
-export OLLAMA_MODEL="llama2"
-export OLLAMA_URL="http://localhost:11434"
+export NDC_OLLAMA_MODEL="llama2"
+export NDC_OLLAMA_URL="http://localhost:11434"
 ```
 
 ### 配置文件
@@ -397,22 +397,22 @@ llm:
 
   # OpenAI 专用
   openai:
-    api_key: "${OPENAI_API_KEY}"
+    api_key: "${NDC_OPENAI_API_KEY}"
 
   # Anthropic 专用
   anthropic:
-    api_key: "${ANTHROPIC_API_KEY}"
+    api_key: "${NDC_ANTHROPIC_API_KEY}"
 
   # MiniMax 专用
   minimax:
-    api_key: "${MINIMAX_API_KEY}"
-    group_id: "${MINIMAX_GROUP_ID}"
+    api_key: "${NDC_MINIMAX_API_KEY}"
+    group_id: "${NDC_MINIMAX_GROUP_ID}"
 
   # OpenRouter 专用
   openrouter:
-    api_key: "${OPENROUTER_API_KEY}"
-    site_url: "${OPENROUTER_SITE_URL}"
-    app_name: "${OPENROUTER_APP_NAME}"
+    api_key: "${NDC_OPENROUTER_API_KEY}"
+    site_url: "${NDC_OPENROUTER_SITE_URL}"
+    app_name: "${NDC_OPENROUTER_APP_NAME}"
 ```
 
 ---
@@ -568,10 +568,13 @@ X-Organization: {organization}  # 可选
 MiniMax 是国内访问速度最快的选项：
 
 ```bash
-export MINIMAX_API_KEY="your-api-key"
-export MINIMAX_GROUP_ID="your-group-id"
+export NDC_MINIMAX_API_KEY="your-api-key"
+export NDC_MINIMAX_GROUP_ID="your-group-id"
 
-ndc repl --llm minimax --model m2.1-0107
+ndc repl
+
+# 或在 REPL 中动态切换
+/model minimax/m2.1-0107
 ```
 
 ### 2. 多模型访问（推荐 OpenRouter）
@@ -579,16 +582,14 @@ ndc repl --llm minimax --model m2.1-0107
 OpenRouter 提供统一接口访问多个模型：
 
 ```bash
-export OPENROUTER_API_KEY="your-key"
+export NDC_OPENROUTER_API_KEY="your-key"
 
-# 使用 Claude
-ndc repl --llm openrouter --model anthropic/claude-3.5-sonnet
+ndc repl
 
-# 使用 GPT-4o
-ndc repl --llm openrouter --model openai/gpt-4o
-
-# 使用 Gemini
-ndc repl --llm openrouter --model google/gemini-pro-1.5
+# 在 REPL 中动态切换模型
+/model openrouter/anthropic/claude-3.5-sonnet
+/model openrouter/openai/gpt-4o
+/model openrouter/google/gemini-pro-1.5
 ```
 
 ### 3. 本地开发（Ollama）
@@ -604,8 +605,11 @@ ollama pull llama2
 ollama pull codellama
 
 # 启动
-export OLLAMA_MODEL="codellama"
+export NDC_OLLAMA_MODEL="codellama"
 ndc repl
+
+# 或在 REPL 中
+/model ollama/llama3
 ```
 
 ### 4. 混合模式
@@ -654,18 +658,42 @@ ollama pull llama2
 ollama pull codellama
 
 # 启动
-export OLLAMA_MODEL="codellama"
+export NDC_OLLAMA_MODEL="codellama"
 ndc repl
 ```
 
 ### 2. 云端（OpenAI/Claude）
 
 ```bash
-export OPENAI_API_KEY="sk-..."
-ndc repl --llm openai --model gpt-4
+export NDC_OPENAI_API_KEY="sk-..."
+ndc repl
+
+# 在 REPL 中切换
+/model openai/gpt-4
+/model anthropic/claude-3-opus
 ```
 
-### 3. 混合模式
+### 3. REPL 动态模型切换
+
+NDC REPL 支持 `/model` 命令动态切换模型：
+
+```bash
+ndc repl
+
+# 查看当前模型
+> /model
+
+# 切换到 MiniMax
+> /model minimax/m2.1-0107
+
+# 切换到 OpenRouter 上的 Claude
+> /model openrouter/anthropic/claude-3.5-sonnet
+
+# 切换到本地 Ollama
+> /model ollama/llama3
+```
+
+### 4. 混合模式
 
 ```rust
 // 检测 LLM 可用性，自动选择
