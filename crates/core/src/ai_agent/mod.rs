@@ -16,6 +16,7 @@ pub mod orchestrator;
 pub mod session;
 pub mod verifier;
 pub mod prompts;
+pub mod adapters;
 
 pub use orchestrator::{
     AgentOrchestrator,

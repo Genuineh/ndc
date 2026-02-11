@@ -1188,14 +1188,19 @@ skills:
 - `crates/core/src/ai_agent/session.rs`
 - `crates/core/src/ai_agent/verifier.rs`
 
-#### P7.1 工具集成层 - ⏳ 待规划
+#### P7.1 工具集成层 - ✅ 已完成
 
 **目标**: 将 NDC 现有工具系统无缝集成到 Agent
 
 **任务**:
-- [ ] MCP Tool Adapter
-- [ ] Skill Tool Adapter
-- [ ] 工具注册表动态更新
+- [x] MCP Tool Adapter
+- [x] Skill Tool Adapter
+- [x] 工具注册表动态更新
+
+**实现文件**:
+- `crates/core/src/ai_agent/adapters/mod.rs`
+- `crates/core/src/ai_agent/adapters/mcp_adapter.rs` (McpToolDef, McpAgentTool, McpToolRegistry)
+- `crates/core/src/ai_agent/adapters/skill_adapter.rs` (SkillDef, SkillAgentTool, SkillToolRegistry)
 
 #### P7.2 知识注入系统 - ⏳ 待规划
 
