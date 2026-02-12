@@ -15,7 +15,7 @@ mod ai_agent;
 mod memory;
 mod config;
 mod todo;
-mod llm;
+pub mod llm;
 
 pub use task::*;
 pub use intent::*;
@@ -33,7 +33,7 @@ pub use config::{
     ToolPermissions, PermissionRule,
 };
 // Re-export ProviderType from llm/provider
-pub use llm::provider::ProviderType;
+pub use llm::provider::{ProviderType, TokenCounter};
 
 // Re-export commonly used types to avoid conflicts
 pub use agent::AgentId;

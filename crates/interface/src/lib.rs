@@ -34,7 +34,7 @@ mod daemon_tests;
 #[cfg(test)]
 mod e2e_tests;
 
-pub use cli::{run_cli, CliConfig};
+pub use cli::{run, CliConfig};
 pub use repl::{run_repl, ReplConfig, ReplState};
 pub use daemon::run_daemon;
 pub use agent_mode::{

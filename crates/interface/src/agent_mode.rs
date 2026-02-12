@@ -21,9 +21,70 @@ use tracing::{info, debug};
 use ndc_core::{
     AgentOrchestrator, AgentConfig, AgentRequest, AgentResponse,
     ToolExecutor, AgentError, TaskVerifier, LlmProvider,
-    AgentRole, TaskId, TaskStorage,
+    AgentRole, TaskId, TaskStorage, ProviderType, ProviderConfig,
 };
 use ndc_runtime::{Executor, tools::ToolRegistry};
+
+/// Get API key from environment variable with NDC_ prefix
+fn get_api_key(provider: &str) -> String {
+    let env_var = format!("NDC_{}_API_KEY", provider.to_uppercase());
+    std::env::var(&env_var).ok()
+        .or_else(|| std::env::var("NDC_LLM_API_KEY").ok())
+        .unwrap_or_default()
+}
+
+/// Get organization/group_id from environment variable
+fn get_organization(provider: &str) -> String {
+    let env_var = format!("NDC_{}_GROUP_ID", provider.to_uppercase());
+    std::env::var(&env_var).ok()
+        .unwrap_or_default()
+}
+
+/// Create provider configuration based on provider name
+fn create_provider_config(provider_name: &str, model: &str) -> ProviderConfig {
+    let api_key = get_api_key(provider_name);
+    let organization = get_organization(provider_name);
+    let provider_type: ProviderType = provider_name.to_string().into();
+
+    let (base_url, models) = match provider_type {
+        ProviderType::OpenAi => (
+            None,
+            vec!["gpt-4o".to_string(), "gpt-4o-mini".to_string(), "gpt-4".to_string()],
+        ),
+        ProviderType::Anthropic => (
+            Some("https://api.anthropic.com/v1".to_string()),
+            vec!["claude-sonnet-4-5-20250929".to_string(), "claude-3-5-sonnet".to_string()],
+        ),
+        ProviderType::MiniMax => (
+            Some("https://api.minimax.chat/v1".to_string()),
+            vec!["m2.1-0107".to_string(), "abab6.5s-chat".to_string()],
+        ),
+        ProviderType::OpenRouter => (
+            Some("https://openrouter.ai/api/v1".to_string()),
+            vec!["anthropic/claude-3.5-sonnet".to_string(), "openai/gpt-4o".to_string()],
+        ),
+        ProviderType::Ollama => (
+            Some("http://localhost:11434".to_string()),
+            vec!["llama3.2".to_string(), "llama3".to_string(), "qwen2.5".to_string()],
+        ),
+        _ => (
+            None,
+            vec![model.to_string()],
+        ),
+    };
+
+    ProviderConfig {
+        name: provider_name.to_string(),
+        provider_type,
+        api_key,
+        base_url,
+        organization: if organization.is_empty() { None } else { Some(organization) },
+        default_model: model.to_string(),
+        models,
+        timeout_ms: 60000,
+        max_retries: 3,
+    }
+}
 
 /// 内存任务存储 - 用于 Agent 验证
 struct MemoryTaskStorage {
@@ -271,11 +332,83 @@ impl AgentModeManager {
         }
     }
 
+    /// 切换 LLM Provider
+    pub async fn switch_provider(&self, provider_name: &str, model: Option<&str>) -> Result<(), AgentError> {
+        let mut state = self.state.lock().await;
+
+        // 检查是否启用
+        let was_enabled = state.enabled;
+
+        // 更新配置
+        state.config.provider = provider_name.to_string();
+        let new_model = if let Some(m) = model {
+            m.to_string()
+        } else {
+            // 设置默认模型
+            match provider_name {
+                "openai" => "gpt-4o".to_string(),
+                "anthropic" => "claude-sonnet-4-5-20250929".to_string(),
+                "minimax" => "m2.1-0107".to_string(),
+                "openrouter" => "anthropic/claude-3.5-sonnet".to_string(),
+                "ollama" => "llama3.2".to_string(),
+                _ => provider_name.to_string(),
+            }
+        };
+        state.config.model = new_model.clone();
+
+        // 克隆更新后的配置
+        let config = state.config.clone();
+
+        drop(state);
+
+        // 重新创建 orchestrator (如果之前已启用)
+        if was_enabled {
+            self.disable().await;
+            self.enable(config).await?;
+        }
+
+        info!(provider = %provider_name, model = %new_model, "Provider switched");
+        Ok(())
+    }
+
     /// 创建 LLM Provider
     fn create_provider(&self, provider_name: &str) -> Result<Arc<dyn LlmProvider>, AgentError> {
-        // TODO: 根据配置创建相应的 Provider
-        // 目前返回模拟 Provider
-        Err(AgentError::InvalidRequest(format!("Provider '{}' not yet implemented", provider_name)))
+        use ndc_core::llm::provider::{SimpleTokenCounter, OpenAiProvider, AnthropicProvider, MiniMaxProvider, OpenRouterProvider, TokenCounter};
+
+        // 根据 provider 名称创建相应的 Provider
+        let provider_type: ProviderType = provider_name.to_string().into();
+        let token_counter: Arc<dyn TokenCounter> = Arc::new(SimpleTokenCounter::new());
+
+        match provider_type {
+            ProviderType::OpenAi => {
+                let config = create_provider_config(provider_name, "gpt-4o");
+                let provider = OpenAiProvider::new(config, token_counter);
+                Ok(Arc::new(provider))
+            }
+            ProviderType::Anthropic => {
+                let config = create_provider_config(provider_name, "claude-sonnet-4-5-20250929");
+                let provider = AnthropicProvider::new(config, token_counter);
+                Ok(Arc::new(provider))
+            }
+            ProviderType::MiniMax => {
+                let config = create_provider_config(provider_name, "m2.1-0107");
+                let provider = MiniMaxProvider::new(config, token_counter);
+                Ok(Arc::new(provider))
+            }
+            ProviderType::OpenRouter => {
+                let config = create_provider_config(provider_name, "anthropic/claude-3.5-sonnet");
+                let provider = OpenRouterProvider::new(config, token_counter);
+                Ok(Arc::new(provider))
+            }
+            ProviderType::Ollama => {
+                let config = create_provider_config(provider_name, "llama3.2");
+                let provider = OpenAiProvider::new(config, token_counter);
+                Ok(Arc::new(provider))
+            }
+            _ => Err(AgentError::InvalidRequest(
+                format!("Provider '{}' is not supported. Supported: openai, anthropic, minimax, openrouter, ollama", provider_name)
+            ))
+        }
     }
 }
 

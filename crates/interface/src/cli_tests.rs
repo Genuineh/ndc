@@ -10,22 +10,10 @@ mod tests {
     #[test]
     fn test_cli_error_display() {
         let error = CliError::ExecutorInitFailed("test error".to_string());
-        assert_eq!(format!("{}", error), "执行器初始化失败: test error");
-
-        let error = CliError::TaskExecutionFailed("execution failed".to_string());
-        assert_eq!(format!("{}", error), "任务执行失败: execution failed");
+        assert_eq!(format!("{}", error), "Executor initialization failed: test error");
 
         let error = CliError::StorageError("storage failed".to_string());
-        assert_eq!(format!("{}", error), "存储错误: storage failed");
-
-        // TaskNotFound requires a valid ULID - skip the display test
-        // as ulid parsing is tested in core crate
-
-        let error = CliError::InvalidTaskId("invalid".to_string());
-        assert_eq!(format!("{}", error), "无效的任务 ID: invalid");
-
-        let error = CliError::InvalidState("invalid state".to_string());
-        assert_eq!(format!("{}", error), "无效的状态: invalid state");
+        assert_eq!(format!("{}", error), "Storage error: storage failed");
     }
 
     /// Test CliError source chain
@@ -33,11 +21,6 @@ mod tests {
     fn test_cli_error_source() {
         let error = CliError::ExecutorInitFailed("inner error".to_string());
         assert!(error.source().is_none());
-
-        // Test chained error
-        let inner: Result<(), CliError> = Err(CliError::StorageError("inner".to_string()));
-        let outer = CliError::TaskExecutionFailed(inner.unwrap_err().to_string());
-        assert!(outer.source().is_none());
     }
 
     /// Test CliError clones

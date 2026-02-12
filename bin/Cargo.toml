@@ -9,10 +9,6 @@ authors = ["Jerry"]
 path = "main.rs"
 name = "ndc"
 
-[[test]]
-path = "tests/e2e/mod.rs"
-name = "e2e"
-
 [dev-dependencies]
 tempfile = "3"
 

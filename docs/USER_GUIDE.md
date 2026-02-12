@@ -383,6 +383,14 @@ NDC 采用 OpenCode 风格的分层配置系统，支持多层级配置和环境
 | `NDC_REPL_CONFIRMATION` | 确认模式 | true |
 | `NDC_MAX_CONCURRENT_TASKS` | 最大并发数 | 4 |
 
+#### MiniMax 专用环境变量
+
+| 环境变量 | 说明 | 必需 |
+|----------|------|------|
+| `NDC_MINIMAX_API_KEY` | MiniMax API Key | 是 |
+| `NDC_MINIMAX_GROUP_ID` | MiniMax Group ID | 推荐 |
+| `NDC_MINIMAX_MODEL` | 模型名称 | 否（默认 m2.1-0107） |
+
 ### 完整配置示例
 
 ```yaml
@@ -498,31 +506,61 @@ llm:
   base_url: http://localhost:11434
 ```
 
+**使用 MiniMax**：
+
+```bash
+# 设置环境变量
+export NDC_MINIMAX_API_KEY="your-api-key"
+export NDC_MINIMAX_GROUP_ID="your-group-id"  # 可选，但推荐
+export NDC_MINIMAX_MODEL="m2.1-0107"  # 可选，默认 m2.1-0107
+
+# REPL 中切换模型
+/model minimax/m2.1-0107
+```
+
 ---
 
 ## 常见问题
 
-### Q: 任务执行失败怎么办？
+### Q: 如何配置 MiniMax？
 
 ```bash
-# 查看详细日志
-ndc logs <task-id> --verbose
+# 1. 获取 MiniMax API Key
+#    访问 https://api.minimax.chat 注册并获取 API Key
 
-# 回滚到上一个快照
-ndc rollback <task-id> latest
+# 2. 设置环境变量
+export NDC_MINIMAX_API_KEY="your-api-key"
+export NDC_MINIMAX_GROUP_ID="your-group-id"  # 可选，但推荐
+
+# 3. 启动 REPL 并切换到 MiniMax
+ndc repl
+/model minimax
 ```
 
-### Q: 如何终止正在运行的任务？
+或者在配置文件中设置：
+
+```yaml
+# ~/.config/ndc/config.yaml
+llm:
+  provider: minimax
+  api_key: env://NDC_MINIMAX_API_KEY
+  organization: env://NDC_MINIMAX_GROUP_ID  # Group ID
+  model: m2.1-0107
+```
+
+**可用模型**：
+- `m2.1-0107` - 最新一代模型（默认）
+- `abab6.5s-chat` - 快速响应模型
+- `abab6.5-chat` - 标准模型
+
+### Q: REPL 中如何切换模型？
 
 ```bash
-ndc stop <task-id>
+/model minimax                    # MiniMax 默认模型
+/model minimax/m2.1-0107         # MiniMax M2.1
+/model openai/gpt-4o             # OpenAI GPT-4o
+/model anthropic/claude-sonnet    # Anthropic Claude
 ```
-
-### Q: REPL 不识别我的意图怎么办？
-
-1. 使用更明确的关键字：`create`、`run`、`status`
-2. 简化描述，一次一个操作
-3. 使用 `help` 查看支持的命令
 
 ### Q: gRPC 连接失败？
 
@@ -535,18 +573,25 @@ ndc stop <task-id>
 ## 命令速查
 
 ```bash
-# 任务管理
-ndc create "标题" -d "描述"     # 创建任务
-ndc list                         # 列出任务
-ndc status <id>                  # 查看状态
-ndc run <id>                     # 执行任务
-ndc stop <id>                    # 终止任务
-ndc logs <id>                    # 查看日志
+# REPL 交互模式（主要使用方式）
+ndc repl                         # 启动交互式 REPL
+ndc run -m "自然语言描述"          # 单次执行
 
-# REPL
-ndc repl                         # 启动 REPL
+# 切换模型
+/model minimax                    # 使用 MiniMax 默认模型
+/model minimax/m2.1-0107         # 使用 MiniMax M2.1 模型
+/model openai/gpt-4o             # 使用 OpenAI GPT-4o
+/model anthropic/claude-sonnet   # 使用 Anthropic Claude
 
-# 系统
+# 管理命令
+ndc daemon                       # 启动后台守护进程
+ndc status-system                # 显示系统状态
+
+# REPL 内命令
+/help                            # 显示帮助
+/clear                          # 清屏
+exit / quit / q                  # 退出 REPL
+```
 ndc daemon --grpc                # 启动 gRPC
 ndc search <关键词>              # 搜索记忆
 ndc --help                       # 帮助
