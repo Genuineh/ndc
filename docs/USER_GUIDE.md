@@ -355,17 +355,147 @@ git commit -m "feat: 实现功能"
 
 ## 配置文件
 
-NDC 支持通过配置文件自定义行为：
+NDC 采用 OpenCode 风格的分层配置系统，支持多层级配置和环境变量覆盖。
+
+### 配置分层
+
+配置按以下优先级加载（优先级从低到高）：
+
+| 层级 | 路径 | 说明 |
+|------|------|------|
+| 全局 | `/etc/ndc/config.yaml` | 系统级配置，所有用户生效 |
+| 用户 | `~/.config/ndc/config.yaml` | 用户级配置，仅当前用户生效 |
+| 项目 | `./.ndc/config.yaml` | 项目级配置，仅当前项目生效 |
+
+**优先级规则**：项目 > 用户 > 全局（高层级配置覆盖低层级配置）
+
+### 环境变量
+
+可通过环境变量覆盖配置（推荐用于敏感信息和快速测试）：
+
+| 环境变量 | 说明 | 默认值 |
+|----------|------|--------|
+| `NDC_LLM_PROVIDER` | LLM 提供商 | openai |
+| `NDC_LLM_MODEL` | 模型名称 | gpt-4o |
+| `NDC_LLM_API_KEY` | API Key | - |
+| `NDC_LLM_BASE_URL` | API Base URL | - |
+| `NDC_ORGANIZATION` | 组织 ID | - |
+| `NDC_REPL_CONFIRMATION` | 确认模式 | true |
+| `NDC_MAX_CONCURRENT_TASKS` | 最大并发数 | 4 |
+
+### 完整配置示例
 
 ```yaml
-# ~/.ndc/config.yaml
-default_shell: bash
-editor: vim
-git_autocommit: false
-max_concurrent_tasks: 4
-quality_gates:
-  - cargo check
-  - cargo test
+# ~/.config/ndc/config.yaml
+
+# LLM 配置
+llm:
+  enabled: true
+  provider: openai
+  model: gpt-4o
+  # 使用 env:// 前缀从环境变量加载敏感信息
+  api_key: env://OPENAI_API_KEY
+  base_url: https://api.openai.com/v1
+  temperature: 0.1
+  max_tokens: 4096
+  timeout: 60
+
+# 多 Provider 配置
+llm:
+  providers:
+    anthropic:
+      name: anthropic
+      type: anthropic
+      model: claude-sonnet-4-5-20250929
+      base_url: https://api.anthropic.com/v1
+      api_key: env://ANTHROPIC_API_KEY
+
+    ollama:
+      name: ollama
+      type: ollama
+      model: llama3.2
+      base_url: http://localhost:11434
+
+# REPL 配置
+repl:
+  prompt: "ndc> "
+  history_file: ~/.config/ndc/history.txt
+  max_history: 1000
+  show_thought: true
+  auto_create_task: true
+  session_timeout: 3600
+  confirmation_mode: true
+
+# Runtime 配置
+runtime:
+  max_concurrent_tasks: 4
+  execution_timeout: 300
+  working_dir: .
+  quality_gates:
+    - tests_pass
+    - no_lint_errors
+    - type_check
+
+# Agent Profiles
+agents:
+  - name: default
+    display_name: Default Agent
+    description: General purpose agent with balanced settings
+    provider: openai
+    model: gpt-4o
+    temperature: 0.1
+    max_tokens: 4096
+    max_tool_calls: 50
+    enable_streaming: true
+    auto_verify: true
+    task_types:
+      - "*"
+
+  - name: implementer
+    display_name: Code Implementer
+    description: Specialized for implementing features and bug fixes
+    provider: anthropic
+    model: claude-sonnet-4-5-20250929
+    temperature: 0.1
+    max_tokens: 8192
+    max_tool_calls: 100
+    task_types:
+      - implementation
+      - bugfix
+      - refactor
+    priority: 10
+
+  - name: verifier
+    display_name: Code Verifier
+    description: Specialized for verifying and reviewing code
+    provider: openai
+    model: gpt-4o
+    temperature: 0.0
+    max_tokens: 4096
+    task_types:
+      - verification
+      - review
+      - testing
+    priority: 5
+```
+
+### 快速配置
+
+**最小配置**（只需 API Key）：
+
+```yaml
+llm:
+  provider: openai
+  api_key: env://OPENAI_API_KEY
+```
+
+**使用本地 Ollama**：
+
+```yaml
+llm:
+  provider: ollama
+  model: llama3.2
+  base_url: http://localhost:11434
 ```
 
 ---

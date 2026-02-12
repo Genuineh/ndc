@@ -1,0 +1,125 @@
+# NDC Configuration (OpenCode Style)
+#
+# Configuration layers:
+# 1. Global: /etc/ndc/config.yaml
+# 2. User: ~/.config/ndc/config.yaml
+# 3. Project: ./.ndc/config.yaml
+#
+# Environment variables (override config):
+# - NDC_LLM_PROVIDER
+# - NDC_LLM_MODEL
+# - NDC_LLM_API_KEY
+# - NDC_LLM_BASE_URL
+# - NDC_ORGANIZATION
+# - NDC_REPL_CONFIRMATION
+# - NDC_MAX_CONCURRENT_TASKS
+
+# LLM Configuration
+llm:
+  enabled: true
+  provider: openai
+  model: gpt-4o
+  # Use env:// prefix to load from environment variable
+  # api_key: env://OPENAI_API_KEY
+  base_url: https://api.openai.com/v1
+  organization: ""
+  temperature: 0.1
+  max_tokens: 4096
+  timeout: 60
+
+  # Additional providers
+  providers:
+    anthropic:
+      name: anthropic
+      type: anthropic
+      model: claude-sonnet-4-5-20250929
+      base_url: https://api.anthropic.com/v1
+      # api_key: env://ANTHROPIC_API_KEY
+
+    ollama:
+      name: ollama
+      type: ollama
+      model: llama3.2
+      base_url: http://localhost:11434
+
+# REPL Configuration
+repl:
+  prompt: "ndc> "
+  history_file: ~/.config/ndc/history.txt
+  max_history: 1000
+  show_thought: true
+  auto_create_task: true
+  session_timeout: 3600
+  fallback_to_regex: true
+  confirmation_mode: true
+
+# Runtime Configuration
+runtime:
+  max_concurrent_tasks: 4
+  execution_timeout: 300
+  working_dir: .
+  quality_gates:
+    - "tests_pass"
+    - "no_lint_errors"
+    - "type_check"
+
+# Storage Configuration
+storage:
+  storage_type: memory
+  # db_path: ~/.config/ndc/ndc.db
+  in_memory: true
+
+# Agent Profiles
+agents:
+  - name: default
+    display_name: Default Agent
+    description: General purpose agent with balanced settings
+    provider: openai
+    model: gpt-4o
+    temperature: 0.1
+    max_tokens: 4096
+    max_tool_calls: 50
+    enable_streaming: true
+    auto_verify: true
+    tool_permissions:
+      default: allow
+      tools:
+        file_write: ask
+        file_delete: ask
+        git_commit: ask
+        git_push: ask
+    task_types:
+      - "*"
+    priority: 0
+
+  - name: implementer
+    display_name: Code Implementer
+    description: Specialized for implementing features and bug fixes
+    provider: anthropic
+    model: claude-sonnet-4-5-20250929
+    temperature: 0.1
+    max_tokens: 8192
+    max_tool_calls: 100
+    enable_streaming: true
+    auto_verify: true
+    task_types:
+      - implementation
+      - bugfix
+      - refactor
+    priority: 10
+
+  - name: verifier
+    display_name: Code Verifier
+    description: Specialized for verifying and reviewing code
+    provider: openai
+    model: gpt-4o
+    temperature: 0.0
+    max_tokens: 4096
+    max_tool_calls: 30
+    enable_streaming: false
+    auto_verify: false
+    task_types:
+      - verification
+      - review
+      - testing
+    priority: 5

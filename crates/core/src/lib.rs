@@ -24,14 +24,16 @@ pub use ai_agent::*;
 pub use memory::*;
 pub use todo::*;
 pub use llm::*;
-// Re-export config types (ProviderConfig and ProviderType come from llm/provider)
+// Re-export config types
 pub use config::{
-    NdcConfig, LlmConfig, OpenAiConfig, AnthropicConfig, MiniMaxConfig,
-    OllamaConfig, ReplConfig, RuntimeConfig, StorageConfig,
+    NdcConfig, NdcConfigLoader, ConfigLayer, ConfigError,
+    YamlLlmConfig, YamlReplConfig, YamlRuntimeConfig, YamlStorageConfig, YamlProviderConfig, YamlAgentProfile,
     // Agent configuration
-    AgentProfile, PredefinedProfiles, AgentRoleSelector, AgentConfigDir,
+    AgentProfile, PredefinedProfiles, AgentRoleSelector,
     ToolPermissions, PermissionRule,
 };
+// Re-export ProviderType from llm/provider
+pub use llm::provider::ProviderType;
 
 // Re-export commonly used types to avoid conflicts
 pub use agent::AgentId;

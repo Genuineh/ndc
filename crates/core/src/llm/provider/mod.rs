@@ -215,6 +215,27 @@ pub enum ProviderType {
     OpenRouter,
 }
 
+impl From<String> for ProviderType {
+    fn from(s: String) -> Self {
+        match s.to_lowercase().as_str() {
+            "openai" => ProviderType::OpenAi,
+            "anthropic" => ProviderType::Anthropic,
+            "azure" => ProviderType::Azure,
+            "ollama" => ProviderType::Ollama,
+            "local" => ProviderType::Local,
+            "minimax" => ProviderType::MiniMax,
+            "openrouter" => ProviderType::OpenRouter,
+            _ => ProviderType::OpenAi, // 默认使用 OpenAi
+        }
+    }
+}
+
+impl From<&str> for ProviderType {
+    fn from(s: &str) -> Self {
+        s.to_string().into()
+    }
+}
+
 /// Streaming callback
 #[async_trait::async_trait]
 pub trait StreamHandler: Send + Sync {
