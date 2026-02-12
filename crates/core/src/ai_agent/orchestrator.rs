@@ -6,18 +6,51 @@
 //! - 处理流式响应
 //! - 实现反馈循环
 
-use super::{AgentError, AgentToolCall, AgentToolResult, AgentSession, SessionState, TaskVerifier, VerificationResult, build_system_prompt, PromptContext};
+use super::{AgentError, AgentToolCall, AgentToolResult, AgentSession, TaskVerifier, VerificationResult, build_system_prompt, PromptContext};
 use crate::llm::provider::{
-    LlmProvider, CompletionRequest, Message, MessageRole, ToolCall, ToolCallFunction, ToolResult as LlmToolResult
+    LlmProvider, CompletionRequest, Message, MessageRole, ToolCall, ToolResult as LlmToolResult, StreamHandler, ProviderError
 };
 use crate::{TaskId, AgentRole};
-use serde_json::Value as JsonValue;
 use std::sync::Arc;
 use std::time::Duration;
 use std::collections::HashMap;
 use tokio::sync::Mutex;
 use tracing::{info, warn, error};
 use async_trait::async_trait;
+
+/// 流式响应处理器 - 使用 Mutex 包装内容
+struct StreamingHandler {
+    content: Arc<Mutex<String>>,
+}
+
+impl StreamingHandler {
+    fn new(content: Arc<Mutex<String>>) -> Self {
+        Self { content }
+    }
+}
+
+#[async_trait::async_trait]
+impl StreamHandler for StreamingHandler {
+    async fn on_chunk(&self, chunk: &crate::llm::provider::StreamChunk) -> Result<(), ProviderError> {
+        let mut content = self.content.lock().await;
+        for choice in &chunk.choices {
+            if let Some(delta) = &choice.delta {
+                if !delta.content.is_empty() {
+                    content.push_str(&delta.content);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn on_complete(&self, _response: &crate::llm::provider::CompletionResponse) -> Result<(), ProviderError> {
+        Ok(())
+    }
+
+    async fn on_error(&self, error: &ProviderError) {
+        error!("Streaming error: {:?}", error);
+    }
+}
 
 /// Agent 配置
 #[derive(Debug, Clone)]
@@ -198,6 +231,72 @@ impl AgentOrchestrator {
                 Err(AgentError::Timeout(self.config.timeout_secs))
             }
         }
+    }
+
+    /// 处理用户请求 (流式)
+    pub async fn process_streaming<F>(
+        &self,
+        request: AgentRequest,
+        _on_chunk: F,
+    ) -> Result<AgentResponse, AgentError>
+    where
+        F: FnMut(String) + Send + 'static,
+    {
+        info!("Processing streaming agent request: {}", request.user_input);
+
+        let timeout = Duration::from_secs(self.config.timeout_secs);
+
+        // 获取或创建会话
+        let session_id = request.session_id.clone().unwrap_or_else(|| {
+            ulid::Ulid::new().to_string()
+        });
+
+        let session = self.get_or_create_session(&session_id).await?;
+
+        // 构建消息
+        let user_message = Message {
+            role: MessageRole::User,
+            content: request.user_input.clone(),
+            name: None,
+            tool_calls: None,
+        };
+
+        let messages = self.build_messages(&session, &user_message, request.active_task_id).await?;
+
+        // 构建流式请求
+        let llm_request = CompletionRequest {
+            model: self.provider.config().default_model.clone(),
+            messages,
+            temperature: Some(0.1),
+            max_tokens: Some(4096),
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            stop: None,
+            stream: true,
+        };
+
+        // 创建流处理器
+        let content = Arc::new(Mutex::new(String::new()));
+        let handler: Arc<dyn StreamHandler> = Arc::new(StreamingHandler::new(content.clone()));
+
+        // 发送流式请求
+        self.provider.complete_streaming(&llm_request, &handler).await?;
+
+        // 获取累积的内容
+        let final_content = {
+            let c = content.lock().await;
+            c.clone()
+        };
+
+        Ok(AgentResponse {
+            session_id,
+            content: final_content,
+            tool_calls: Vec::new(),
+            is_complete: true,
+            needs_input: false,
+            verification_result: None,
+        })
     }
 
     /// 获取或创建会话

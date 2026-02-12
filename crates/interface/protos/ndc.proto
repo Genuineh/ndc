@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package ndc;
 
+// NDC Service - Main gRPC service
 service NdcService {
     // Health check
     rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
@@ -13,29 +14,63 @@ service NdcService {
     rpc ExecuteTask(ExecuteTaskRequest) returns (ExecuteTaskResponse);
     rpc RollbackTask(RollbackTaskRequest) returns (RollbackTaskResponse);
     rpc GetSystemStatus(GetSystemStatusRequest) returns (SystemStatusResponse);
+
+    // Streaming RPCs
+    rpc StreamingChat(stream ChatRequest) returns (stream ChatResponse);
+    rpc StreamExecuteTask(stream ExecuteTaskEvent) returns (stream TaskExecutionEvent);
 }
+
+// Agent Service - Agent mode operations
+service AgentService {
+    rpc GetAgentStatus(AgentStatusRequest) returns (AgentStatusResponse);
+    rpc SwitchAgent(SwitchAgentRequest) returns (SwitchAgentResponse);
+    rpc ListAgents(ListAgentsRequest) returns (ListAgentsResponse);
+
+    // Agent streaming chat
+    rpc AgentChat(stream ChatRequest) returns (stream ChatResponse);
+
+    // Tool execution with streaming
+    rpc ExecuteTool(stream ToolRequest) returns (stream ToolResponse);
+}
+
+// ============================================================================
+// Common Types
+// ============================================================================
+
+message Empty {}
 
 // Health
 message HealthCheckRequest {}
 message HealthCheckResponse {
     bool healthy = 1;
     string version = 2;
+    string uptime = 3;
 }
 
-// Task
+// ============================================================================
+// Task Management
+// ============================================================================
+
 message CreateTaskRequest {
     string title = 1;
     string description = 2;
     string created_by = 3;
+    string agent_role = 4;  // planner, implementer, verifier
+    map<string, string> metadata = 5;
 }
 
 message GetTaskRequest {
     string task_id = 1;
+    bool include_steps = 2;
+    bool include_snapshots = 3;
 }
 
 message ListTasksRequest {
     uint32 limit = 1;
     string state_filter = 2;
+    string agent_role = 3;
+    string created_after = 4;
+    string created_before = 5;
 }
 
 message TaskResponse {
@@ -52,35 +87,369 @@ message Task {
     string id = 1;
     string title = 2;
     string description = 3;
-    string state = 4;
+    string state = 4;  // pending, preparing, in_progress, awaiting_verification, completed, failed, blocked
     string created_at = 5;
     string created_by = 6;
     repeated string tags = 7;
+    repeated ExecutionStep steps = 8;
+    repeated WorkSnapshot snapshots = 9;
+    string agent_role = 10;
+    TaskPriority priority = 11;
 }
 
-// Execution
+enum TaskPriority {
+    LOW = 0;
+    NORMAL = 1;
+    HIGH = 2;
+    CRITICAL = 3;
+}
+
+message ExecutionStep {
+    uint32 step_id = 1;
+    string action_type = 2;
+    string status = 3;
+    string result = 4;
+    string executed_at = 5;
+    uint32 duration_ms = 6;
+}
+
+message WorkSnapshot {
+    string id = 1;
+    string branch = 2;
+    string commit_hash = 3;
+    repeated string changed_files = 4;
+    string captured_at = 5;
+}
+
+// ============================================================================
+// Task Execution
+// ============================================================================
+
 message ExecuteTaskRequest {
     string task_id = 1;
-    bool sync = 2;
+    bool sync = 2;  // true = wait for completion, false = return immediately
 }
 
 message ExecuteTaskResponse {
     string execution_id = 1;
-    string status = 2;
+    string status = 2;  // started, running, completed, failed
     string message = 3;
 }
 
 message RollbackTaskRequest {
     string task_id = 1;
     string snapshot_id = 2;
+    bool force = 3;
 }
 
 message RollbackTaskResponse {
     bool success = 1;
     string message = 2;
+    string rollback_to_commit = 3;
 }
 
+// ============================================================================
+// Streaming Chat
+// ============================================================================
+
+message ChatRequest {
+    oneof request_type {
+        Message message = 1;
+        ToolResult tool_result = 2;
+        ContextRequest context_request = 3;
+    }
+}
+
+message Message {
+    string role = 1;  // system, user, assistant, tool
+    string content = 2;
+    string name = 3;
+    repeated ToolCallInfo tool_calls = 4;
+}
+
+message ToolCallInfo {
+    string id = 1;
+    string name = 2;
+    string arguments = 3;
+}
+
+message ToolResult {
+    string tool_call_id = 1;
+    string content = 2;
+    bool is_error = 3;
+}
+
+message ContextRequest {
+    string query = 1;
+    ContextType context_type = 2;
+}
+
+enum ContextType {
+    MEMORY = 0;
+    CODEBASE = 1;
+    TASK = 2;
+}
+
+message ChatResponse {
+    oneof response_type {
+        ContentChunk content_chunk = 1;
+        ToolCall tool_call = 2;
+        ContextData context_data = 3;
+        StreamEnd stream_end = 4;
+        Error error = 5;
+    }
+}
+
+message ContentChunk {
+    string content = 1;
+    bool is_complete = 2;
+}
+
+message ToolCall {
+    string id = 1;
+    string name = 2;
+    map<string, string> parameters = 3;
+    string thinking = 4;
+}
+
+message ContextData {
+    ContextType context_type = 1;
+    repeated ContextItem items = 2;
+}
+
+message ContextItem {
+    string id = 1;
+    string content = 2;
+    double relevance_score = 3;
+    string source = 4;
+}
+
+message StreamEnd {
+    string completion_reason = 1;  // stop, length, tool_call, error
+    Usage usage = 2;
+}
+
+message Usage {
+    uint32 prompt_tokens = 1;
+    uint32 completion_tokens = 2;
+    uint32 total_tokens = 3;
+}
+
+message Error {
+    string code = 1;
+    string message = 2;
+}
+
+// ============================================================================
+// Task Execution Streaming
+// ============================================================================
+
+message ExecuteTaskEvent {
+    oneof event_type {
+        TaskStart task_start = 1;
+        StepProgress step_progress = 2;
+        ToolCallEvent tool_call = 3;
+        ToolResultEvent tool_result = 4;
+        VerificationRequest verification = 5;
+        PauseRequest pause = 6;
+        CancelRequest cancel = 7;
+    }
+}
+
+message TaskStart {
+    string task_id = 1;
+    string task_title = 2;
+    string agent_role = 3;
+}
+
+message StepProgress {
+    uint32 current_step = 1;
+    uint32 total_steps = 2;
+    string step_description = 3;
+    double progress_percent = 4;
+}
+
+message ToolCallEvent {
+    string tool_name = 1;
+    map<string, string> parameters = 2;
+    string reasoning = 3;
+}
+
+message ToolResultEvent {
+    string tool_name = 1;
+    bool success = 2;
+    string output = 3;
+    uint32 duration_ms = 4;
+}
+
+message VerificationRequest {
+    string description = 1;
+    repeated string verification_items = 2;
+    bool auto_verify = 3;
+}
+
+message PauseRequest {
+    string reason = 1;
+}
+
+message CancelRequest {
+    string reason = 1;
+    bool force = 2;
+}
+
+message TaskExecutionEvent {
+    oneof event_type {
+        ExecutionStatus status = 1;
+        StepComplete step_complete = 2;
+        ExecutionComplete complete = 3;
+        ExecutionFailed failed = 4;
+        VerificationResult verification = 5;
+    }
+}
+
+message ExecutionStatus {
+    string status = 1;  // running, paused, cancelled
+    string message = 2;
+}
+
+message StepComplete {
+    uint32 step_number = 1;
+    string result = 2;
+    uint32 duration_ms = 3;
+}
+
+message ExecutionComplete {
+    string final_state = 1;
+    uint32 total_steps = 2;
+    uint32 successful_steps = 3;
+    string summary = 4;
+    repeated WorkSnapshot snapshots = 5;
+}
+
+message ExecutionFailed {
+    string error_code = 1;
+    string error_message = 2;
+    string last_successful_step = 3;
+    RecoverySuggestion recovery = 4;
+}
+
+message RecoverySuggestion {
+    string suggestion = 1;
+    repeated string suggested_actions = 2;
+}
+
+message VerificationResult {
+    bool passed = 1;
+    repeated VerificationItem items = 2;
+    string feedback = 3;
+}
+
+message VerificationItem {
+    string check = 1;
+    bool passed = 2;
+    string details = 3;
+}
+
+// ============================================================================
+// Agent Service Types
+// ============================================================================
+
+message AgentStatusRequest {}
+message AgentStatusResponse {
+    string current_agent = 1;
+    string agent_display_name = 2;
+    string provider = 3;
+    string model = 4;
+    string state = 5;  // idle, running, paused
+    uint32 tasks_completed = 6;
+    uint32 tasks_in_progress = 7;
+}
+
+message SwitchAgentRequest {
+    string agent_name = 1;  // default, implementer, verifier, planner
+}
+
+message SwitchAgentResponse {
+    bool success = 1;
+    string agent_name = 2;
+    string message = 3;
+}
+
+message ListAgentsRequest {}
+message ListAgentsResponse {
+    repeated AgentInfo agents = 1;
+}
+
+message AgentInfo {
+    string name = 1;
+    string display_name = 2;
+    string description = 3;
+    string provider = 4;
+    string model = 5;
+    repeated string task_types = 6;
+    int32 priority = 7;
+    bool is_default = 8;
+}
+
+// ============================================================================
+// Tool Execution Streaming
+// ============================================================================
+
+message ToolRequest {
+    oneof request_type {
+        ToolExecute execute = 1;
+        ToolCancel cancel = 2;
+    }
+}
+
+message ToolExecute {
+    string tool_name = 1;
+    map<string, string> parameters = 2;
+    string session_id = 3;
+}
+
+message ToolCancel {
+    string tool_call_id = 1;
+    string reason = 2;
+}
+
+message ToolResponse {
+    oneof response_type {
+        ToolOutput output = 1;
+        ToolProgress progress = 2;
+        ToolComplete complete = 3;
+        ToolError error = 4;
+    }
+}
+
+message ToolOutput {
+    string stream_id = 1;
+    string chunk = 2;
+    bool is_stdout = 3;
+}
+
+message ToolProgress {
+    string status = 1;
+    string message = 2;
+    double percent_complete = 3;
+}
+
+message ToolComplete {
+    bool success = 4;
+    string output = 5;
+    uint32 exit_code = 6;
+    uint64 duration_ms = 7;
+}
+
+message ToolError {
+    string code = 1;
+    string message = 2;
+}
+
+// ============================================================================
 // System
+// ============================================================================
+
 message GetSystemStatusRequest {}
 
 message SystemStatusResponse {
@@ -88,4 +457,13 @@ message SystemStatusResponse {
     string version = 2;
     uint32 total_tasks = 3;
     uint32 active_tasks = 4;
+    uint32 queued_tasks = 5;
+    SystemResources resources = 6;
+}
+
+message SystemResources {
+    double cpu_usage = 1;
+    double memory_usage = 2;
+    uint64 disk_usage_bytes = 3;
+    uint32 active_connections = 4;
 }

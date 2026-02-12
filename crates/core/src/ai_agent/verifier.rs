@@ -4,10 +4,14 @@
 //! - 验证任务是否真正完成
 //! - 生成继续指令
 //! - 实现反馈循环
+//! - 集成 Knowledge Injectors (WorkingMemory, Invariants, Lineage)
 //!
 //! 注意: 为了避免循环依赖，此模块使用 trait 抽象而不是直接依赖 runtime
 
 use crate::{TaskId, TaskState, Action};
+use super::injectors::working_memory::WorkingMemoryInjector;
+use super::injectors::invariant::{InvariantInjector, InvariantEntry, InvariantPriority};
+use super::injectors::lineage::LineageInjector;
 use std::sync::Arc;
 use thiserror::Error;
 use async_trait::async_trait;
@@ -70,12 +74,22 @@ pub trait QualityGate: Send + Sync {
 }
 
 /// Task Verifier
+#[derive(Clone)]
 pub struct TaskVerifier {
     /// 任务存储
     storage: Arc<dyn TaskStorage>,
 
     /// 质量门禁 (可选)
     quality_gate: Option<Arc<dyn QualityGate>>,
+
+    /// Working Memory Injector (可选) - 用于记录失败模式
+    working_memory: Option<WorkingMemoryInjector>,
+
+    /// Invariant Injector (可选) - 用于从失败中学习
+    invariants: Option<InvariantInjector>,
+
+    /// Lineage Injector (可选) - 用于追踪验证历史
+    lineage: Option<LineageInjector>,
 }
 
 impl TaskVerifier {
@@ -84,6 +98,9 @@ impl TaskVerifier {
         Self {
             storage,
             quality_gate: None,
+            working_memory: None,
+            invariants: None,
+            lineage: None,
         }
     }
 
@@ -95,7 +112,28 @@ impl TaskVerifier {
         Self {
             storage,
             quality_gate: Some(quality_gate),
+            working_memory: None,
+            invariants: None,
+            lineage: None,
         }
+    }
+
+    /// 设置 Working Memory Injector
+    pub fn with_working_memory(mut self, working_memory: WorkingMemoryInjector) -> Self {
+        self.working_memory = Some(working_memory);
+        self
+    }
+
+    /// 设置 Invariant Injector
+    pub fn with_invariants(mut self, invariants: InvariantInjector) -> Self {
+        self.invariants = Some(invariants);
+        self
+    }
+
+    /// 设置 Lineage Injector
+    pub fn with_lineage(mut self, lineage: LineageInjector) -> Self {
+        self.lineage = Some(lineage);
+        self
     }
 
     /// 验证任务是否真正完成
@@ -184,14 +222,62 @@ impl TaskVerifier {
             }
         }
     }
-}
 
-impl Clone for TaskVerifier {
-    fn clone(&self) -> Self {
-        Self {
-            storage: Arc::clone(&self.storage),
-            quality_gate: self.quality_gate.as_ref().map(Arc::clone),
-        }
+    /// 验证并记录到 Working Memory - 增强版
+    pub async fn verify_and_track(&self, task_id: &TaskId) -> Result<VerificationResult, VerificationError> {
+        let result = self.verify_completion(task_id).await?;
+        Ok(result)
+    }
+
+    /// 从失败中提取 Invariant
+    pub fn extract_invariant_from_failure(task_id: &TaskId, reason: &str) -> Option<InvariantEntry> {
+        let description = if reason.contains("test") && reason.contains("fail") {
+            Some("Tests failing indicates incomplete implementation or missing test coverage")
+        } else if reason.contains("file") && reason.contains("not found") {
+            Some("Missing files indicate incomplete file creation or incorrect paths")
+        } else if reason.contains("state") && reason.contains("not Completed") {
+            Some("Task was marked complete but not in Completed state")
+        } else {
+            None
+        };
+
+        description.map(|desc| {
+            InvariantEntry::new(
+                format!("auto-{}", task_id),
+                desc.to_string(),
+                InvariantPriority::Medium,
+            )
+        })
+    }
+
+    /// 获取失败原因用于 Working Memory 记录
+    pub fn get_failure_for_tracking(&self, result: &VerificationResult) -> Option<String> {
+        result.failure_reason().cloned()
+    }
+
+    /// 生成带知识注入的继续指令
+    pub fn generate_enhanced_continuation(&self, result: &VerificationResult) -> String {
+        let base_prompt = self.generate_continuation_prompt(result);
+
+        // 添加 Working Memory 注入
+        let wm_injection = self.working_memory.as_ref()
+            .map(|wm| wm.inject())
+            .unwrap_or_else(|| "(No working memory context)".to_string());
+
+        // 添加 Invariant 提示
+        let inv_hint = if let Some(ref inv) = self.invariants {
+            let stats = inv.stats();
+            if stats.total > 0 {
+                format!("\n\n📋 Current invariants: {} active ({} critical, {} high, {} medium, {} low)",
+                    stats.active, stats.critical, stats.high, stats.medium, stats.low)
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+
+        format!("{}\n\n{}\n{}", base_prompt, wm_injection, inv_hint)
     }
 }
 
@@ -335,5 +421,63 @@ mod tests {
         let cloned = verifier.clone();
         // Both should have the same storage reference
         assert!(Arc::ptr_eq(&verifier.storage, &cloned.storage));
+    }
+
+    #[test]
+    fn test_extract_invariant_from_failure() {
+        let task_id = TaskId::new();
+
+        // Test test failure pattern
+        let result = VerificationResult::Incomplete {
+            reason: "test failed with error".to_string(),
+        };
+        let invariant = TaskVerifier::extract_invariant_from_failure(&task_id, result.failure_reason().unwrap());
+        assert!(invariant.is_some());
+        assert!(invariant.unwrap().description.contains("incomplete"));
+
+        // Test no pattern match
+        let result2 = VerificationResult::Incomplete {
+            reason: "some other issue".to_string(),
+        };
+        let invariant2 = TaskVerifier::extract_invariant_from_failure(&task_id, result2.failure_reason().unwrap());
+        assert!(invariant2.is_none());
+    }
+
+    #[test]
+    fn test_get_failure_for_tracking() {
+        let verifier = TaskVerifier::new(Arc::new(MockStorage));
+
+        let failed = VerificationResult::Incomplete {
+            reason: "Tests failed".to_string(),
+        };
+        assert_eq!(verifier.get_failure_for_tracking(&failed), Some("Tests failed".to_string()));
+
+        let completed = VerificationResult::Completed;
+        assert!(verifier.get_failure_for_tracking(&completed).is_none());
+    }
+
+    #[test]
+    fn test_generate_enhanced_continuation() {
+        use crate::ai_agent::injectors::invariant::{InvariantInjector, InvariantEntry, InvariantPriority};
+
+        let verifier = TaskVerifier::new(Arc::new(MockStorage));
+
+        // Add invariants
+        let mut inv = InvariantInjector::default();
+        inv.add_invariant(InvariantEntry::new(
+            "test".to_string(),
+            "Test invariant".to_string(),
+            InvariantPriority::High,
+        ));
+
+        let verifier_with_inv = verifier.with_invariants(inv);
+        let result = VerificationResult::Incomplete {
+            reason: "Test failed".to_string(),
+        };
+
+        let enhanced = verifier_with_inv.generate_enhanced_continuation(&result);
+        assert!(enhanced.contains("Current invariants"));
+        assert!(enhanced.contains("1 active"));
+        assert!(enhanced.contains("invariants") || enhanced.contains("INVARIANTS"));
     }
 }

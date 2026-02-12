@@ -28,6 +28,9 @@ pub use llm::*;
 pub use config::{
     NdcConfig, LlmConfig, OpenAiConfig, AnthropicConfig, MiniMaxConfig,
     OllamaConfig, ReplConfig, RuntimeConfig, StorageConfig,
+    // Agent configuration
+    AgentProfile, PredefinedProfiles, AgentRoleSelector, AgentConfigDir,
+    ToolPermissions, PermissionRule,
 };
 
 // Re-export commonly used types to avoid conflicts

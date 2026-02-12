@@ -17,6 +17,7 @@ pub mod session;
 pub mod verifier;
 pub mod prompts;
 pub mod adapters;
+pub mod injectors;
 
 pub use orchestrator::{
     AgentOrchestrator,
@@ -47,11 +48,8 @@ pub use prompts::{
     PromptContext,
 };
 
-use crate::llm::provider::{LlmProvider, CompletionRequest, Message, MessageRole};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::path::PathBuf;
 use thiserror::Error;
 
 /// Agent 错误类型
@@ -83,6 +81,14 @@ pub enum AgentError {
 
     #[error("Other error: {0}")]
     Other(String),
+}
+
+use crate::llm::provider::ProviderError;
+
+impl From<ProviderError> for AgentError {
+    fn from(err: ProviderError) -> Self {
+        AgentError::LlmError(err.to_string())
+    }
 }
 
 /// 工具调用包装器 - 用于 AI 工具系统

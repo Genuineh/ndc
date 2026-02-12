@@ -217,6 +217,8 @@ impl NdcClient {
             title: title.into(),
             description: description.into(),
             created_by: "client".to_string(),
+            agent_role: "historian".to_string(),
+            metadata: std::collections::HashMap::new(),
         };
 
         match client.create_task(request).await {
@@ -232,6 +234,8 @@ impl NdcClient {
 
         let request = GetTaskRequest {
             task_id: task_id.into(),
+            include_steps: false,
+            include_snapshots: false,
         };
 
         match client.get_task(request).await {
@@ -252,6 +256,9 @@ impl NdcClient {
         let request = ListTasksRequest {
             limit,
             state_filter: state_filter.into(),
+            agent_role: "".to_string(),
+            created_after: "".to_string(),
+            created_before: "".to_string(),
         };
 
         match client.list_tasks(request).await {
@@ -292,6 +299,7 @@ impl NdcClient {
         let request = RollbackTaskRequest {
             task_id: task_id.into(),
             snapshot_id: snapshot_id.into(),
+            force: false,
         };
 
         match client.rollback_task(request).await {
