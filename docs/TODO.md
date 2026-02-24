@@ -1,6 +1,6 @@
 # NDC TODO / Backlog
 
-> 更新时间：2026-02-24  
+> 更新时间：2026-02-24（晚）  
 > 与 `docs/plan/current_plan.md` 对齐。
 
 ## 已完成（本轮修复）
@@ -64,34 +64,160 @@
   - 新增 `ndc_memory_query`（按 `tags/priority/source` 查询）
   - 默认工具管理器与 tool registry 均已注册
   - e2e smoke 已覆盖查询链路
+- P0 第一批可视化能力已落地：
+  - 新增统一执行事件模型：`step/tool/reasoning/text/verification/session_status/error`
+  - `AgentResponse` 增加 `execution_events` 回传，orchestrator 主循环已记录轮次与耗时
+  - 会话对象已支持保存执行事件时间线（内存态）
+  - REPL 新增 `/thinking`、`/details`、`/timeline [N]`
+  - REPL 已支持工具开始/结束/失败与耗时展示，支持时间线回看
+  - 新增测试：
+    - orchestrator smoke 断言 `ToolCallStart/ToolCallEnd`
+    - repl 时间线容量与可视化状态测试
+  - `docs/USER_GUIDE.md` 已新增多轮可视化使用说明
+- P0 会话时间线回放接口（第二批）已落地：
+  - `AgentOrchestrator::get_session_execution_events(session_id, limit)` 已实现
+  - `AgentModeManager::session_timeline(limit)` 已实现（无会话时返回空）
+  - REPL `/timeline` 已切换为优先读取会话时间线（支持回放视图）
+  - orchestrator smoke 已增加时间线回放断言
+- P0 对外接口（第三批）已落地（拉取模式）：
+  - gRPC `AgentService.GetSessionTimeline` 已实现
+  - 对外返回标准化 `ExecutionEvent`（kind/timestamp/round/tool/duration/error）
+  - 新增 gRPC 事件映射单测
+- P0 对外接口（第四批）已落地（流式模式，事件推送 + 轮询补偿）：
+  - gRPC `AgentService.SubscribeSessionTimeline` 已实现
+  - 基于 orchestrator 事件总线实时推送 `ExecutionEvent`（服务端流）
+  - 保留按时间线轮询补偿（处理 lag/丢帧/重连窗口）
+  - 与 `GetSessionTimeline` 使用同一事件模型
+- P0 客户端 SDK 接入（第五批）已落地：
+  - `grpc_client` 已新增 `get_session_timeline` / `subscribe_session_timeline`
+  - 新增 timeline request 构造单测
+- P0 对外接口（第六批）已落地（SSE 流式）：
+  - 新增 SSE 订阅接口：`GET /agent/session_timeline/subscribe?session_id=&limit=`
+  - SSE 与 gRPC 共用同一会话时间线与事件映射模型
+  - `grpc_client` 新增 `timeline_sse_subscribe_url(session_id, limit)` 便于外部 EventSource 接入
+  - 支持 `NDC_TIMELINE_SSE_ADDR=<host:port|auto>` 与 `NDC_TIMELINE_SSE_POLL_MS`
+  - 已新增 SSE 集成测试：订阅 `200 + text/event-stream` 与非法 `session_id` 返回 `404`
+  - 已新增 SSE 回放事件测试：可回放 `execution_event` 且包含标准化 `kind` 字段
+- P0 安全与隐私策略（第一批）已落地：
+  - REPL 时间线/事件输出默认脱敏（`api_key/token/password/Bearer/sk-*`、用户 home 路径）
+  - gRPC `ExecutionEvent.message` 对外输出前默认脱敏
+  - 新增 REPL 与 gRPC 脱敏单测
+- P0 安全与隐私策略（第二批）已落地：
+  - 脱敏逻辑已统一到 `interface::redaction` 模块（REPL + gRPC 共用）
+  - 支持 `NDC_TIMELINE_REDACTION=off|basic|strict` 配置
+  - strict 模式新增绝对路径脱敏
+- P0 可视化状态事件与默认开关（第六批）已落地：
+  - 执行事件模型新增 `PermissionAsked`，用于标记权限询问/拒绝分支
+  - REPL 可显式展示 `Permission` 事件（便于识别等待授权状态）
+  - 支持 REPL 可视化默认配置：
+    - `NDC_DISPLAY_THINKING=true|false`
+    - `NDC_TOOL_DETAILS=true|false`
+    - `NDC_TIMELINE_LIMIT=<N>`
+  - 新增测试：orchestrator 权限事件断言、REPL 可视化环境变量断言
+  - 新增多轮回放断言：会话 timeline 中可检索 `PermissionAsked` 事件
+- P0 交互可用性（第七批）已落地：
+  - `thinking` 默认折叠（降低默认噪音）
+  - 新增快捷别名：`/t`（thinking）、`/d`（details）
+  - 新增 `/thinking show` 可在折叠模式下即时查看最近思考
+  - 折叠状态下收到 reasoning 事件会显示可见提示
+- P0 REPL 实时流（第八批）已落地：
+  - REPL TUI 已从 `session_timeline` 轮询切换为 orchestrator 广播订阅（实时推送）
+  - 若实时流不可用/关闭，会自动回退到原有时间线轮询路径
+  - 新增测试覆盖：
+    - core: `subscribe_execution_events` 广播会话事件
+    - interface: AgentMode 订阅接口 + REPL live drain 渲染
 
-## P0（最高优先级：多轮对话可视化与实时状态）
+## P0-A（最高优先级：REPL UI 对齐 OpenCode，先解决未完成功能）
+
+> 目标：参考 `opencode/packages/opencode/src/cli/cmd/tui/routes/session/index.tsx` 与相关 keybind/transcript 设计，完成 REPL 终端 UI 改造。  
+> 核心诉求：固定输入窗口、消息区/状态区分离、折叠/展开交互一致、可观测性更强。
+
+当前主项状态（P0-A）：
+
+1. 固定输入窗口（输入区始终停靠底部，不随日志滚动）【已完成】
+2. 消息流滚动区与输入区解耦（上方滚动，下方输入）【已完成】
+3. thinking 折叠/展开的“就地查看”交互（默认折叠，快捷键展开）【已完成】
+4. tool 结果详情的折叠卡片化展示（状态、输入、输出、错误分区）【已完成】
+5. 会话级状态栏（provider/model/session/开关状态）常驻显示【已完成】
+6. 键盘交互统一（最少包含 thinking/details/timeline/clear 的快捷切换）【已完成】
+7. Session 面板可滚动与分层样式化展示（参考 opencode transcript/tool 行样式）【已完成】
+8. 实时流可观测与开关（状态栏+命令）【已完成】
+9. 输入命令提示与补全（`/` 触发提示，Tab/Shift+Tab 浏览全部候选，含参数选项）【已完成】
+
+实施项：
+
+1. REPL 终端布局重构【已完成】
+   - 引入固定 bottom prompt 区域与可滚动 transcript 区域
+   - 输出渲染改为“消息块”而非纯 println 流
+   - 第一阶段已完成：默认启用 TUI 布局（状态栏 + 滚动会话区 + 固定输入区）
+   - 保留 `NDC_REPL_LEGACY=1` 回退路径（便于兼容排障）
+   - 第四阶段优先：Session 面板滚动（Up/Down/PgUp/PgDn/Home/End/鼠标滚轮）【已完成】
+2. 交互与快捷键【已完成】
+   - 参考 opencode keybind 思路，增加可配置键位映射
+   - 支持命令别名与快捷键双通道（避免只靠 slash 命令）
+   - 第二阶段已完成：TUI 快捷键已接入（`Ctrl+T/Ctrl+D/Ctrl+E/Ctrl+Y/Ctrl+I/Ctrl+L`）
+   - 第二阶段已完成：支持环境变量覆盖快捷键（`NDC_REPL_KEY_*`）
+   - 命令别名与快捷键已统一（`/t`、`/d` + Ctrl 快捷键）
+   - 第三阶段补强：会话 timeline 快捷查看（`Ctrl+I`，可配置 `NDC_REPL_KEY_SHOW_TIMELINE`）
+3. 内容分层渲染【已完成】
+   - Thinking block（默认折叠）/ Tool block / Text block 统一样式层级
+   - 支持按 block 展开最近内容，而不是全局开关硬切
+   - 第二阶段已完成：消息区新增 `You:` / `Assistant:` 分层块输出
+   - 已支持折叠态快捷展开最近 thinking（`Ctrl+Y` 或 `/thinking show`）
+   - 第三阶段已完成：Tool/Thinking 输出改为块样式（input/output/meta 分层）
+   - Tool 事件已补充 `args_preview` 与 `result_preview` 双预览
+   - 第三阶段补强：新增 tool 卡片展开/折叠开关（`/cards`、`Ctrl+E`、`NDC_TOOL_CARDS_EXPANDED`）
+   - 第三阶段补强：tool 卡片按 `input/output/error/meta` 分区展示
+   - 第三阶段补强：状态栏常驻会话信息（provider/model/session/开关态）
+   - 第四阶段优先：Session 行级样式化（tool/thinking/error/input/output/meta 区分色彩与层次）【已完成】
+4. 验收与测试【已完成】
+   - 已新增 UI 行为测试：固定输入区布局约束、滚动计算、快捷键解析
+   - 已新增可视化日志测试：timeline 快捷展示与状态栏字段断言
+   - 已新增快照式单测：折叠态/展开态/tool 卡片展开态渲染断言
+   - 已补齐交互级测试：运行态快捷键触发（Ctrl+T/Ctrl+L）与滚动复位行为
+   - 已补齐滚动与样式测试：键盘滚动、鼠标滚轮、行级样式渲染断言
+   - 已补齐实时流状态测试：`stream=off|ready|live|poll` 状态映射与 `/stream` 命令行为断言
+   - 已补齐输入提示与补全测试：`/` 命令提示渲染、Tab/Shift+Tab 循环补全与 `/provider` 参数候选
+
+## P0-B（次高优先级：多轮对话可视化与实时状态）
 
 > 目标：在多轮对话中实时可见 AI “正在做什么”、做到了哪一步、调用了哪些工具、为什么停下/等待输入。  
 > 参考：`opencode` 的 `thinking` 显示、`tool_details`、`session_timeline`、`event.subscribe()` 事件流。
 
-1. 统一事件模型（Orchestrator/REPL/gRPC）
+1. 统一事件模型（Orchestrator/REPL/gRPC）【进行中】
    - 扩展并统一事件类型：`step_start` / `step_finish` / `tool_call_start` / `tool_call_end` / `reasoning` / `text` / `permission_asked` / `session_status` / `error`
+   - `permission_asked` 已落地（权限拒绝/询问分支）
    - 明确每类事件的字段（`session_id`、`message_id`、`tool_call_id`、时间戳、耗时、摘要）
    - 约束顺序与幂等语义，保证多轮与重试场景可回放
-2. REPL 实时渲染（默认可读、细节可切换）
+2. REPL 实时渲染（默认可读、细节可切换）【第一批完成】
    - 新增 `"/thinking"`：切换 reasoning 显示（默认关闭，避免噪音）
    - 新增 `"/details"`：切换工具调用详细参数/结果显示
    - 新增 `"/timeline"`：查看当前会话步骤时间线（最近 N 条）
    - 对每次工具调用输出“开始/完成/失败 + 耗时”，并与最终回答分区展示
-3. 多轮会话时间线持久化与重放
-   - 将事件写入会话存储（最小必要字段 + 可裁剪 payload）
-   - 提供会话重放接口：按时间/轮次恢复执行轨迹
+   - REPL 已改为事件订阅推送（非轮询），终端实时性提升
+   - 新增 `/stream [on|off|status]`，可在会话内切换实时广播/轮询回退
+   - 状态栏新增 `stream=off|ready|live|poll`，可实时观察当前流模式
+3. 多轮会话时间线持久化与重放【进行中】
+   - 将事件写入会话存储（最小必要字段 + 可裁剪 payload）【已完成：内存会话态】
+   - 提供会话重放接口：按时间/轮次恢复执行轨迹【已完成：按 session + limit】
    - 为后续 GUI 与 WebSocket/SSE 订阅提供统一数据源
-4. 对外流式接口补齐（CLI/SDK 友好）
-   - 在现有接口上提供稳定的流式事件订阅能力（与 REPL 同一事件源）
-   - 文档化事件协议，确保外部前端可实时展示 agent 执行状态
-5. 安全与隐私策略
-   - 对 reasoning/tool 参数做脱敏策略（路径、密钥、token、隐私内容）
-   - 提供配置项：`display_thinking`、`tool_details`、`timeline_limit`
-6. 验收与测试（必须）
-   - 新增 e2e：多轮 + 多次 tool call + 权限询问 + 中断恢复 + 时间线回放
-   - REPL 快照测试：`thinking/details/timeline` 三种开关组合
+4. 对外流式接口补齐（CLI/SDK 友好）【第二批完成】
+   - 在现有接口上提供稳定的流式事件订阅能力（与 REPL 同一事件源）【已完成：gRPC stream + SSE】
+   - gRPC 订阅语义补强：`limit` 支持初始 backlog 回放（`0`=仅新事件，`>0`=先回放后增量）
+   - gRPC 实时推送已接入；轮询补偿间隔可配置：`NDC_TIMELINE_STREAM_POLL_MS`（50..2000ms）
+   - SSE 订阅接口：`GET /agent/session_timeline/subscribe?session_id=&limit=`（`execution_event`/`error`）
+   - SSE 服务地址配置：`NDC_TIMELINE_SSE_ADDR=<host:port|auto>`（`auto` = gRPC 端口 + 1）
+   - SSE 实时推送已接入；轮询补偿间隔可配置：`NDC_TIMELINE_SSE_POLL_MS`（50..2000ms）
+   - SDK 增加 SSE 订阅 URL 构造：`timeline_sse_subscribe_url(session_id, limit)`
+   - 文档化事件协议，确保外部前端可实时展示 agent 执行状态【已完成：拉取 + gRPC + SSE】
+5. 安全与隐私策略【进行中】
+   - 对 reasoning/tool 参数做脱敏策略（路径、密钥、token、隐私内容）【第二批完成：统一模块 + 分级策略】
+   - 提供配置项：`display_thinking`、`tool_details`、`timeline_limit`【已完成（环境变量）】
+6. 验收与测试（必须）【进行中】
+   - 新增 e2e：多轮 + 多次 tool call + 权限询问 + 中断恢复 + 时间线回放【部分完成：core 多轮 + 权限询问 + 回放】
+   - SSE 接口集成测试：`/agent/session_timeline/subscribe`（成功握手 + 会话校验）【已完成：interface/grpc tests】
+   - SSE 回放事件内容测试：验证 `execution_event` 载荷包含 `kind`（`SessionStatus/StepStart`）【已完成：interface/grpc tests】
+   - REPL 快照测试：`thinking/details/timeline` 三种开关组合【已补齐：interface 单测覆盖】
    - 文档更新：`docs/USER_GUIDE.md` 增加“如何实时观察 AI 执行过程”
 
 ## P1（高优先级）

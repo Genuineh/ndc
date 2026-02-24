@@ -112,9 +112,7 @@ impl LspClient {
         // Different LSP servers have different ways to get diagnostics
         // Try rust-analyzer (rust), eslint (js/ts), pyright (python), etc.
 
-        let extension = file_path.extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
+        let extension = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
         match extension {
             "rs" => self.run_rust_analyzer_diagnostics(file_path).await,
@@ -133,7 +131,10 @@ impl LspClient {
     }
 
     /// Run rust-analyzer diagnostics
-    async fn run_rust_analyzer_diagnostics(&self, file_path: &PathBuf) -> Result<DiagnosticSummary, String> {
+    async fn run_rust_analyzer_diagnostics(
+        &self,
+        file_path: &PathBuf,
+    ) -> Result<DiagnosticSummary, String> {
         // Try cargo check --message-format=json for Rust
         let output = Command::new("cargo")
             .args(&["check", "--message-format=json"])
@@ -170,24 +171,31 @@ impl LspClient {
                 if let Some(spans) = message.get("spans") {
                     if let Some(spans_array) = spans.as_array() {
                         for span in spans_array {
-                            if let Some(file_path) = span.get("file_name").and_then(|v| v.as_str()) {
+                            if let Some(file_path) = span.get("file_name").and_then(|v| v.as_str())
+                            {
                                 // Check if this span is for our target file
                                 let span_file = PathBuf::from(file_path);
                                 if span_file == *target_file {
-                                    let message_text = message.get("message")
+                                    let message_text = message
+                                        .get("message")
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("Unknown error")
                                         .to_string();
 
-                                    let line = span.get("line_start")
+                                    let line = span
+                                        .get("line_start")
                                         .and_then(|v| v.as_u64())
-                                        .unwrap_or(1) as usize;
+                                        .unwrap_or(1)
+                                        as usize;
 
-                                    let column = span.get("character_start")
+                                    let column = span
+                                        .get("character_start")
                                         .and_then(|v| v.as_u64())
-                                        .unwrap_or(1) as usize;
+                                        .unwrap_or(1)
+                                        as usize;
 
-                                    let severity = message.get("level")
+                                    let severity = message
+                                        .get("level")
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("error");
 
@@ -197,7 +205,8 @@ impl LspClient {
                                         _ => DiagnosticSeverity::Information,
                                     };
 
-                                    let code = message.get("code")
+                                    let code = message
+                                        .get("code")
                                         .and_then(|v| v.as_str())
                                         .map(|s| s.to_string());
 
@@ -221,9 +230,17 @@ impl LspClient {
     }
 
     /// Run eslint diagnostics
-    async fn run_eslint_diagnostics(&self, file_path: &PathBuf) -> Result<DiagnosticSummary, String> {
+    async fn run_eslint_diagnostics(
+        &self,
+        file_path: &PathBuf,
+    ) -> Result<DiagnosticSummary, String> {
         let output = Command::new("npx")
-            .args(&["eslint", "--format", "json", file_path.to_string_lossy().as_ref()])
+            .args(&[
+                "eslint",
+                "--format",
+                "json",
+                file_path.to_string_lossy().as_ref(),
+            ])
             .current_dir(&self.root)
             .output()
             .map_err(|e| e.to_string())?;
@@ -254,24 +271,24 @@ impl LspClient {
                 for file in files {
                     if let Some(file_path) = file.get("filePath").and_then(|v| v.as_str()) {
                         if PathBuf::from(file_path) == *target_file {
-                            if let Some(messages) = file.get("messages").and_then(|v| v.as_array()) {
+                            if let Some(messages) = file.get("messages").and_then(|v| v.as_array())
+                            {
                                 for msg in messages {
-                                    let message = msg.get("message")
+                                    let message = msg
+                                        .get("message")
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("Unknown")
                                         .to_string();
 
-                                    let line = msg.get("line")
-                                        .and_then(|v| v.as_u64())
-                                        .unwrap_or(1) as usize;
+                                    let line = msg.get("line").and_then(|v| v.as_u64()).unwrap_or(1)
+                                        as usize;
 
-                                    let column = msg.get("column")
-                                        .and_then(|v| v.as_u64())
-                                        .unwrap_or(1) as usize;
+                                    let column =
+                                        msg.get("column").and_then(|v| v.as_u64()).unwrap_or(1)
+                                            as usize;
 
-                                    let severity = msg.get("severity")
-                                        .and_then(|v| v.as_u64())
-                                        .unwrap_or(2);
+                                    let severity =
+                                        msg.get("severity").and_then(|v| v.as_u64()).unwrap_or(2);
 
                                     let diag_severity = match severity {
                                         1 => DiagnosticSeverity::Warning,
@@ -279,7 +296,8 @@ impl LspClient {
                                         _ => DiagnosticSeverity::Information,
                                     };
 
-                                    let rule_id = msg.get("ruleId")
+                                    let rule_id = msg
+                                        .get("ruleId")
                                         .and_then(|v| v.as_str())
                                         .map(|s| s.to_string());
 
@@ -303,9 +321,16 @@ impl LspClient {
     }
 
     /// Run pyright diagnostics
-    async fn run_pyright_diagnostics(&self, file_path: &PathBuf) -> Result<DiagnosticSummary, String> {
+    async fn run_pyright_diagnostics(
+        &self,
+        file_path: &PathBuf,
+    ) -> Result<DiagnosticSummary, String> {
         let output = Command::new("npx")
-            .args(&["pyright", "--outputjson", file_path.to_string_lossy().as_ref()])
+            .args(&[
+                "pyright",
+                "--outputjson",
+                file_path.to_string_lossy().as_ref(),
+            ])
             .current_dir(&self.root)
             .output()
             .map_err(|e| e.to_string())?;
@@ -324,24 +349,28 @@ impl LspClient {
                 for diag in diags {
                     if let Some(file_path) = diag.get("file").and_then(|v| v.as_str()) {
                         if PathBuf::from(file_path) == *target_file {
-                            let message = diag.get("message")
+                            let message = diag
+                                .get("message")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("Unknown")
                                 .to_string();
 
-                            let line = diag.get("range")
+                            let line = diag
+                                .get("range")
                                 .and_then(|r| r.get("start"))
                                 .and_then(|s| s.get("line"))
                                 .and_then(|v| v.as_u64())
                                 .unwrap_or(1) as usize;
 
-                            let column = diag.get("range")
+                            let column = diag
+                                .get("range")
                                 .and_then(|r| r.get("start"))
                                 .and_then(|s| s.get("character"))
                                 .and_then(|v| v.as_u64())
                                 .unwrap_or(1) as usize;
 
-                            let severity = diag.get("severity")
+                            let severity = diag
+                                .get("severity")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("error");
 
@@ -353,7 +382,8 @@ impl LspClient {
                                 _ => DiagnosticSeverity::Information,
                             };
 
-                            let code = diag.get("rule")
+                            let code = diag
+                                .get("rule")
                                 .and_then(|v| v.as_str())
                                 .map(|s| s.to_string());
 
@@ -476,9 +506,7 @@ impl LspDiagnostics {
         }
 
         // Determine language from extension
-        let extension = file_path.extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
+        let extension = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
         let language = match extension {
             "rs" => "rust",
@@ -546,16 +574,14 @@ mod tests {
 
     #[test]
     fn test_format_diagnostics() {
-        let diagnostics = vec![
-            Diagnostic {
-                message: "Unused variable".to_string(),
-                severity: DiagnosticSeverity::Warning,
-                file: PathBuf::from("src/main.rs"),
-                line: 10,
-                column: 5,
-                code: Some("unused_variables".to_string()),
-            },
-        ];
+        let diagnostics = vec![Diagnostic {
+            message: "Unused variable".to_string(),
+            severity: DiagnosticSeverity::Warning,
+            file: PathBuf::from("src/main.rs"),
+            line: 10,
+            column: 5,
+            code: Some("unused_variables".to_string()),
+        }];
 
         let summary = LspClient::summarize_diagnostics(&diagnostics);
         let formatted = LspClient::format_diagnostics(&summary);
