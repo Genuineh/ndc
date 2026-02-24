@@ -1,153 +1,118 @@
-# NDC 实现待办清单
+# NDC TODO / Backlog
 
-> **重要更新 (2026-02-12)**: P7.1 Saga 模式工作流状态机 已完成！✅
-> **重要更新 (2026-02-12)**: P7.3 Agent 配置持久化系统 已完成！✅
-> **重要更新 (2026-02-12)**: P7.4 交互层基础组件 已完成！✅
+> 更新时间：2026-02-24  
+> 与 `docs/plan/current_plan.md` 对齐。
 
-## 快速开始
+## 已完成（本轮修复）
 
-```bash
-# 1. 构建项目
-cargo build --release
-```
+- `run --message` 主链接入真实 Agent（非占位输出）
+- 默认工具注册统一，支持 function-calling schema 透传
+- OpenAI/OpenRouter tool-calling 请求协议打通
+- `ndc_task_*` 从 mock 改为真实存储实现
+- 工具执行与 TaskVerifier 使用同一份 runtime storage
+- ReplToolExecutor 接入 `allow/ask/deny` 权限判定与交互确认
+- Orchestrator 会话消息回写（用户/助手/工具）
+- Discovery -> HardConstraints -> QualityGate 强制链路落地（执行阶段强制附加质量检查）
+- WorkingMemory（Abstract/Raw/Hard）注入 Agent Prompt 主循环（增强系统提示词路径）
+- 新增主链 smoke 测试：
+  - `ndc_task_create -> ndc_task_update -> ndc_task_verify`
+  - 文件工具调用 + 会话续接（Agent Orchestrator）
+- Discovery 失败策略可配置：
+  - `degrade`（默认，降级继续）
+  - `block`（严格模式，阻断执行）
+  - 支持 `runtime.discovery_failure_mode` 与 `NDC_DISCOVERY_FAILURE_MODE`
+- WorkingMemory 注入升级为真实任务源：
+  - 从活跃任务提取失败历史（Abstract）与当前文件/步骤（Raw）
+  - 从质量门禁与 memory 访问记录提取约束文本注入（Hard-like constraints）
+- 主链 smoke 扩展：
+  - 覆盖 QualityGate 失败后的反馈续执行环路（orchestrator verification feedback loop）
+  - 覆盖权限 `ask/deny` 分支（含 `NDC_AUTO_APPROVE_TOOLS` 自动确认）
+- Hard Invariants 类型统一与结构化注入：
+  - `WorkingMemory::VersionedInvariant.priority` 统一使用 Gold Memory `InvariantPriority`
+  - `AgentMode` 已恢复结构化 Hard Invariants 注入（非纯文本拼接）
+- Invariant Injector 优先级类型收敛完成：
+  - `ai_agent/injectors/invariant.rs` 已复用 core `InvariantPriority`（去除第三套定义）
+  - 修复 `InvariantInjector::default` 递归与 `get_active` 过滤逻辑
+- Hard Invariants 回灌闭环落地：
+  - `TaskVerifier::verify_and_track` 失败时固化 invariant（GoldMemory）
+  - 同任务后续验证成功时累计 validated 计数
+  - Orchestrator 自动验证路径已切换到 `verify_and_track`
+- GoldMemory 持久化与会话复用打通：
+  - `TaskStorage` 增加 memory 读写抽象，Verifier 可直接持久化 GoldMemory
+  - GoldMemoryService 序列化入 runtime storage 并在新 verifier 实例自动加载
+  - AgentMode 默认使用该持久化回灌链路
+- Discovery/QualityGate 结构化事实映射接入：
+  - `TaskVerifier` 将 `VerificationResult` 映射为结构化 rule/tags/evidence 写入 GoldMemory
+  - 对重复失败按 task+failure_key 去重，并累计 `violation_count`
+  - 质量门禁失败映射为 `Critical` 优先级事实
+- GoldMemory schema 版本化与兼容迁移：
+  - 持久化格式升级为 `gold_memory_service/v2` 包装载荷
+  - 保持对 `gold_memory_service/v1` 历史数据读取兼容
+  - 在回灌写入路径自动完成 `v1 -> v2` 迁移
+- Discovery 执行阶段结构化信号回灌：
+  - `Executor` 在 discovery 失败或产出 hard constraints 时写入结构化 system facts
+  - 统一复用 GoldMemory 持久化 entry（`gold_memory_service/v2`）
+  - 覆盖 e2e 验证（含并发环境变量隔离锁）
+- GoldMemory 迁移审计元数据增强：
+  - `v2` 载荷新增 `migration` 审计块（`from_version/migrated_at/trigger_task_id/trigger_source`）
+  - verifier 与 executor 均写入统一审计字段
+- `v1 -> v2` 迁移测试已覆盖审计字段断言
+- Discovery/Verifier 双源事实统一去重与冲突合并策略已落地：
+  - `GoldMemoryService::upsert_system_fact` 作为统一规则引擎
+  - 统一 `dedupe_key`，重复事实走合并并升级优先级/证据聚合
+- GoldMemory 事实检索工具已接入：
+  - 新增 `ndc_memory_query`（按 `tags/priority/source` 查询）
+  - 默认工具管理器与 tool registry 均已注册
+  - e2e smoke 已覆盖查询链路
 
-## 核心设计理念
+## P0（最高优先级：多轮对话可视化与实时状态）
 
-```
-ndc/
-├── core/              # 核心模型 + LLM Provider + Memory + Agent + Tools
-├── decision/          # 决策引擎
-├── runtime/           # 运行时 + 执行器 + 工具系统
-├── interface/         # CLI + Daemon
-└── bin/              # 二进制文件
-```
+> 目标：在多轮对话中实时可见 AI “正在做什么”、做到了哪一步、调用了哪些工具、为什么停下/等待输入。  
+> 参考：`opencode` 的 `thinking` 显示、`tool_details`、`session_timeline`、`event.subscribe()` 事件流。
 
-## 九大阶段
+1. 统一事件模型（Orchestrator/REPL/gRPC）
+   - 扩展并统一事件类型：`step_start` / `step_finish` / `tool_call_start` / `tool_call_end` / `reasoning` / `text` / `permission_asked` / `session_status` / `error`
+   - 明确每类事件的字段（`session_id`、`message_id`、`tool_call_id`、时间戳、耗时、摘要）
+   - 约束顺序与幂等语义，保证多轮与重试场景可回放
+2. REPL 实时渲染（默认可读、细节可切换）
+   - 新增 `"/thinking"`：切换 reasoning 显示（默认关闭，避免噪音）
+   - 新增 `"/details"`：切换工具调用详细参数/结果显示
+   - 新增 `"/timeline"`：查看当前会话步骤时间线（最近 N 条）
+   - 对每次工具调用输出“开始/完成/失败 + 耗时”，并与最终回答分区展示
+3. 多轮会话时间线持久化与重放
+   - 将事件写入会话存储（最小必要字段 + 可裁剪 payload）
+   - 提供会话重放接口：按时间/轮次恢复执行轨迹
+   - 为后续 GUI 与 WebSocket/SSE 订阅提供统一数据源
+4. 对外流式接口补齐（CLI/SDK 友好）
+   - 在现有接口上提供稳定的流式事件订阅能力（与 REPL 同一事件源）
+   - 文档化事件协议，确保外部前端可实时展示 agent 执行状态
+5. 安全与隐私策略
+   - 对 reasoning/tool 参数做脱敏策略（路径、密钥、token、隐私内容）
+   - 提供配置项：`display_thinking`、`tool_details`、`timeline_limit`
+6. 验收与测试（必须）
+   - 新增 e2e：多轮 + 多次 tool call + 权限询问 + 中断恢复 + 时间线回放
+   - REPL 快照测试：`thinking/details/timeline` 三种开关组合
+   - 文档更新：`docs/USER_GUIDE.md` 增加“如何实时观察 AI 执行过程”
 
-1. 谱系继承 → 继承历史知识 ← ✅ **P1** (Discovery Phase) 已完成
-2. 理解需求 → 检索知识库 + 查询 TODO ← ✅ **P6** (Knowledge Understanding) 已完成
-3. 分解任务 → LLM 分解 + 模型选择 + 不确定性校验 ← ✅ **P2** (Model Selector) 已完成
-4. 影子探测 → 读取代码库 + 影子分析 ← ✅ **P3** (OpenCode Tools) 已完成
-5. 工作记忆 → 简洁上下文注入 ← ✅ **P2.2** (Knowledge Injectors - Working Memory + Invariants + Lineage) 已完成
-6. 执行开发 → 质量门禁 + 重试机制 ← ✅ **P4** (Quality Gates) 已完成
-7. 失败归因 → 人工纠正 → Invariant (Gold Memory) ← ✅ **P3** (Human Correction) 已完成
-8. 更新文档 → Fact/Narrative 生成 ← ✅ **P6** (Documentation Updater) 已完成
-9. 建立映射 → 关联任务创建与总 TODO 管理 ← ✅ **P7.2** (Knowledge Injectors 集成) 已完成
+## P1（高优先级）
 
-## 已完成模块 ✅
+1. GoldMemory 检索结果接入 orchestrator 自动上下文选择（按任务上下文注入 Top-K facts）
+2. Failure Taxonomy 接入重试与回滚策略（含 NonDeterministic）
+3. Invariant 的 TTL/version/conflict 检查接入执行前阶段
+4. Telemetry 指标落地（autonomous_rate / intervention_cost / token_efficiency）
+5. MCP/Skills 接入默认工具发现链与权限治理链
 
-| 模块 | 文件 | 状态 | 说明 |
-|------|------|------|
-| **core** | task.rs | ✅ | Task, TaskState, ExecutionStep, ActionResult |
-| **core** | intent.rs | ✅ | Intent, Verdict, PrivilegeLevel, Effect |
-| **core** | agent.rs | ✅ | AgentRole, AgentId, Permission |
-| **core** | memory.rs | ✅ | MemoryStability, MemoryQuery, MemoryEntry |
-| **core** | config.rs | ✅ | YAML 配置系统 |
-| **core** | ai_agent/mod.rs | ✅ | AI Agent 模块 (Orchestrator, Session, Verifier) |
-| **core** | ai_agent/orchestrator.rs | ✅ | Agent Orchestrator - LLM 交互中央控制器 |
-| **core** | ai_agent/session.rs | ✅ | Agent Session Manager - 会话状态管理 |
-| **core** | ai_agent/verifier.rs | ✅ | Task Verifier - 任务完成验证与反馈循环 |
-| **core** | ai_agent/prompts.rs | ✅ | System Prompts - 系统提示词构建 (EnhancedPromptContext) |
-| **decision** | engine.rs | ✅ | DecisionEngine, validators |
-| **runtime** | executor.rs | ✅ | Task execution, tool coordination |
-| **runtime** | workflow.rs | ✅ | State machine, transitions |
-| **runtime** | storage.rs | ✅ | In-memory storage |
-| **runtime** | storage_sqlite.rs | ✅ | SQLite storage |
-| **runtime** | tools/mod.rs | ✅ | Tool, ToolManager |
-| **runtime** | tools/fs.rs | ✅ | File operations |
-| **runtime** | tools/git.rs | ✅ | Git operations |
-| **runtime** | tools/shell.rs | ✅ | Shell command execution |
-| **runtime** | tools/ndc/ | ✅ | NDC Task Tools (create/update/list/verify) |
-| **runtime** | verify/mod.rs | ✅ | QualityGateRunner |
-| **interface** | cli.rs | ✅ | CLI commands |
-| **interface** | daemon.rs | ✅ | gRPC service framework |
-| **interface** | grpc.rs | ✅ | gRPC service impl |
-| **interface** | agent_mode.rs | ✅ | Agent REPL 模式 (P7 集成) |
-| **bin/tests** | e2e/mod.rs | ✅ | E2E 测试套件 (217 个测试全部通过) |
-| **interface** | repl.rs | ✅ | REPL mode (已集成 Agent 支持) |
-| **interface** | e2e_tests.rs | ✅ | E2E tests |
+## P2（后续增强）
 
-## 待实现功能 (按优先级)
+1. 多 Agent 协同编排（planner / implementer / reviewer）
+2. 文档自动回灌与知识库固化策略（阶段 8）
+3. REPL 可视化进度与历史重放
 
-### 🔴 高优先级 - 核心功能缺失
+## 验收门禁
 
-| 模块 | 功能 | 优先级 | 说明 |
-|------|------|------|
-| runtime/ | Workflow State Machine | 高 | ✅ 实现 Saga 模式工作流状态机 (Saga, SagaStep, SagaOrchestrator, Compensation) |
-| runtime/ | Agent Configuration | 高 | ✅ 实现 Agent 配置持久化 (AgentProfile, AgentRoleSelector, AgentConfigDir) |
-| interface/ | Interactive Layer | 高 | ✅ 实现基本交互组件 (StreamingDisplay, ProgressIndicator, display_agent_status) |
-| interface/ | Service Layer | 高 | ✅ 完善 gRPC 服务框架和客户端 SDK (proto 定义, 流式 RPC, StreamingChat, StreamExecuteTask) |
-| runtime/ | LLM Integration | 高 | ✅ 扩展 LLM Provider 支持，实现流式响应 (complete_streaming, StreamHandler, process_streaming) |
+每个 P0/P1 任务合并前必须满足：
 
-### 🟠 中优先级 - 增强功能
-
-| 模块 | 功能 | 优先级 | 说明 |
-|------|------|------|
-| runtime/ | Knowledge Persistence | 中 | 实现知识库持久化存储，支持知识更新和查询 |
-| runtime/ | Multi-Model Support | 中 | 实现多模型并行推理，降低 LLM 不确定性 |
-| runtime/ | Memory Compression | 中 | 实现上下文压缩优化，减少 Token 消耗 |
-| runtime/ | Tool Caching | 中 | 实现工具结果缓存，提升重复操作效率 |
-| ai_agent/ | Task Validation | 中 | 增强任务验证逻辑，支持更复杂的验证规则 |
-
-### 🟡 低优先级 - 体验优化
-
-| 模块 | 功能 | 优先级 | 说明 |
-|------|------|------|
-| runtime/ | Progress Indicators | 低 | 实现任务进度可视化、ETA 显示 |
-| runtime/ | Error Recovery | 低 | 完善错误恢复机制，支持自动重试和降级 |
-| runtime/ | Logging Enhancement | 低 | 增强结构化日志，支持日志级别和格式化输出 |
-| interface/ | CLI UX | 低 | 改进命令行体验，增加自动补全和帮助提示 |
-| interface/ | REPL History | 低 | 实现命令历史记录、搜索和重放功能 |
-
-### 📝 待规划 - 长期架构演进
-
-| 阶段 | 说明 | 状态 |
-|------|------|------|
-| **Phase 10** | 自主 Agent | 规划 | 实现 Agent 自主规划能力，无需人类干预即可完成复杂任务 |
-| **Phase 11** | 分布式 Agent | 规划 | 实现多 Agent 协作，支持分布式任务拆分和执行 |
-| **Phase 12** | 联邦学习 | 规划 | 从历史执行中学习，优化决策模式 |
-| **Phase 13** | 工具生态 | 规划 | 扩展标准工具协议，支持第三方工具集成 |
-| **Phase 14** | 边界安全 | 规划 | 实现 Agent 沙箱隔离和权限管理 |
-| **Phase 15** | 成本优化 | 规划 | 优化资源使用，实现按需计费模式 |
-
-## 快速参考
-
-### 常用命令
-
-```bash
-# 所有测试
-cargo test --release
-```
-
-### 开发指南
-
-#### 代码规范
-
-1. **错误处理**: 使用 `Result<T>` 和 `?` 操作符，避免 unwrap
-2. **异步设计**: 使用 `async fn` 和 `.await`，避免阻塞
-3. **日志记录**: 使用 `tracing::info/warn/error` 替代 `println!`
-4. **配置管理**: 所有配置项通过结构体定义，使用 `derive(Debug, Clone)`
-5. **测试编写**: 每个模块应包含单元测试，覆盖主要逻辑路径
-
-#### Git 工作流
-
-```bash
-# 功能开发
-git checkout -b feature/<branch-name>
-git commit -m "type(scope): message"
-
-# 文档更新
-echo "### 更新时间: $(date +%Y-%m-%d)" >> docs/TODO.md
-```
-
-## 项目统计
-
-- **总代码行数**: 约 15,000+ 行 Rust 代码
-- **测试覆盖**: 217 个测试全部通过
-- **文档完整度**: 完整的架构设计文档和开发指南
-- **开发语言**: Rust 2021 edition
-- **项目周期**: 自主开发，无外部依赖
-
----
-
-> **注意**: 本文档由 AI Agent 自动维护，反映当前实际开发状态和计划。
+1. `cargo check` 通过
+2. `cargo test -q` 通过
+3. 对应主链 smoke 测试通过
+4. 文档同步更新（本文件 + 架构重规划）
