@@ -30,10 +30,7 @@ impl std::fmt::Debug for AnthropicProvider {
 
 impl AnthropicProvider {
     /// Create a new Anthropic provider
-    pub fn new(
-        config: ProviderConfig,
-        token_counter: Arc<dyn TokenCounter>,
-    ) -> Self {
+    pub fn new(config: ProviderConfig, token_counter: Arc<dyn TokenCounter>) -> Self {
         let client = Client::builder()
             .timeout(std::time::Duration::from_millis(config.timeout_ms))
             .build()
@@ -60,23 +57,12 @@ impl AnthropicProvider {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
             reqwest::header::AUTHORIZATION,
-            format!("Bearer {}", self.config.api_key)
-                .parse()
-                .unwrap(),
+            format!("Bearer {}", self.config.api_key).parse().unwrap(),
         );
-        headers.insert(
-            "x-api-key",
-            self.config.api_key.parse().unwrap(),
-        );
-        headers.insert(
-            "anthropic-version",
-            ANTHROPIC_API_VERSION.parse().unwrap(),
-        );
+        headers.insert("x-api-key", self.config.api_key.parse().unwrap());
+        headers.insert("anthropic-version", ANTHROPIC_API_VERSION.parse().unwrap());
         if let Some(org) = &self.config.organization {
-            headers.insert(
-                "anthropic-organization",
-                org.parse().unwrap(),
-            );
+            headers.insert("anthropic-organization", org.parse().unwrap());
         }
         headers
     }
@@ -93,6 +79,169 @@ impl AnthropicProvider {
             _ => model.to_string(),
         }
     }
+
+    fn extract_text_blocks(data: &serde_json::Value) -> String {
+        let mut parts: Vec<String> = Vec::new();
+
+        if let Some(content) = data.get("content").and_then(|v| v.as_array()) {
+            for block in content {
+                if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                    if !text.trim().is_empty() {
+                        parts.push(text.to_string());
+                    }
+                    continue;
+                }
+                if let Some(text) = block.get("content").and_then(|v| v.as_str()) {
+                    if !text.trim().is_empty() {
+                        parts.push(text.to_string());
+                    }
+                    continue;
+                }
+                if let Some(content_parts) = block.get("content").and_then(|v| v.as_array()) {
+                    for p in content_parts {
+                        if let Some(text) = p.get("text").and_then(|v| v.as_str()) {
+                            if !text.trim().is_empty() {
+                                parts.push(text.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if parts.is_empty() {
+            if let Some(text) = data.get("output_text").and_then(|v| v.as_str()) {
+                if !text.trim().is_empty() {
+                    parts.push(text.to_string());
+                }
+            }
+        }
+
+        parts.join("\n")
+    }
+
+    fn extract_tool_calls(data: &serde_json::Value) -> Vec<ToolCall> {
+        data.get("content")
+            .and_then(|v| v.as_array())
+            .map(|content| {
+                content
+                    .iter()
+                    .filter_map(|block| {
+                        let block_type = block.get("type").and_then(|v| v.as_str())?;
+                        if block_type != "tool_use" {
+                            return None;
+                        }
+
+                        let id = block
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("tool-use")
+                            .to_string();
+                        let name = block
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown_tool")
+                            .to_string();
+                        let arguments = block
+                            .get("input")
+                            .map(|v| {
+                                if v.is_string() {
+                                    v.as_str().unwrap_or("{}").to_string()
+                                } else {
+                                    v.to_string()
+                                }
+                            })
+                            .unwrap_or_else(|| "{}".to_string());
+
+                        Some(ToolCall {
+                            id,
+                            function: ToolCallFunction { name, arguments },
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    }
+
+    fn map_openai_tool_to_anthropic(tool: &serde_json::Value) -> Option<serde_json::Value> {
+        let function = tool.get("function")?;
+        let name = function.get("name")?.as_str()?;
+        let description = function
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let input_schema = function
+            .get("parameters")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({"type":"object","properties":{}}));
+
+        Some(serde_json::json!({
+            "name": name,
+            "description": description,
+            "input_schema": input_schema,
+        }))
+    }
+
+    fn serialize_messages_for_anthropic(&self, request: &CompletionRequest) -> Vec<serde_json::Value> {
+        request
+            .messages
+            .iter()
+            .filter(|m| m.role != MessageRole::System)
+            .map(|m| match m.role {
+                MessageRole::Assistant => {
+                    let mut blocks: Vec<serde_json::Value> = Vec::new();
+
+                    if !m.content.trim().is_empty() {
+                        blocks.push(serde_json::json!({
+                            "type": "text",
+                            "text": m.content,
+                        }));
+                    }
+
+                    if let Some(tool_calls) = &m.tool_calls {
+                        for tc in tool_calls {
+                            let parsed_input = serde_json::from_str::<serde_json::Value>(
+                                &tc.function.arguments,
+                            )
+                            .unwrap_or_else(|_| serde_json::json!({}));
+                            blocks.push(serde_json::json!({
+                                "type": "tool_use",
+                                "id": tc.id,
+                                "name": tc.function.name,
+                                "input": parsed_input,
+                            }));
+                        }
+                    }
+
+                    serde_json::json!({
+                        "role": "assistant",
+                        "content": if blocks.is_empty() {
+                            serde_json::json!("")
+                        } else {
+                            serde_json::Value::Array(blocks)
+                        },
+                    })
+                }
+                MessageRole::Tool => {
+                    let tool_use_id = m.name.clone().unwrap_or_else(|| "tool".to_string());
+                    serde_json::json!({
+                        "role": "user",
+                        "content": [{
+                            "type": "tool_result",
+                            "tool_use_id": tool_use_id,
+                            "content": m.content,
+                            "is_error": false,
+                        }],
+                    })
+                }
+                MessageRole::User => serde_json::json!({
+                    "role": "user",
+                    "content": m.content,
+                }),
+                MessageRole::System => unreachable!(),
+            })
+            .collect()
+    }
 }
 
 #[async_trait::async_trait]
@@ -107,15 +256,18 @@ impl LlmProvider for AnthropicProvider {
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
         // Anthropic doesn't have a list models endpoint, return configured models
-        let models: Vec<ModelInfo> = self.config.models.iter().map(|model_id| {
-            ModelInfo {
+        let models: Vec<ModelInfo> = self
+            .config
+            .models
+            .iter()
+            .map(|model_id| ModelInfo {
                 id: self.map_model_name(model_id),
                 object: "model".to_string(),
                 created: 0,
                 owned_by: "anthropic".to_string(),
                 permission: vec![],
-            }
-        }).collect();
+            })
+            .collect();
 
         Ok(models)
     }
@@ -135,20 +287,12 @@ impl LlmProvider for AnthropicProvider {
             });
         }
 
-        let messages: Vec<serde_json::Value> = request.messages.iter().map(|m| {
-            serde_json::json!({
-                "role": match m.role {
-                    MessageRole::User => "user",
-                    MessageRole::Assistant => "assistant",
-                    MessageRole::System => "user", // System handled separately
-                    MessageRole::Tool => "user",
-                },
-                "content": m.content,
-            })
-        }).collect();
+        let messages = self.serialize_messages_for_anthropic(request);
 
         // Extract system message
-        let system = request.messages.iter()
+        let system = request
+            .messages
+            .iter()
             .find(|m| m.role == MessageRole::System)
             .map(|m| m.content.clone());
 
@@ -168,6 +312,16 @@ impl LlmProvider for AnthropicProvider {
             body["stop_sequences"] = serde_json::json!(stop);
         }
 
+        if let Some(tools) = request.tools.as_ref().filter(|t| !t.is_empty()) {
+            let mapped_tools: Vec<serde_json::Value> = tools
+                .iter()
+                .filter_map(Self::map_openai_tool_to_anthropic)
+                .collect();
+            if !mapped_tools.is_empty() {
+                body["tools"] = serde_json::json!(mapped_tools);
+            }
+        }
+
         let response = self
             .client
             .post(&url)
@@ -185,7 +339,9 @@ impl LlmProvider for AnthropicProvider {
         } else if status == StatusCode::TOO_MANY_REQUESTS {
             return Err(ProviderError::RateLimited { retry_after: 60 });
         } else if status == StatusCode::BAD_REQUEST {
-            let error: serde_json::Value = response.json().await
+            let error: serde_json::Value = response
+                .json()
+                .await
                 .unwrap_or_else(|_| serde_json::json!({}));
             let message = error["error"]["message"]
                 .as_str()
@@ -199,19 +355,30 @@ impl LlmProvider for AnthropicProvider {
             });
         }
 
-        let data: serde_json::Value = response.json().await
-            .map_err(|e| ProviderError::Api {
-                message: format!("Failed to parse response: {}", e),
-                status_code: None,
-            })?;
+        let data: serde_json::Value = response.json().await.map_err(|e| ProviderError::Api {
+            message: format!("Failed to parse response: {}", e),
+            status_code: None,
+        })?;
 
-        // Convert Anthropic response to our format
-        let completion = data["content"]
-            .as_array()
-            .and_then(|a| a.first())
-            .and_then(|c| c.get("text"))
-            .and_then(|t| t.as_str())
-            .unwrap_or("");
+        let completion = Self::extract_text_blocks(&data);
+        let tool_calls = Self::extract_tool_calls(&data);
+        if completion.trim().is_empty() && tool_calls.is_empty() {
+            let stop_reason = data
+                .get("stop_reason")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let keys = data
+                .as_object()
+                .map(|obj| obj.keys().cloned().collect::<Vec<_>>().join(","))
+                .unwrap_or_else(|| "<non-object>".to_string());
+            return Err(ProviderError::Api {
+                message: format!(
+                    "Anthropic-compatible response has empty text content (stop_reason={}, keys={})",
+                    stop_reason, keys
+                ),
+                status_code: None,
+            });
+        }
 
         let response = CompletionResponse {
             id: data["id"].as_str().unwrap_or("").to_string(),
@@ -224,7 +391,11 @@ impl LlmProvider for AnthropicProvider {
                     role: MessageRole::Assistant,
                     content: completion.to_string(),
                     name: None,
-                    tool_calls: None,
+                    tool_calls: if tool_calls.is_empty() {
+                        None
+                    } else {
+                        Some(tool_calls)
+                    },
                 },
                 finish_reason: data["stop_reason"].as_str().map(|s| s.to_string()),
                 logprobs: None,
@@ -275,8 +446,10 @@ impl LlmProvider for AnthropicProvider {
 
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|e| ProviderError::Network { source: e })?;
-            let text = std::str::from_utf8(&chunk)
-                .map_err(|e| ProviderError::Api { message: e.to_string(), status_code: None })?;
+            let text = std::str::from_utf8(&chunk).map_err(|e| ProviderError::Api {
+                message: e.to_string(),
+                status_code: None,
+            })?;
 
             if text.starts_with("data: ") {
                 let data = &text[6..];
@@ -298,7 +471,10 @@ impl LlmProvider for AnthropicProvider {
                             id: value["id"].as_str().unwrap_or("").to_string(),
                             object: "chat.completion.chunk".to_string(),
                             created: value["created"].as_u64().unwrap_or(0),
-                            model: value["model"].as_str().unwrap_or(&request.model).to_string(),
+                            model: value["model"]
+                                .as_str()
+                                .unwrap_or(&request.model)
+                                .to_string(),
                             choices: vec![StreamChoice {
                                 index: 0,
                                 delta: Some(Message {
@@ -323,7 +499,9 @@ impl LlmProvider for AnthropicProvider {
     }
 
     fn estimate_tokens(&self, request: &CompletionRequest) -> Usage {
-        let prompt_tokens = self.token_counter.count_messages(&request.messages, &request.model);
+        let prompt_tokens = self
+            .token_counter
+            .count_messages(&request.messages, &request.model);
         let completion_tokens = request.max_tokens.unwrap_or(1024) as usize;
         Usage {
             prompt_tokens: prompt_tokens as u32,
@@ -342,11 +520,7 @@ impl LlmProvider for AnthropicProvider {
 }
 
 /// Create a basic Anthropic configuration
-pub fn create_anthropic_config(
-    name: &str,
-    api_key: &str,
-    default_model: &str,
-) -> ProviderConfig {
+pub fn create_anthropic_config(name: &str, api_key: &str, default_model: &str) -> ProviderConfig {
     ProviderConfig {
         name: name.to_string(),
         provider_type: ProviderType::Anthropic,
@@ -363,5 +537,128 @@ pub fn create_anthropic_config(
         ],
         timeout_ms: 60000,
         max_retries: 3,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_text_blocks_prefers_all_text_blocks() {
+        let data = serde_json::json!({
+            "content": [
+                { "type": "thinking", "thinking": "hidden" },
+                { "type": "text", "text": "hello" },
+                { "type": "text", "text": "world" }
+            ]
+        });
+        let out = AnthropicProvider::extract_text_blocks(&data);
+        assert_eq!(out, "hello\nworld");
+    }
+
+    #[test]
+    fn test_extract_text_blocks_with_nested_content_parts() {
+        let data = serde_json::json!({
+            "content": [
+                {
+                    "type": "message",
+                    "content": [
+                        { "type": "text", "text": "nested-text" }
+                    ]
+                }
+            ]
+        });
+        let out = AnthropicProvider::extract_text_blocks(&data);
+        assert_eq!(out, "nested-text");
+    }
+
+    #[test]
+    fn test_extract_tool_calls_from_content_blocks() {
+        let data = serde_json::json!({
+            "content": [
+                {"type":"text","text":"planning"},
+                {
+                    "type":"tool_use",
+                    "id":"toolu_1",
+                    "name":"list",
+                    "input":{"path":"."}
+                }
+            ]
+        });
+
+        let calls = AnthropicProvider::extract_tool_calls(&data);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "toolu_1");
+        assert_eq!(calls[0].function.name, "list");
+        assert_eq!(calls[0].function.arguments, r#"{"path":"."}"#);
+    }
+
+    #[test]
+    fn test_map_openai_tool_to_anthropic() {
+        let openai_tool = serde_json::json!({
+            "type":"function",
+            "function":{
+                "name":"file_read",
+                "description":"Read file",
+                "parameters":{"type":"object","properties":{"path":{"type":"string"}}}
+            }
+        });
+
+        let mapped = AnthropicProvider::map_openai_tool_to_anthropic(&openai_tool).unwrap();
+        assert_eq!(mapped["name"], "file_read");
+        assert_eq!(mapped["description"], "Read file");
+        assert_eq!(mapped["input_schema"]["type"], "object");
+    }
+
+    #[test]
+    fn test_serialize_messages_includes_tool_result_block() {
+        let config = create_anthropic_config("anthropic", "test-key", "claude-sonnet-4");
+        let provider = AnthropicProvider::new(config, Arc::new(SimpleTokenCounter::new()));
+        let request = CompletionRequest {
+            model: "claude-sonnet-4".to_string(),
+            messages: vec![
+                Message {
+                    role: MessageRole::System,
+                    content: "system".to_string(),
+                    name: None,
+                    tool_calls: None,
+                },
+                Message {
+                    role: MessageRole::Assistant,
+                    content: String::new(),
+                    name: None,
+                    tool_calls: Some(vec![ToolCall {
+                        id: "toolu_1".to_string(),
+                        function: ToolCallFunction {
+                            name: "list".to_string(),
+                            arguments: r#"{"path":"."}"#.to_string(),
+                        },
+                    }]),
+                },
+                Message {
+                    role: MessageRole::Tool,
+                    content: "[]".to_string(),
+                    name: Some("toolu_1".to_string()),
+                    tool_calls: None,
+                },
+            ],
+            temperature: Some(0.1),
+            max_tokens: Some(256),
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            stop: None,
+            stream: false,
+            tools: None,
+        };
+
+        let mapped = provider.serialize_messages_for_anthropic(&request);
+        assert_eq!(mapped.len(), 2);
+        assert_eq!(mapped[0]["role"], "assistant");
+        assert_eq!(mapped[0]["content"][0]["type"], "tool_use");
+        assert_eq!(mapped[1]["role"], "user");
+        assert_eq!(mapped[1]["content"][0]["type"], "tool_result");
+        assert_eq!(mapped[1]["content"][0]["tool_use_id"], "toolu_1");
     }
 }
