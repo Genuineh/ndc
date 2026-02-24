@@ -123,10 +123,14 @@ struct ReplVisualizationState {
     show_tool_details: bool,
     expand_tool_cards: bool,
     live_events_enabled: bool,
+    show_usage_metrics: bool,
     timeline_limit: usize,
     timeline_cache: Vec<ndc_core::AgentExecutionEvent>,
     redaction_mode: RedactionMode,
     hidden_thinking_round_hints: BTreeSet<usize>,
+    current_workflow_stage: Option<String>,
+    session_token_total: u64,
+    latest_round_token_total: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -220,6 +224,18 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         summary: "stream on/off/status",
     },
     SlashCommandSpec {
+        command: "/workflow",
+        summary: "show workflow stage",
+    },
+    SlashCommandSpec {
+        command: "/tokens",
+        summary: "usage metrics",
+    },
+    SlashCommandSpec {
+        command: "/metrics",
+        summary: "runtime metrics",
+    },
+    SlashCommandSpec {
         command: "/timeline",
         summary: "show timeline",
     },
@@ -264,16 +280,21 @@ impl ReplVisualizationState {
         let show_tool_details = env_bool("NDC_TOOL_DETAILS").unwrap_or(false);
         let expand_tool_cards = env_bool("NDC_TOOL_CARDS_EXPANDED").unwrap_or(false);
         let live_events_enabled = env_bool("NDC_REPL_LIVE_EVENTS").unwrap_or(true);
+        let show_usage_metrics = env_bool("NDC_REPL_SHOW_USAGE").unwrap_or(true);
         let timeline_limit = env_usize("NDC_TIMELINE_LIMIT").unwrap_or(40).max(1);
         Self {
             show_thinking,
             show_tool_details,
             expand_tool_cards,
             live_events_enabled,
+            show_usage_metrics,
             timeline_limit,
             timeline_cache: Vec::new(),
             redaction_mode: RedactionMode::from_env(),
             hidden_thinking_round_hints: BTreeSet::new(),
+            current_workflow_stage: None,
+            session_token_total: 0,
+            latest_round_token_total: 0,
         }
     }
 }
@@ -353,6 +374,7 @@ fn slash_argument_options(command: &str) -> Option<&'static [&'static str]> {
         "/provider" => Some(AVAILABLE_PROVIDERS),
         "/stream" => Some(&["on", "off", "status"]),
         "/thinking" => Some(&["show", "now"]),
+        "/tokens" => Some(&["show", "hide", "reset", "status"]),
         _ => None,
     }
 }
@@ -588,7 +610,7 @@ Examples:
   "Fix the bug in the login function"
   "Run tests for the authentication module"
 
-Commands: /help, /provider, /model, /agent, /status, /stream, /clear, exit
+Commands: /help, /provider, /model, /agent, /status, /stream, /workflow, /tokens, /metrics, /clear, exit
 "#
     );
 
@@ -651,11 +673,22 @@ fn build_status_line(
     session_view: &TuiSessionViewState,
     stream_state: &str,
 ) -> String {
+    let workflow_stage = viz_state.current_workflow_stage.as_deref().unwrap_or("-");
+    let usage = if viz_state.show_usage_metrics {
+        format!(
+            "tok_round={} tok_session={}",
+            viz_state.latest_round_token_total, viz_state.session_token_total
+        )
+    } else {
+        "tok=hidden".to_string()
+    };
     format!(
-        "provider={} model={} session={} thinking={} details={} cards={} stream={} hidden_thinking={} scroll={} state={}",
+        "provider={} model={} session={} workflow={} {} thinking={} details={} cards={} stream={} hidden_thinking={} scroll={} state={}",
         status.provider,
         status.model,
         short_session_id(status.session_id.as_deref()),
+        workflow_stage,
+        usage,
         if viz_state.show_thinking { "on" } else { "off" },
         if viz_state.show_tool_details {
             "on"
@@ -727,6 +760,40 @@ fn apply_stream_command(
         } else {
             "OFF (polling fallback only)"
         }
+    ))
+}
+
+fn apply_tokens_command(
+    viz_state: &mut ReplVisualizationState,
+    arg: Option<&str>,
+) -> Result<String, String> {
+    let mode = arg
+        .map(|value| value.to_ascii_lowercase())
+        .unwrap_or_else(|| "status".to_string());
+    match mode.as_str() {
+        "status" | "show" => {
+            viz_state.show_usage_metrics = true;
+        }
+        "hide" | "off" => {
+            viz_state.show_usage_metrics = false;
+        }
+        "reset" => {
+            viz_state.session_token_total = 0;
+            viz_state.latest_round_token_total = 0;
+        }
+        _ => {
+            return Err("Usage: /tokens [show|hide|reset|status]".to_string());
+        }
+    }
+    Ok(format!(
+        "Token metrics: display={} round_total={} session_total={}",
+        if viz_state.show_usage_metrics {
+            "ON"
+        } else {
+            "OFF"
+        },
+        viz_state.latest_round_token_total,
+        viz_state.session_token_total
     ))
 }
 
@@ -882,6 +949,20 @@ fn style_session_log_line(line: &str) -> Line<'static> {
             title
         };
         return Line::from(Span::styled(line.to_string(), style));
+    }
+    if line.starts_with("[Workflow]") {
+        return Line::from(Span::styled(
+            line.to_string(),
+            Style::default()
+                .fg(Color::LightCyan)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    if line.starts_with("[Usage]") {
+        return Line::from(Span::styled(
+            line.to_string(),
+            Style::default().fg(Color::LightGreen),
+        ));
     }
     if line.starts_with("[Thinking]") {
         return Line::from(Span::styled(
@@ -1075,7 +1156,7 @@ async fn run_repl_tui(
             f.render_widget(hints_widget, areas[2]);
 
             let input_title =
-                "Input (/t /d /cards /stream /timeline /clear, Enter send, Esc exit, ↑↓/PgUp/PgDn scroll, Ctrl+<keys>)";
+                "Input (/workflow /tokens /metrics /t /d /cards /stream /timeline /clear, Enter send, Esc exit, ↑↓/PgUp/PgDn scroll, Ctrl+<keys>)";
             let input_widget = Paragraph::new(Line::from(format!("> {}", input)))
                 .block(Block::default().title(input_title).borders(Borders::ALL));
             f.render_widget(input_widget, areas[3]);
@@ -1434,6 +1515,21 @@ async fn handle_command(
             Ok(message) => println!("[OK] {}", message),
             Err(message) => println!("[Error] {}", message),
         },
+        "/workflow" => {
+            show_workflow_overview(
+                viz_state.timeline_cache.as_slice(),
+                viz_state.timeline_limit,
+                viz_state.redaction_mode,
+                viz_state.current_workflow_stage.as_deref(),
+            );
+        }
+        "/tokens" => match apply_tokens_command(viz_state, parts.get(1).copied()) {
+            Ok(message) => println!("[OK] {}", message),
+            Err(message) => println!("[Error] {}", message),
+        },
+        "/metrics" => {
+            show_runtime_metrics(viz_state);
+        }
         _ => {
             // 未知命令，尝试作为自然语言处理
             println!("[Tip] Unknown command. Use natural language or type '/help' for commands.");
@@ -1651,6 +1747,9 @@ Available Commands:
   /details, /d    Toggle tool step/details display
   /cards          Toggle tool cards expanded/collapsed
   /stream [mode]  Toggle realtime event stream (on/off/status)
+  /workflow       Show workflow stage overview
+  /tokens [mode]  Token metrics: show/hide/reset/status
+  /metrics        Runtime metrics (tools/errors/permission/tokens)
   /timeline [N]   Show recent execution timeline (default N=40)
   /clear          Clear screen
   exit, quit, q   Exit REPL
@@ -1686,6 +1785,7 @@ Environment Variables:
   NDC_REPL_KEY_SHOW_TIMELINE=i
   NDC_REPL_KEY_CLEAR_PANEL=l
   NDC_REPL_LIVE_EVENTS=true|false
+  NDC_REPL_SHOW_USAGE=true|false
   Provider options: openai, anthropic, minimax, minimax-coding-plan, minimax-cn, minimax-cn-coding-plan, openrouter, ollama
 "#
     );
@@ -1771,11 +1871,43 @@ fn drain_live_execution_events(
     rendered
 }
 
+fn parse_workflow_stage(message: &str) -> Option<String> {
+    let rest = message.strip_prefix("workflow_stage:")?;
+    let stage = rest.split('|').next()?.trim();
+    if stage.is_empty() {
+        None
+    } else {
+        Some(stage.to_string())
+    }
+}
+
+fn parse_usage_metric(message: &str, key: &str) -> Option<u64> {
+    let prefix = format!("{}=", key);
+    message
+        .split(|ch: char| ch.is_whitespace() || ch == '|')
+        .find_map(|token| {
+            token
+                .trim()
+                .strip_prefix(prefix.as_str())
+                .and_then(|value| value.trim_end_matches(',').parse::<u64>().ok())
+        })
+}
+
 fn event_to_lines(
     event: &ndc_core::AgentExecutionEvent,
     viz_state: &mut ReplVisualizationState,
 ) -> Vec<String> {
     match event.kind {
+        ndc_core::AgentExecutionEventKind::WorkflowStage => {
+            if let Some(stage) = parse_workflow_stage(event.message.as_str()) {
+                viz_state.current_workflow_stage = Some(stage.clone());
+            }
+            vec![format!(
+                "[Workflow][r{}] {}",
+                event.round,
+                sanitize_text(&event.message, viz_state.redaction_mode)
+            )]
+        }
         ndc_core::AgentExecutionEventKind::Reasoning => {
             if viz_state.show_thinking {
                 vec![
@@ -1845,6 +1977,19 @@ fn event_to_lines(
                 lines.push("  └─ (collapsed card, use /cards or Ctrl+E)".to_string());
             }
             lines
+        }
+        ndc_core::AgentExecutionEventKind::TokenUsage => {
+            if let Some(value) = parse_usage_metric(event.message.as_str(), "total") {
+                viz_state.latest_round_token_total = value;
+            }
+            if let Some(value) = parse_usage_metric(event.message.as_str(), "session_total") {
+                viz_state.session_token_total = value;
+            }
+            vec![format!(
+                "[Usage][r{}] {}",
+                event.round,
+                sanitize_text(&event.message, viz_state.redaction_mode)
+            )]
         }
         ndc_core::AgentExecutionEventKind::PermissionAsked => {
             vec![format!(
@@ -1948,6 +2093,161 @@ fn append_recent_timeline_to_logs(logs: &mut Vec<String>, viz_state: &ReplVisual
     }
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct ReplRuntimeMetrics {
+    tool_calls_total: usize,
+    tool_calls_failed: usize,
+    tool_duration_samples: usize,
+    tool_duration_total_ms: u64,
+    permission_waits: usize,
+    error_events: usize,
+}
+
+impl ReplRuntimeMetrics {
+    fn avg_tool_duration_ms(self) -> Option<u64> {
+        if self.tool_duration_samples == 0 {
+            None
+        } else {
+            Some(self.tool_duration_total_ms / self.tool_duration_samples as u64)
+        }
+    }
+
+    fn tool_error_rate_percent(self) -> u64 {
+        if self.tool_calls_total == 0 {
+            0
+        } else {
+            ((self.tool_calls_failed as u64) * 100) / (self.tool_calls_total as u64)
+        }
+    }
+}
+
+fn compute_runtime_metrics(timeline: &[ndc_core::AgentExecutionEvent]) -> ReplRuntimeMetrics {
+    let mut metrics = ReplRuntimeMetrics::default();
+    for event in timeline {
+        match event.kind {
+            ndc_core::AgentExecutionEventKind::ToolCallEnd => {
+                metrics.tool_calls_total += 1;
+                if event.is_error {
+                    metrics.tool_calls_failed += 1;
+                }
+                if let Some(ms) = event.duration_ms {
+                    metrics.tool_duration_samples += 1;
+                    metrics.tool_duration_total_ms += ms;
+                }
+            }
+            ndc_core::AgentExecutionEventKind::PermissionAsked => {
+                metrics.permission_waits += 1;
+            }
+            ndc_core::AgentExecutionEventKind::Error => {
+                metrics.error_events += 1;
+            }
+            _ => {}
+        }
+    }
+    metrics
+}
+
+fn append_workflow_overview_to_logs(logs: &mut Vec<String>, viz_state: &ReplVisualizationState) {
+    push_log_line(logs, "");
+    push_log_line(
+        logs,
+        &format!(
+            "Workflow Overview: current={}",
+            viz_state.current_workflow_stage.as_deref().unwrap_or("-")
+        ),
+    );
+    let total = viz_state.timeline_cache.len();
+    let start = total.saturating_sub(viz_state.timeline_limit);
+    let mut count = 0usize;
+    for event in viz_state.timeline_cache.iter().skip(start) {
+        if !matches!(event.kind, ndc_core::AgentExecutionEventKind::WorkflowStage) {
+            continue;
+        }
+        push_log_line(
+            logs,
+            &format!(
+                "  - r{} {} | {}",
+                event.round,
+                event.timestamp.format("%H:%M:%S"),
+                sanitize_text(&event.message, viz_state.redaction_mode),
+            ),
+        );
+        count += 1;
+    }
+    if count == 0 {
+        push_log_line(logs, "  (no workflow stage events yet)");
+    }
+}
+
+fn append_token_usage_to_logs(logs: &mut Vec<String>, viz_state: &ReplVisualizationState) {
+    push_log_line(logs, "");
+    push_log_line(
+        logs,
+        &format!(
+            "Token Usage: round_total={} session_total={} display={}",
+            viz_state.latest_round_token_total,
+            viz_state.session_token_total,
+            if viz_state.show_usage_metrics {
+                "ON"
+            } else {
+                "OFF"
+            }
+        ),
+    );
+}
+
+fn append_runtime_metrics_to_logs(logs: &mut Vec<String>, viz_state: &ReplVisualizationState) {
+    let metrics = compute_runtime_metrics(viz_state.timeline_cache.as_slice());
+    push_log_line(logs, "");
+    push_log_line(logs, "Runtime Metrics:");
+    push_log_line(
+        logs,
+        &format!(
+            "  - workflow_current={}",
+            viz_state.current_workflow_stage.as_deref().unwrap_or("-")
+        ),
+    );
+    push_log_line(
+        logs,
+        &format!(
+            "  - token_round_total={} token_session_total={} display={}",
+            viz_state.latest_round_token_total,
+            viz_state.session_token_total,
+            if viz_state.show_usage_metrics {
+                "ON"
+            } else {
+                "OFF"
+            }
+        ),
+    );
+    push_log_line(
+        logs,
+        &format!(
+            "  - tools_total={} tools_failed={} tool_error_rate={}%",
+            metrics.tool_calls_total,
+            metrics.tool_calls_failed,
+            metrics.tool_error_rate_percent()
+        ),
+    );
+    push_log_line(
+        logs,
+        &format!(
+            "  - tool_avg_duration_ms={}",
+            metrics
+                .avg_tool_duration_ms()
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        ),
+    );
+    push_log_line(
+        logs,
+        &format!(
+            "  - permission_waits={} error_events={}",
+            metrics.permission_waits, metrics.error_events
+        ),
+    );
+}
+
 fn apply_tui_shortcut_action(
     action: TuiShortcutAction,
     viz_state: &mut ReplVisualizationState,
@@ -2033,7 +2333,7 @@ async fn handle_tui_command(
         "/help" | "/h" => {
             push_log_line(
                 logs,
-                "Commands: /help /provider /model /status /t /d /cards /stream /thinking show /timeline [N] /clear exit",
+                "Commands: /help /provider /model /status /workflow /tokens /metrics /t /d /cards /stream /thinking show /timeline [N] /clear exit",
             );
             push_log_line(
                 logs,
@@ -2097,6 +2397,19 @@ async fn handle_tui_command(
             Ok(message) => push_log_line(logs, &format!("[OK] {}", message)),
             Err(message) => push_log_line(logs, &format!("[Error] {}", message)),
         },
+        "/workflow" => {
+            append_workflow_overview_to_logs(logs, viz_state);
+        }
+        "/tokens" => match apply_tokens_command(viz_state, parts.get(1).copied()) {
+            Ok(message) => {
+                push_log_line(logs, &format!("[OK] {}", message));
+                append_token_usage_to_logs(logs, viz_state);
+            }
+            Err(message) => push_log_line(logs, &format!("[Error] {}", message)),
+        },
+        "/metrics" => {
+            append_runtime_metrics_to_logs(logs, viz_state);
+        }
         "/timeline" => {
             if parts.len() > 1 {
                 if let Ok(parsed) = parts[1].parse::<usize>() {
@@ -2222,6 +2535,76 @@ fn show_recent_thinking(
     if count == 0 {
         println!("  (no thinking events yet)");
     }
+    println!();
+}
+
+fn show_workflow_overview(
+    timeline: &[ndc_core::AgentExecutionEvent],
+    limit: usize,
+    mode: RedactionMode,
+    current_stage: Option<&str>,
+) {
+    println!();
+    println!(
+        "Workflow Overview: current={}",
+        current_stage.unwrap_or("-")
+    );
+    let total = timeline.len();
+    let start = total.saturating_sub(limit);
+    let mut count = 0usize;
+    for event in timeline.iter().skip(start) {
+        if !matches!(event.kind, ndc_core::AgentExecutionEventKind::WorkflowStage) {
+            continue;
+        }
+        println!(
+            "  - r{} {} | {}",
+            event.round,
+            event.timestamp.format("%H:%M:%S"),
+            sanitize_text(&event.message, mode)
+        );
+        count += 1;
+    }
+    if count == 0 {
+        println!("  (no workflow stage events yet)");
+    }
+    println!();
+}
+
+fn show_runtime_metrics(viz_state: &ReplVisualizationState) {
+    let metrics = compute_runtime_metrics(viz_state.timeline_cache.as_slice());
+    println!();
+    println!("Runtime Metrics:");
+    println!(
+        "  - workflow_current={}",
+        viz_state.current_workflow_stage.as_deref().unwrap_or("-")
+    );
+    println!(
+        "  - token_round_total={} token_session_total={} display={}",
+        viz_state.latest_round_token_total,
+        viz_state.session_token_total,
+        if viz_state.show_usage_metrics {
+            "ON"
+        } else {
+            "OFF"
+        }
+    );
+    println!(
+        "  - tools_total={} tools_failed={} tool_error_rate={}%",
+        metrics.tool_calls_total,
+        metrics.tool_calls_failed,
+        metrics.tool_error_rate_percent()
+    );
+    println!(
+        "  - tool_avg_duration_ms={}",
+        metrics
+            .avg_tool_duration_ms()
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string())
+    );
+    println!(
+        "  - permission_waits={} error_events={}",
+        metrics.permission_waits, metrics.error_events
+    );
     println!();
 }
 
@@ -2687,6 +3070,127 @@ mod tests {
         assert!(logs.iter().any(|l| l.contains("Recent Execution Timeline")));
         assert!(logs.iter().any(|l| l.contains("llm_round_1_start")));
         assert!(logs.iter().any(|l| l.contains("result_preview")));
+    }
+
+    #[test]
+    fn test_parse_workflow_stage_and_usage_metric() {
+        assert_eq!(
+            parse_workflow_stage("workflow_stage: executing | llm_round_start"),
+            Some("executing".to_string())
+        );
+        assert_eq!(parse_workflow_stage("invalid"), None);
+        let usage = "token_usage: source=provider prompt=12 completion=34 total=46 | session_prompt_total=12 session_completion_total=34 session_total=46";
+        assert_eq!(parse_usage_metric(usage, "prompt"), Some(12));
+        assert_eq!(parse_usage_metric(usage, "total"), Some(46));
+        assert_eq!(parse_usage_metric(usage, "session_total"), Some(46));
+    }
+
+    #[test]
+    fn test_event_to_lines_workflow_stage_updates_state() {
+        let mut viz = ReplVisualizationState::new(false);
+        let event = mk_event(
+            ndc_core::AgentExecutionEventKind::WorkflowStage,
+            "workflow_stage: discovery | tool_calls_planned",
+            2,
+            None,
+            None,
+            None,
+            false,
+        );
+        let lines = event_to_lines(&event, &mut viz);
+        assert_eq!(viz.current_workflow_stage.as_deref(), Some("discovery"));
+        assert!(lines.iter().any(|line| line.contains("[Workflow][r2]")));
+    }
+
+    #[test]
+    fn test_event_to_lines_token_usage_updates_state() {
+        let mut viz = ReplVisualizationState::new(false);
+        let event = mk_event(
+            ndc_core::AgentExecutionEventKind::TokenUsage,
+            "token_usage: source=provider prompt=10 completion=5 total=15 | session_prompt_total=22 session_completion_total=11 session_total=33",
+            3,
+            None,
+            None,
+            None,
+            false,
+        );
+        let lines = event_to_lines(&event, &mut viz);
+        assert_eq!(viz.latest_round_token_total, 15);
+        assert_eq!(viz.session_token_total, 33);
+        assert!(lines.iter().any(|line| line.contains("[Usage][r3]")));
+    }
+
+    #[test]
+    fn test_compute_runtime_metrics_counts_errors_and_duration() {
+        let timeline = vec![
+            mk_event(
+                ndc_core::AgentExecutionEventKind::ToolCallEnd,
+                "tool_call_end: list (ok)",
+                1,
+                Some("list"),
+                Some("call-1"),
+                Some(3),
+                false,
+            ),
+            mk_event(
+                ndc_core::AgentExecutionEventKind::ToolCallEnd,
+                "tool_call_end: write (error)",
+                1,
+                Some("write"),
+                Some("call-2"),
+                Some(7),
+                true,
+            ),
+            mk_event(
+                ndc_core::AgentExecutionEventKind::PermissionAsked,
+                "permission_asked: write requires approval",
+                1,
+                Some("write"),
+                Some("call-2"),
+                None,
+                true,
+            ),
+            mk_event(
+                ndc_core::AgentExecutionEventKind::Error,
+                "max_tool_calls_exceeded",
+                2,
+                None,
+                None,
+                None,
+                true,
+            ),
+        ];
+        let metrics = compute_runtime_metrics(&timeline);
+        assert_eq!(metrics.tool_calls_total, 2);
+        assert_eq!(metrics.tool_calls_failed, 1);
+        assert_eq!(metrics.permission_waits, 1);
+        assert_eq!(metrics.error_events, 1);
+        assert_eq!(metrics.avg_tool_duration_ms(), Some(5));
+        assert_eq!(metrics.tool_error_rate_percent(), 50);
+    }
+
+    #[test]
+    fn test_append_runtime_metrics_to_logs() {
+        let mut viz = ReplVisualizationState::new(false);
+        viz.current_workflow_stage = Some("executing".to_string());
+        viz.latest_round_token_total = 15;
+        viz.session_token_total = 45;
+        viz.timeline_cache = vec![mk_event(
+            ndc_core::AgentExecutionEventKind::ToolCallEnd,
+            "tool_call_end: list (ok)",
+            1,
+            Some("list"),
+            Some("call-1"),
+            Some(3),
+            false,
+        )];
+        let mut logs = Vec::new();
+        append_runtime_metrics_to_logs(&mut logs, &viz);
+        let joined = logs.join("\n");
+        assert!(joined.contains("Runtime Metrics"));
+        assert!(joined.contains("workflow_current=executing"));
+        assert!(joined.contains("token_round_total=15"));
+        assert!(joined.contains("tools_total=1"));
     }
 
     #[test]

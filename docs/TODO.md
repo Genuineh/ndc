@@ -132,36 +132,36 @@
 > 目标：让 REPL 不仅显示“发生了什么事件”，而是直接围绕 NDC 内部工作流（Planning/Discovery/Executing/Verifying/Completing）工作，并持续展示当前阶段、当前步骤、token 消耗与关键运行指标。  
 > 输出要求：终端中可实时看到“正在哪个 workflow 阶段 + 该阶段的进度 + 本轮/累计 token 使用 + 工具耗时/错误分布”。
 
-1. Workflow 阶段模型统一（单一真相）【待开始】
+1. Workflow 阶段模型统一（单一真相）【第一批完成】
    - 设计并固化 Agent 可视化阶段枚举（与 runtime workflow 语义对齐）：`planning/discovery/executing/verifying/completing`。
-   - 在 `core` 层增加阶段事件载荷（阶段名、进入时间、阶段序号、可选进度）。
+   - 在 `core` 层增加阶段事件载荷（当前实现通过 `WorkflowStage` 事件消息承载阶段与细节）。
    - 明确“阶段”和“事件”的关系：阶段用于状态展示，事件用于细粒度回放。
-2. Orchestrator 阶段驱动与步骤对齐【待开始】
+2. Orchestrator 阶段驱动与步骤对齐【第一批完成】
    - 在主循环关键点显式发出阶段切换事件（进入/退出）。
    - 统一步骤语义：`round`、`tool_call`、`verification` 均映射到当前 workflow 阶段下。
    - 保证多轮连续对话中阶段可恢复（新一轮从当前上下文续接，而非总是重置）。
-3. Token 使用量观测（实时 + 累计）【待开始】
+3. Token 使用量观测（实时 + 累计）【第一批完成】
    - 在每次 LLM 调用后采集 usage（优先 provider 返回，缺失时回退 estimate）。
    - 增加 token 事件或 token 字段：`prompt/completion/total`（本轮）与 `session_total`（累计）。
    - REPL 状态栏/指标栏实时显示 token 消耗，并支持开关显示。
-4. REPL 展示层升级（workflow-first）【待开始】
+4. REPL 展示层升级（workflow-first）【进行中（第一批完成）】
    - 新增固定 workflow 状态区：当前阶段、阶段耗时、阶段进度、是否阻塞。
-   - Session 面板中将事件按阶段分组，而非纯时间流平铺。
-   - 增加指标视图：token、工具耗时、错误率、最近一次权限等待状态。
-5. 交互命令与引导补齐【待开始】
+   - Session 面板已新增 `Workflow/Usage` 实时事件行（后续补“按阶段分组视图”）。
+   - 已新增指标视图命令 `/metrics`（token、工具耗时、错误率、权限等待、错误事件）。
+5. 交互命令与引导补齐【进行中（第一批完成）】
    - 新增命令：`/workflow`（阶段视图）、`/tokens`（token 统计）、`/metrics`（运行指标）。
-   - 命令提示（Hints）补齐参数引导（如 `/tokens session|round|reset`）。
+   - 命令提示（Hints）补齐参数引导（如 `/tokens show|hide|reset|status`）。
    - 保持快捷键与 slash 命令双通道一致。
 6. 对外协议同步（gRPC/SSE/SDK）【待开始】
    - 扩展 `ExecutionEvent`（或新增 `ExecutionMetric`）以承载 workflow 阶段与 token usage。
    - `GetSessionTimeline/SubscribeSessionTimeline/SSE` 统一输出上述新增字段。
    - 文档化字段语义与兼容策略（老客户端降级行为）。
-7. 验收与测试【待开始】
-   - core：阶段切换顺序、token 统计累加、异常分支（失败/权限阻塞）测试。
-   - interface：REPL workflow 状态渲染、token 指标展示、命令交互测试。
+7. 验收与测试【进行中（第一批完成）】
+   - core：已补阶段切换顺序与 token 统计（provider usage + estimated fallback）测试。
+   - interface：已补 REPL workflow/token 渲染与 runtime metrics 聚合测试。
    - grpc/sse：新增字段映射与订阅流一致性测试。
-8. 文档与迁移说明【待开始】
-   - 更新 `docs/USER_GUIDE.md`：workflow 视图与 token 观测使用方式。
+8. 文档与迁移说明【进行中（第一批完成）】
+   - 已更新 `docs/USER_GUIDE.md`：workflow/token/metrics 使用方式与状态栏说明。
    - 更新 `docs/plan/current_plan.md`：将“workflow-native REPL”设为短期主线。
 
 实施顺序（建议）：

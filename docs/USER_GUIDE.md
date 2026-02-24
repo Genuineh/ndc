@@ -50,6 +50,9 @@ cargo run -- repl
 - `/d`（`/details` 快捷别名）
 - `/cards`（切换 tool 卡片展开/折叠）
 - `/stream [on|off|status]`（切换/查看实时事件流；关闭后仅轮询）
+- `/workflow`（查看当前会话的 workflow 阶段视图）
+- `/tokens [show|hide|reset|status]`（查看/控制 token 指标显示）
+- `/metrics`（查看运行指标：tool 耗时/错误率/权限等待/token）
 - `/timeline [N]`（查看最近 N 条执行时间线）
 - `/agent`
 - `/clear`
@@ -75,6 +78,7 @@ TUI 快捷键（默认 REPL）：
   - `ready`：实时流开启，当前空闲
   - `live`：实时流开启，正在接收广播事件
   - `poll`：实时流不可用，已回退轮询
+- 状态栏会显示 `workflow=<stage>` 与 `tok_round/tok_session`（可通过 `/tokens hide` 隐藏）
 - `Esc`：退出 REPL
 - 若需回退旧行式 REPL：`NDC_REPL_LEGACY=1 ndc repl`
 - 快捷键可通过环境变量覆盖：
@@ -133,6 +137,11 @@ TUI 快捷键（默认 REPL）：
      - `NDC_DISPLAY_THINKING=true|false`
      - `NDC_TOOL_DETAILS=true|false`
      - `NDC_TIMELINE_LIMIT=<N>`
+     - `NDC_REPL_SHOW_USAGE=true|false`
+5. Workflow 与指标观测
+   - `WorkflowStage` 事件会实时更新状态栏中的 `workflow=<stage>`
+   - `TokenUsage` 事件会实时更新 `tok_round/tok_session`
+   - 使用 `/workflow` 查看阶段切换轨迹；使用 `/metrics` 查看聚合运行指标
 
 推荐组合：
 

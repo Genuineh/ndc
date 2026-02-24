@@ -12,41 +12,22 @@
 //! - 流式响应 - 实时展示 AI 思考过程
 //! - 权限控制 - 危险操作需要人工确认
 
-pub mod orchestrator;
-pub mod session;
-pub mod verifier;
-pub mod prompts;
 pub mod adapters;
 pub mod injectors;
+pub mod orchestrator;
+pub mod prompts;
+pub mod session;
+pub mod verifier;
 
 pub use orchestrator::{
-    AgentOrchestrator,
-    AgentConfig,
-    AgentRequest,
-    AgentResponse,
-    StreamEvent,
-    ToolExecutor,
+    AgentConfig, AgentOrchestrator, AgentRequest, AgentResponse, StreamEvent, ToolExecutor,
 };
 
-pub use session::{
-    AgentSession,
-    SessionState,
-    SessionManager,
-    AgentMessage,
-};
+pub use session::{AgentMessage, AgentSession, SessionManager, SessionState};
 
-pub use verifier::{
-    TaskVerifier,
-    VerificationResult,
-    VerificationError,
-    TaskStorage,
-};
+pub use verifier::{TaskStorage, TaskVerifier, VerificationError, VerificationResult};
 
-pub use prompts::{
-    build_system_prompt,
-    PromptBuilder,
-    PromptContext,
-};
+pub use prompts::{PromptBuilder, PromptContext, build_system_prompt};
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -118,6 +99,51 @@ pub struct AgentToolResult {
 
     /// 元数据
     pub metadata: HashMap<String, String>,
+}
+
+/// 执行事件类型（用于多轮可视化与时间线）
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AgentExecutionEventKind {
+    WorkflowStage,
+    StepStart,
+    StepFinish,
+    ToolCallStart,
+    ToolCallEnd,
+    TokenUsage,
+    Reasoning,
+    Text,
+    Verification,
+    PermissionAsked,
+    SessionStatus,
+    Error,
+}
+
+/// 单条执行事件
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentExecutionEvent {
+    /// 事件类型
+    pub kind: AgentExecutionEventKind,
+    /// 事件时间
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    /// 简要描述
+    pub message: String,
+    /// 会话内轮次（从 1 开始）
+    pub round: usize,
+    /// 工具名（如果有）
+    pub tool_name: Option<String>,
+    /// 工具调用 ID（如果有）
+    pub tool_call_id: Option<String>,
+    /// 耗时（毫秒）
+    pub duration_ms: Option<u64>,
+    /// 是否错误
+    pub is_error: bool,
+}
+
+/// 带会话标识的执行事件（用于实时订阅）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentSessionExecutionEvent {
+    pub session_id: String,
+    pub event: AgentExecutionEvent,
 }
 
 /// Agent 元数据
