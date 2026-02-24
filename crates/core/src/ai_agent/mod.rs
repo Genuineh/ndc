@@ -118,6 +118,58 @@ pub enum AgentExecutionEventKind {
     Error,
 }
 
+/// Workflow 阶段（统一语义）
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentWorkflowStage {
+    Planning,
+    Discovery,
+    Executing,
+    Verifying,
+    Completing,
+}
+
+impl AgentWorkflowStage {
+    pub const TOTAL_STAGES: u32 = 5;
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AgentWorkflowStage::Planning => "planning",
+            AgentWorkflowStage::Discovery => "discovery",
+            AgentWorkflowStage::Executing => "executing",
+            AgentWorkflowStage::Verifying => "verifying",
+            AgentWorkflowStage::Completing => "completing",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "planning" => Some(AgentWorkflowStage::Planning),
+            "discovery" => Some(AgentWorkflowStage::Discovery),
+            "executing" => Some(AgentWorkflowStage::Executing),
+            "verifying" => Some(AgentWorkflowStage::Verifying),
+            "completing" => Some(AgentWorkflowStage::Completing),
+            _ => None,
+        }
+    }
+
+    pub fn index(self) -> u32 {
+        match self {
+            AgentWorkflowStage::Planning => 1,
+            AgentWorkflowStage::Discovery => 2,
+            AgentWorkflowStage::Executing => 3,
+            AgentWorkflowStage::Verifying => 4,
+            AgentWorkflowStage::Completing => 5,
+        }
+    }
+}
+
+impl std::fmt::Display for AgentWorkflowStage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// 单条执行事件
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentExecutionEvent {
@@ -137,6 +189,72 @@ pub struct AgentExecutionEvent {
     pub duration_ms: Option<u64>,
     /// 是否错误
     pub is_error: bool,
+}
+
+/// Workflow 阶段解析结果
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentWorkflowStageInfo {
+    pub stage: AgentWorkflowStage,
+    pub detail: String,
+}
+
+/// Token 使用量解析结果
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentTokenUsageInfo {
+    pub source: String,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub total_tokens: u64,
+    pub session_prompt_total: u64,
+    pub session_completion_total: u64,
+    pub session_total: u64,
+}
+
+fn parse_metric_value<'a>(message: &'a str, key: &str) -> Option<&'a str> {
+    let prefix = format!("{}=", key);
+    message
+        .split(|ch: char| ch.is_whitespace() || ch == '|')
+        .find_map(|token| token.trim().strip_prefix(prefix.as_str()))
+}
+
+impl AgentExecutionEvent {
+    /// Parse `WorkflowStage` payload from the canonical event message.
+    pub fn workflow_stage_info(&self) -> Option<AgentWorkflowStageInfo> {
+        if self.kind != AgentExecutionEventKind::WorkflowStage {
+            return None;
+        }
+        let rest = self.message.strip_prefix("workflow_stage:")?.trim();
+        let mut parts = rest.splitn(2, '|');
+        let stage = AgentWorkflowStage::parse(parts.next()?.trim())?;
+        let detail = parts.next().map(|s| s.trim()).unwrap_or_default();
+        Some(AgentWorkflowStageInfo {
+            stage,
+            detail: detail.to_string(),
+        })
+    }
+
+    /// Parse `TokenUsage` payload from the canonical event message.
+    pub fn token_usage_info(&self) -> Option<AgentTokenUsageInfo> {
+        if self.kind != AgentExecutionEventKind::TokenUsage {
+            return None;
+        }
+        let parse_u64 = |key: &str| -> u64 {
+            parse_metric_value(&self.message, key)
+                .and_then(|value| value.trim_end_matches(',').parse::<u64>().ok())
+                .unwrap_or(0)
+        };
+        Some(AgentTokenUsageInfo {
+            source: parse_metric_value(&self.message, "source")
+                .unwrap_or("unknown")
+                .to_string(),
+            prompt_tokens: parse_u64("prompt"),
+            completion_tokens: parse_u64("completion"),
+            total_tokens: parse_u64("total"),
+            session_prompt_total: parse_u64("session_prompt_total"),
+            session_completion_total: parse_u64("session_completion_total"),
+            session_total: parse_u64("session_total"),
+        })
+    }
 }
 
 /// 带会话标识的执行事件（用于实时订阅）
@@ -226,6 +344,45 @@ mod tests {
         let parsed_args: serde_json::Value = serde_json::from_str(&parsed.arguments).unwrap();
         assert_eq!(orig, parsed_args);
         assert_eq!(parsed.id, "call-123");
+    }
+
+    #[test]
+    fn test_workflow_stage_info_parsing() {
+        let event = AgentExecutionEvent {
+            kind: AgentExecutionEventKind::WorkflowStage,
+            timestamp: chrono::Utc::now(),
+            message: "workflow_stage: executing | llm_round_start".to_string(),
+            round: 1,
+            tool_name: None,
+            tool_call_id: None,
+            duration_ms: None,
+            is_error: false,
+        };
+        let info = event.workflow_stage_info().expect("workflow info");
+        assert_eq!(info.stage, AgentWorkflowStage::Executing);
+        assert_eq!(info.detail, "llm_round_start");
+    }
+
+    #[test]
+    fn test_token_usage_info_parsing() {
+        let event = AgentExecutionEvent {
+            kind: AgentExecutionEventKind::TokenUsage,
+            timestamp: chrono::Utc::now(),
+            message: "token_usage: source=provider prompt=11 completion=7 total=18 | session_prompt_total=22 session_completion_total=14 session_total=36".to_string(),
+            round: 2,
+            tool_name: None,
+            tool_call_id: None,
+            duration_ms: None,
+            is_error: false,
+        };
+        let info = event.token_usage_info().expect("token info");
+        assert_eq!(info.source, "provider");
+        assert_eq!(info.prompt_tokens, 11);
+        assert_eq!(info.completion_tokens, 7);
+        assert_eq!(info.total_tokens, 18);
+        assert_eq!(info.session_prompt_total, 22);
+        assert_eq!(info.session_completion_total, 14);
+        assert_eq!(info.session_total, 36);
     }
 
     #[test]

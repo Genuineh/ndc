@@ -8,7 +8,8 @@
 
 use super::{
     AgentError, AgentExecutionEvent, AgentExecutionEventKind, AgentMessage, AgentSession,
-    AgentSessionExecutionEvent, AgentToolCall, AgentToolResult, TaskVerifier, VerificationResult,
+    AgentSessionExecutionEvent, AgentToolCall, AgentToolResult, AgentWorkflowStage, TaskVerifier,
+    VerificationResult,
     injectors::working_memory::{TaskContext, WorkingMemoryContext, WorkingMemoryInjector},
     prompts::{EnhancedPromptContext, build_enhanced_prompt},
 };
@@ -227,7 +228,7 @@ impl AgentOrchestrator {
         session_state: &mut AgentSession,
         execution_events: &mut Vec<AgentExecutionEvent>,
         round: usize,
-        stage: &'static str,
+        stage: AgentWorkflowStage,
         detail: &str,
     ) {
         self.emit_event(
@@ -236,7 +237,7 @@ impl AgentOrchestrator {
             AgentExecutionEvent {
                 kind: AgentExecutionEventKind::WorkflowStage,
                 timestamp: chrono::Utc::now(),
-                message: format!("workflow_stage: {} | {}", stage, detail),
+                message: format!("workflow_stage: {} | {}", stage.as_str(), detail),
                 round,
                 tool_name: None,
                 tool_call_id: None,
@@ -537,7 +538,7 @@ impl AgentOrchestrator {
             &mut session_state,
             &mut execution_events,
             0,
-            "planning",
+            AgentWorkflowStage::Planning,
             "build_prompt_and_context",
         )
         .await;
@@ -582,7 +583,7 @@ impl AgentOrchestrator {
                 &mut session_state,
                 &mut execution_events,
                 round,
-                "executing",
+                AgentWorkflowStage::Executing,
                 "llm_round_start",
             )
             .await;
@@ -677,7 +678,7 @@ impl AgentOrchestrator {
                         &mut session_state,
                         &mut execution_events,
                         round,
-                        "discovery",
+                        AgentWorkflowStage::Discovery,
                         "tool_calls_planned",
                     )
                     .await;
@@ -811,7 +812,7 @@ impl AgentOrchestrator {
                         &mut session_state,
                         &mut execution_events,
                         round,
-                        "verifying",
+                        AgentWorkflowStage::Verifying,
                         "quality_gate_and_task_verifier",
                     )
                     .await;
@@ -876,7 +877,7 @@ impl AgentOrchestrator {
                 &mut session_state,
                 &mut execution_events,
                 round,
-                "completing",
+                AgentWorkflowStage::Completing,
                 "finalize_response_and_idle",
             )
             .await;

@@ -25,6 +25,8 @@ service AgentService {
     rpc GetAgentStatus(AgentStatusRequest) returns (AgentStatusResponse);
     rpc SwitchAgent(SwitchAgentRequest) returns (SwitchAgentResponse);
     rpc ListAgents(ListAgentsRequest) returns (ListAgentsResponse);
+    rpc GetSessionTimeline(SessionTimelineRequest) returns (SessionTimelineResponse);
+    rpc SubscribeSessionTimeline(SessionTimelineRequest) returns (stream ExecutionEvent);
 
     // Agent streaming chat
     rpc AgentChat(stream ChatRequest) returns (stream ChatResponse);
@@ -378,6 +380,42 @@ message SwitchAgentResponse {
 message ListAgentsRequest {}
 message ListAgentsResponse {
     repeated AgentInfo agents = 1;
+}
+
+message SessionTimelineRequest {
+    // Optional. If empty, use current agent session.
+    string session_id = 1;
+    // Optional limit. 0 means server default.
+    uint32 limit = 2;
+}
+
+message SessionTimelineResponse {
+    repeated ExecutionEvent events = 1;
+}
+
+message ExecutionEvent {
+    string kind = 1;
+    string timestamp = 2;
+    string message = 3;
+    uint32 round = 4;
+    string tool_name = 5;
+    string tool_call_id = 6;
+    uint64 duration_ms = 7;
+    bool is_error = 8;
+    // Optional workflow payload (present for WorkflowStage events)
+    string workflow_stage = 9;
+    string workflow_detail = 10;
+    // Optional token payload (present for TokenUsage events)
+    string token_source = 11;
+    uint64 token_prompt = 12;
+    uint64 token_completion = 13;
+    uint64 token_total = 14;
+    uint64 token_session_prompt_total = 15;
+    uint64 token_session_completion_total = 16;
+    uint64 token_session_total = 17;
+    // Optional workflow progress (present for WorkflowStage events)
+    uint32 workflow_stage_index = 18;
+    uint32 workflow_stage_total = 19;
 }
 
 message AgentInfo {

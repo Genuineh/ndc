@@ -190,11 +190,21 @@ User (run/repl)
 
 ### Phase A.15（短期主线：Workflow-Native REPL）
 
+Status（2026-02-24）：
+1. 已完成第一批：orchestrator 阶段事件发射 + REPL workflow 状态区（stage/stage_ms/blocked）。
+2. 已落地阶段单一语义：core `AgentWorkflowStage` 枚举作为 workflow stage 真相源。
+3. 已落地阶段分组视图：Session 与 `/timeline` 支持 `[stage:<name>]` 分段展示。
+
 1. 以 NDC 内部 workflow 语义驱动 REPL 展示（Planning/Discovery/Executing/Verifying/Completing）。
 2. 在 orchestrator 主循环中发射阶段切换事件，并保证多轮会话可恢复当前阶段。
 3. REPL 状态区展示“当前阶段 + 阶段进度 + 阶段耗时 + 阻塞状态”。
 
 ### Phase A.16（短期主线：Token 可观测）
+
+Status（2026-02-24）：
+1. 已完成第一批：每轮 LLM usage 采集（provider 优先，缺失回退 estimate）。
+2. 已完成第一批：REPL/gRPC/SSE 统一输出 token 指标（round + session）。
+3. 已完成第一批：ExecutionEvent 协议新增 `token_*` 字段并保持兼容降级策略。
 
 1. 在每轮 LLM 调用后采集 usage（优先 provider 返回，缺失回退 estimate）。
 2. 将 token 指标纳入 execution timeline（本轮 + 会话累计）。

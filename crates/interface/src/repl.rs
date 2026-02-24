@@ -53,6 +53,13 @@ const AVAILABLE_PROVIDERS: &[&str] = &[
     "openrouter",
     "ollama",
 ];
+const WORKFLOW_STAGE_ORDER: &[&str] = &[
+    "planning",
+    "discovery",
+    "executing",
+    "verifying",
+    "completing",
+];
 
 /// REPL 配置 (OpenCode 风格 - 极简)
 #[derive(Debug, Clone)]
@@ -129,8 +136,10 @@ struct ReplVisualizationState {
     redaction_mode: RedactionMode,
     hidden_thinking_round_hints: BTreeSet<usize>,
     current_workflow_stage: Option<String>,
+    current_workflow_stage_started_at: Option<chrono::DateTime<chrono::Utc>>,
     session_token_total: u64,
     latest_round_token_total: u64,
+    permission_blocked: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -293,8 +302,10 @@ impl ReplVisualizationState {
             redaction_mode: RedactionMode::from_env(),
             hidden_thinking_round_hints: BTreeSet::new(),
             current_workflow_stage: None,
+            current_workflow_stage_started_at: None,
             session_token_total: 0,
             latest_round_token_total: 0,
+            permission_blocked: false,
         }
     }
 }
@@ -666,6 +677,16 @@ fn short_session_id(value: Option<&str>) -> String {
     format!("{}…", prefix)
 }
 
+fn workflow_progress_descriptor(stage_name: Option<&str>) -> String {
+    let Some(stage) = stage_name.and_then(ndc_core::AgentWorkflowStage::parse) else {
+        return "-".to_string();
+    };
+    let index = stage.index();
+    let total = ndc_core::AgentWorkflowStage::TOTAL_STAGES;
+    let percent = if total == 0 { 0 } else { (index * 100) / total };
+    format!("{}%({}/{})", percent, index, total)
+}
+
 fn build_status_line(
     status: &crate::agent_mode::AgentModeStatus,
     viz_state: &ReplVisualizationState,
@@ -674,6 +695,17 @@ fn build_status_line(
     stream_state: &str,
 ) -> String {
     let workflow_stage = viz_state.current_workflow_stage.as_deref().unwrap_or("-");
+    let workflow_progress =
+        workflow_progress_descriptor(viz_state.current_workflow_stage.as_deref());
+    let workflow_elapsed_ms = viz_state
+        .current_workflow_stage_started_at
+        .map(|started| {
+            chrono::Utc::now()
+                .signed_duration_since(started)
+                .num_milliseconds()
+                .max(0) as u64
+        })
+        .unwrap_or(0);
     let usage = if viz_state.show_usage_metrics {
         format!(
             "tok_round={} tok_session={}",
@@ -683,11 +715,18 @@ fn build_status_line(
         "tok=hidden".to_string()
     };
     format!(
-        "provider={} model={} session={} workflow={} {} thinking={} details={} cards={} stream={} hidden_thinking={} scroll={} state={}",
+        "provider={} model={} session={} workflow={} workflow_progress={} workflow_ms={} blocked={} {} thinking={} details={} cards={} stream={} hidden_thinking={} scroll={} state={}",
         status.provider,
         status.model,
         short_session_id(status.session_id.as_deref()),
         workflow_stage,
+        workflow_progress,
+        workflow_elapsed_ms,
+        if viz_state.permission_blocked {
+            "yes"
+        } else {
+            "no"
+        },
         usage,
         if viz_state.show_thinking { "on" } else { "off" },
         if viz_state.show_tool_details {
@@ -974,6 +1013,14 @@ fn style_session_log_line(line: &str) -> Line<'static> {
         return Line::from(Span::styled(
             line.to_string(),
             Style::default().fg(Color::Cyan),
+        ));
+    }
+    if line.trim_start().starts_with("[stage:") {
+        return Line::from(Span::styled(
+            line.to_string(),
+            Style::default()
+                .fg(Color::LightCyan)
+                .add_modifier(Modifier::BOLD),
         ));
     }
     if line.starts_with("[Agent][") {
@@ -1871,36 +1918,31 @@ fn drain_live_execution_events(
     rendered
 }
 
-fn parse_workflow_stage(message: &str) -> Option<String> {
-    let rest = message.strip_prefix("workflow_stage:")?;
-    let stage = rest.split('|').next()?.trim();
-    if stage.is_empty() {
-        None
-    } else {
-        Some(stage.to_string())
-    }
-}
-
-fn parse_usage_metric(message: &str, key: &str) -> Option<u64> {
-    let prefix = format!("{}=", key);
-    message
-        .split(|ch: char| ch.is_whitespace() || ch == '|')
-        .find_map(|token| {
-            token
-                .trim()
-                .strip_prefix(prefix.as_str())
-                .and_then(|value| value.trim_end_matches(',').parse::<u64>().ok())
-        })
-}
-
 fn event_to_lines(
     event: &ndc_core::AgentExecutionEvent,
     viz_state: &mut ReplVisualizationState,
 ) -> Vec<String> {
+    if !matches!(
+        event.kind,
+        ndc_core::AgentExecutionEventKind::PermissionAsked
+            | ndc_core::AgentExecutionEventKind::Reasoning
+    ) {
+        viz_state.permission_blocked = false;
+    }
     match event.kind {
         ndc_core::AgentExecutionEventKind::WorkflowStage => {
-            if let Some(stage) = parse_workflow_stage(event.message.as_str()) {
-                viz_state.current_workflow_stage = Some(stage.clone());
+            if let Some(stage_info) = event.workflow_stage_info() {
+                let stage = stage_info.stage;
+                viz_state.current_workflow_stage = Some(stage.as_str().to_string());
+                viz_state.current_workflow_stage_started_at = Some(event.timestamp);
+                return vec![
+                    format!("[stage:{}]", stage),
+                    format!(
+                        "[Workflow][r{}] {}",
+                        event.round,
+                        sanitize_text(&event.message, viz_state.redaction_mode)
+                    ),
+                ];
             }
             vec![format!(
                 "[Workflow][r{}] {}",
@@ -1979,11 +2021,9 @@ fn event_to_lines(
             lines
         }
         ndc_core::AgentExecutionEventKind::TokenUsage => {
-            if let Some(value) = parse_usage_metric(event.message.as_str(), "total") {
-                viz_state.latest_round_token_total = value;
-            }
-            if let Some(value) = parse_usage_metric(event.message.as_str(), "session_total") {
-                viz_state.session_token_total = value;
+            if let Some(usage) = event.token_usage_info() {
+                viz_state.latest_round_token_total = usage.total_tokens;
+                viz_state.session_token_total = usage.session_total;
             }
             vec![format!(
                 "[Usage][r{}] {}",
@@ -1992,6 +2032,7 @@ fn event_to_lines(
             )]
         }
         ndc_core::AgentExecutionEventKind::PermissionAsked => {
+            viz_state.permission_blocked = true;
             vec![format!(
                 "[Permission][r{}] {}",
                 event.round,
@@ -2076,20 +2117,24 @@ fn append_recent_timeline_to_logs(logs: &mut Vec<String>, viz_state: &ReplVisual
         push_log_line(logs, "  (empty)");
         return;
     }
-    for event in viz_state.timeline_cache.iter().skip(start) {
-        push_log_line(
-            logs,
-            &format!(
-                "  - r{} {} | {}{}",
-                event.round,
-                event.timestamp.format("%H:%M:%S"),
-                sanitize_text(&event.message, viz_state.redaction_mode),
-                event
-                    .duration_ms
-                    .map(|d| format!(" ({}ms)", d))
-                    .unwrap_or_default()
-            ),
-        );
+    let grouped = group_timeline_by_stage(&viz_state.timeline_cache[start..]);
+    for (stage, events) in grouped {
+        push_log_line(logs, &format!("  [stage:{}]", stage));
+        for event in events {
+            push_log_line(
+                logs,
+                &format!(
+                    "    - r{} {} | {}{}",
+                    event.round,
+                    event.timestamp.format("%H:%M:%S"),
+                    sanitize_text(&event.message, viz_state.redaction_mode),
+                    event
+                        .duration_ms
+                        .map(|d| format!(" ({}ms)", d))
+                        .unwrap_or_default()
+                ),
+            );
+        }
     }
 }
 
@@ -2147,15 +2192,109 @@ fn compute_runtime_metrics(timeline: &[ndc_core::AgentExecutionEvent]) -> ReplRu
     metrics
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct WorkflowStageProgress {
+    count: usize,
+    total_ms: u64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct WorkflowProgressSummary {
+    stages: std::collections::BTreeMap<String, WorkflowStageProgress>,
+    current_stage: Option<String>,
+    current_stage_active_ms: u64,
+}
+
+fn compute_workflow_progress_summary(
+    timeline: &[ndc_core::AgentExecutionEvent],
+    now: chrono::DateTime<chrono::Utc>,
+) -> WorkflowProgressSummary {
+    let mut summary = WorkflowProgressSummary::default();
+    let mut stage_points = Vec::<(String, chrono::DateTime<chrono::Utc>)>::new();
+    for event in timeline {
+        let Some(info) = event.workflow_stage_info() else {
+            continue;
+        };
+        summary
+            .stages
+            .entry(info.stage.to_string())
+            .and_modify(|entry| entry.count += 1)
+            .or_insert(WorkflowStageProgress {
+                count: 1,
+                total_ms: 0,
+            });
+        stage_points.push((info.stage.to_string(), event.timestamp));
+    }
+
+    for window in stage_points.windows(2) {
+        let (stage, start) = (&window[0].0, window[0].1);
+        let end = window[1].1;
+        let elapsed = end.signed_duration_since(start).num_milliseconds().max(0) as u64;
+        if let Some(entry) = summary.stages.get_mut(stage) {
+            entry.total_ms = entry.total_ms.saturating_add(elapsed);
+        }
+    }
+
+    if let Some((stage, started_at)) = stage_points.last() {
+        summary.current_stage = Some(stage.clone());
+        summary.current_stage_active_ms = now
+            .signed_duration_since(*started_at)
+            .num_milliseconds()
+            .max(0) as u64;
+    }
+    summary
+}
+
+fn group_timeline_by_stage<'a>(
+    timeline: &'a [ndc_core::AgentExecutionEvent],
+) -> Vec<(String, Vec<&'a ndc_core::AgentExecutionEvent>)> {
+    let mut groups = Vec::<(String, Vec<&'a ndc_core::AgentExecutionEvent>)>::new();
+    let mut current_stage = "unknown".to_string();
+    let mut current_events = Vec::<&'a ndc_core::AgentExecutionEvent>::new();
+
+    for event in timeline {
+        if let Some(info) = event.workflow_stage_info() {
+            if !current_events.is_empty() {
+                groups.push((current_stage, std::mem::take(&mut current_events)));
+            }
+            current_stage = info.stage.to_string();
+        }
+        current_events.push(event);
+    }
+    if !current_events.is_empty() {
+        groups.push((current_stage, current_events));
+    }
+    groups
+}
+
 fn append_workflow_overview_to_logs(logs: &mut Vec<String>, viz_state: &ReplVisualizationState) {
     push_log_line(logs, "");
     push_log_line(
         logs,
         &format!(
-            "Workflow Overview: current={}",
-            viz_state.current_workflow_stage.as_deref().unwrap_or("-")
+            "Workflow Overview: current={} progress={}",
+            viz_state.current_workflow_stage.as_deref().unwrap_or("-"),
+            workflow_progress_descriptor(viz_state.current_workflow_stage.as_deref())
         ),
     );
+    let summary =
+        compute_workflow_progress_summary(viz_state.timeline_cache.as_slice(), chrono::Utc::now());
+    push_log_line(logs, "Workflow Progress:");
+    for stage in WORKFLOW_STAGE_ORDER {
+        let metrics = summary.stages.get(*stage).copied().unwrap_or_default();
+        let active_ms = if summary.current_stage.as_deref() == Some(*stage) {
+            summary.current_stage_active_ms
+        } else {
+            0
+        };
+        push_log_line(
+            logs,
+            &format!(
+                "  - {} count={} total_ms={} active_ms={}",
+                stage, metrics.count, metrics.total_ms, active_ms
+            ),
+        );
+    }
     let total = viz_state.timeline_cache.len();
     let start = total.saturating_sub(viz_state.timeline_limit);
     let mut count = 0usize;
@@ -2205,6 +2344,17 @@ fn append_runtime_metrics_to_logs(logs: &mut Vec<String>, viz_state: &ReplVisual
         &format!(
             "  - workflow_current={}",
             viz_state.current_workflow_stage.as_deref().unwrap_or("-")
+        ),
+    );
+    push_log_line(
+        logs,
+        &format!(
+            "  - blocked_on_permission={}",
+            if viz_state.permission_blocked {
+                "yes"
+            } else {
+                "no"
+            }
         ),
     );
     push_log_line(
@@ -2546,9 +2696,24 @@ fn show_workflow_overview(
 ) {
     println!();
     println!(
-        "Workflow Overview: current={}",
-        current_stage.unwrap_or("-")
+        "Workflow Overview: current={} progress={}",
+        current_stage.unwrap_or("-"),
+        workflow_progress_descriptor(current_stage)
     );
+    let summary = compute_workflow_progress_summary(timeline, chrono::Utc::now());
+    println!("Workflow Progress:");
+    for stage in WORKFLOW_STAGE_ORDER {
+        let metrics = summary.stages.get(*stage).copied().unwrap_or_default();
+        let active_ms = if summary.current_stage.as_deref() == Some(*stage) {
+            summary.current_stage_active_ms
+        } else {
+            0
+        };
+        println!(
+            "  - {} count={} total_ms={} active_ms={}",
+            stage, metrics.count, metrics.total_ms, active_ms
+        );
+    }
     let total = timeline.len();
     let start = total.saturating_sub(limit);
     let mut count = 0usize;
@@ -2577,6 +2742,14 @@ fn show_runtime_metrics(viz_state: &ReplVisualizationState) {
     println!(
         "  - workflow_current={}",
         viz_state.current_workflow_stage.as_deref().unwrap_or("-")
+    );
+    println!(
+        "  - blocked_on_permission={}",
+        if viz_state.permission_blocked {
+            "yes"
+        } else {
+            "no"
+        }
     );
     println!(
         "  - token_round_total={} token_session_total={} display={}",
@@ -2634,17 +2807,21 @@ fn show_timeline(timeline: &[ndc_core::AgentExecutionEvent], limit: usize, mode:
         println!();
         return;
     }
-    for event in timeline.iter().skip(start) {
-        println!(
-            "  - r{} {} | {}{}",
-            event.round,
-            event.timestamp.format("%H:%M:%S"),
-            sanitize_text(&event.message, mode),
-            event
-                .duration_ms
-                .map(|d| format!(" ({}ms)", d))
-                .unwrap_or_default()
-        );
+    let grouped = group_timeline_by_stage(&timeline[start..]);
+    for (stage, events) in grouped {
+        println!("  [stage:{}]", stage);
+        for event in events {
+            println!(
+                "    - r{} {} | {}{}",
+                event.round,
+                event.timestamp.format("%H:%M:%S"),
+                sanitize_text(&event.message, mode),
+                event
+                    .duration_ms
+                    .map(|d| format!(" ({}ms)", d))
+                    .unwrap_or_default()
+            );
+        }
     }
     println!();
 }
@@ -2778,6 +2955,24 @@ mod tests {
         }
     }
 
+    fn mk_event_at(
+        kind: ndc_core::AgentExecutionEventKind,
+        message: &str,
+        round: usize,
+        timestamp: chrono::DateTime<chrono::Utc>,
+    ) -> ndc_core::AgentExecutionEvent {
+        ndc_core::AgentExecutionEvent {
+            kind,
+            timestamp,
+            message: message.to_string(),
+            round,
+            tool_name: None,
+            tool_call_id: None,
+            duration_ms: None,
+            is_error: false,
+        }
+    }
+
     fn render_event_snapshot(
         events: &[ndc_core::AgentExecutionEvent],
         viz: &mut ReplVisualizationState,
@@ -2858,6 +3053,8 @@ mod tests {
                 assert_eq!(state.timeline_limit, 40);
                 assert!(state.timeline_cache.is_empty());
                 assert!(state.hidden_thinking_round_hints.is_empty());
+                assert!(state.current_workflow_stage_started_at.is_none());
+                assert!(!state.permission_blocked);
             },
         );
     }
@@ -3068,21 +3265,40 @@ mod tests {
         let mut logs = Vec::new();
         append_recent_timeline_to_logs(&mut logs, &viz);
         assert!(logs.iter().any(|l| l.contains("Recent Execution Timeline")));
+        assert!(logs.iter().any(|l| l.contains("[stage:")));
         assert!(logs.iter().any(|l| l.contains("llm_round_1_start")));
         assert!(logs.iter().any(|l| l.contains("result_preview")));
     }
 
     #[test]
-    fn test_parse_workflow_stage_and_usage_metric() {
-        assert_eq!(
-            parse_workflow_stage("workflow_stage: executing | llm_round_start"),
-            Some("executing".to_string())
+    fn test_event_helpers_parse_workflow_and_usage_metrics() {
+        let workflow = mk_event(
+            ndc_core::AgentExecutionEventKind::WorkflowStage,
+            "workflow_stage: executing | llm_round_start",
+            1,
+            None,
+            None,
+            None,
+            false,
         );
-        assert_eq!(parse_workflow_stage("invalid"), None);
-        let usage = "token_usage: source=provider prompt=12 completion=34 total=46 | session_prompt_total=12 session_completion_total=34 session_total=46";
-        assert_eq!(parse_usage_metric(usage, "prompt"), Some(12));
-        assert_eq!(parse_usage_metric(usage, "total"), Some(46));
-        assert_eq!(parse_usage_metric(usage, "session_total"), Some(46));
+        let workflow_info = workflow.workflow_stage_info().expect("workflow info");
+        assert_eq!(workflow_info.stage, ndc_core::AgentWorkflowStage::Executing);
+        assert_eq!(workflow_info.detail, "llm_round_start");
+
+        let usage_event = mk_event(
+            ndc_core::AgentExecutionEventKind::TokenUsage,
+            "token_usage: source=provider prompt=12 completion=34 total=46 | session_prompt_total=12 session_completion_total=34 session_total=46",
+            1,
+            None,
+            None,
+            None,
+            false,
+        );
+        let usage = usage_event.token_usage_info().expect("usage info");
+        assert_eq!(usage.source, "provider");
+        assert_eq!(usage.prompt_tokens, 12);
+        assert_eq!(usage.total_tokens, 46);
+        assert_eq!(usage.session_total, 46);
     }
 
     #[test]
@@ -3099,7 +3315,103 @@ mod tests {
         );
         let lines = event_to_lines(&event, &mut viz);
         assert_eq!(viz.current_workflow_stage.as_deref(), Some("discovery"));
+        assert!(viz.current_workflow_stage_started_at.is_some());
+        assert!(!viz.permission_blocked);
         assert!(lines.iter().any(|line| line.contains("[Workflow][r2]")));
+    }
+
+    #[test]
+    fn test_compute_workflow_progress_summary_counts_and_durations() {
+        let base = chrono::Utc::now();
+        let timeline = vec![
+            mk_event_at(
+                ndc_core::AgentExecutionEventKind::WorkflowStage,
+                "workflow_stage: planning | build_prompt_and_context",
+                0,
+                base,
+            ),
+            mk_event_at(
+                ndc_core::AgentExecutionEventKind::WorkflowStage,
+                "workflow_stage: executing | llm_round_start",
+                1,
+                base + chrono::Duration::milliseconds(120),
+            ),
+            mk_event_at(
+                ndc_core::AgentExecutionEventKind::WorkflowStage,
+                "workflow_stage: completing | finalize_response_and_idle",
+                1,
+                base + chrono::Duration::milliseconds(360),
+            ),
+        ];
+        let summary = compute_workflow_progress_summary(
+            &timeline,
+            base + chrono::Duration::milliseconds(600),
+        );
+
+        assert_eq!(summary.current_stage.as_deref(), Some("completing"));
+        assert_eq!(summary.current_stage_active_ms, 240);
+
+        let planning = summary.stages.get("planning").copied().unwrap_or_default();
+        let executing = summary.stages.get("executing").copied().unwrap_or_default();
+        let completing = summary
+            .stages
+            .get("completing")
+            .copied()
+            .unwrap_or_default();
+        assert_eq!(planning.count, 1);
+        assert_eq!(planning.total_ms, 120);
+        assert_eq!(executing.count, 1);
+        assert_eq!(executing.total_ms, 240);
+        assert_eq!(completing.count, 1);
+        assert_eq!(completing.total_ms, 0);
+    }
+
+    #[test]
+    fn test_group_timeline_by_stage_contiguous_partitions() {
+        let timeline = vec![
+            mk_event(
+                ndc_core::AgentExecutionEventKind::WorkflowStage,
+                "workflow_stage: planning | build_prompt_and_context",
+                0,
+                None,
+                None,
+                None,
+                false,
+            ),
+            mk_event(
+                ndc_core::AgentExecutionEventKind::StepStart,
+                "llm_round_1_start",
+                1,
+                None,
+                None,
+                None,
+                false,
+            ),
+            mk_event(
+                ndc_core::AgentExecutionEventKind::WorkflowStage,
+                "workflow_stage: executing | llm_round_start",
+                1,
+                None,
+                None,
+                None,
+                false,
+            ),
+            mk_event(
+                ndc_core::AgentExecutionEventKind::ToolCallEnd,
+                "tool_call_end: list (ok)",
+                1,
+                Some("list"),
+                Some("call-1"),
+                Some(3),
+                false,
+            ),
+        ];
+        let grouped = group_timeline_by_stage(&timeline);
+        assert_eq!(grouped.len(), 2);
+        assert_eq!(grouped[0].0, "planning");
+        assert_eq!(grouped[0].1.len(), 2);
+        assert_eq!(grouped[1].0, "executing");
+        assert_eq!(grouped[1].1.len(), 2);
     }
 
     #[test]
@@ -3118,6 +3430,34 @@ mod tests {
         assert_eq!(viz.latest_round_token_total, 15);
         assert_eq!(viz.session_token_total, 33);
         assert!(lines.iter().any(|line| line.contains("[Usage][r3]")));
+    }
+
+    #[test]
+    fn test_event_to_lines_permission_sets_and_clears_blocked_state() {
+        let mut viz = ReplVisualizationState::new(false);
+        let permission = mk_event(
+            ndc_core::AgentExecutionEventKind::PermissionAsked,
+            "permission_asked: write requires approval",
+            2,
+            Some("write"),
+            Some("call-1"),
+            None,
+            true,
+        );
+        let _ = event_to_lines(&permission, &mut viz);
+        assert!(viz.permission_blocked);
+
+        let tool_end = mk_event(
+            ndc_core::AgentExecutionEventKind::ToolCallEnd,
+            "tool_call_end: write (error) | result_preview: denied",
+            2,
+            Some("write"),
+            Some("call-1"),
+            Some(5),
+            true,
+        );
+        let _ = event_to_lines(&tool_end, &mut viz);
+        assert!(!viz.permission_blocked);
     }
 
     #[test]
@@ -3173,6 +3513,7 @@ mod tests {
     fn test_append_runtime_metrics_to_logs() {
         let mut viz = ReplVisualizationState::new(false);
         viz.current_workflow_stage = Some("executing".to_string());
+        viz.permission_blocked = true;
         viz.latest_round_token_total = 15;
         viz.session_token_total = 45;
         viz.timeline_cache = vec![mk_event(
@@ -3189,8 +3530,42 @@ mod tests {
         let joined = logs.join("\n");
         assert!(joined.contains("Runtime Metrics"));
         assert!(joined.contains("workflow_current=executing"));
+        assert!(joined.contains("blocked_on_permission=yes"));
         assert!(joined.contains("token_round_total=15"));
         assert!(joined.contains("tools_total=1"));
+    }
+
+    #[test]
+    fn test_append_workflow_overview_to_logs_includes_progress() {
+        let mut viz = ReplVisualizationState::new(false);
+        viz.current_workflow_stage = Some("executing".to_string());
+        viz.timeline_cache = vec![
+            mk_event(
+                ndc_core::AgentExecutionEventKind::WorkflowStage,
+                "workflow_stage: planning | build_prompt_and_context",
+                0,
+                None,
+                None,
+                None,
+                false,
+            ),
+            mk_event(
+                ndc_core::AgentExecutionEventKind::WorkflowStage,
+                "workflow_stage: executing | llm_round_start",
+                1,
+                None,
+                None,
+                None,
+                false,
+            ),
+        ];
+        let mut logs = Vec::new();
+        append_workflow_overview_to_logs(&mut logs, &viz);
+        let joined = logs.join("\n");
+        assert!(joined.contains("Workflow Overview: current=executing progress=60%(3/5)"));
+        assert!(joined.contains("Workflow Progress"));
+        assert!(joined.contains("planning count="));
+        assert!(joined.contains("executing count="));
     }
 
     #[test]
@@ -3391,6 +3766,9 @@ mod tests {
         assert!(line.contains("provider=openai"));
         assert!(line.contains("model=gpt-4o"));
         assert!(line.contains("session=agent-123456"));
+        assert!(line.contains("workflow_progress=-"));
+        assert!(line.contains("workflow_ms="));
+        assert!(line.contains("blocked=no"));
         assert!(line.contains("stream=live"));
         assert!(line.contains("scroll=follow"));
         assert!(line.contains("state=processing"));
@@ -3413,9 +3791,20 @@ mod tests {
             body_height: 10,
         };
         let line = build_status_line(&status, &viz, false, &view, "ready");
+        assert!(line.contains("workflow_progress=-"));
+        assert!(line.contains("workflow_ms="));
+        assert!(line.contains("blocked=no"));
         assert!(line.contains("stream=ready"));
         assert!(line.contains("scroll=manual"));
         assert!(line.contains("state=idle"));
+    }
+
+    #[test]
+    fn test_workflow_progress_descriptor_known_and_unknown() {
+        assert_eq!(workflow_progress_descriptor(None), "-");
+        assert_eq!(workflow_progress_descriptor(Some("unknown")), "-");
+        assert_eq!(workflow_progress_descriptor(Some("planning")), "20%(1/5)");
+        assert_eq!(workflow_progress_descriptor(Some("verifying")), "80%(4/5)");
     }
 
     #[test]

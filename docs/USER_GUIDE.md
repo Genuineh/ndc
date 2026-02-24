@@ -50,7 +50,7 @@ cargo run -- repl
 - `/d`（`/details` 快捷别名）
 - `/cards`（切换 tool 卡片展开/折叠）
 - `/stream [on|off|status]`（切换/查看实时事件流；关闭后仅轮询）
-- `/workflow`（查看当前会话的 workflow 阶段视图）
+- `/workflow`（查看当前会话的 workflow 阶段视图与阶段进度摘要）
 - `/tokens [show|hide|reset|status]`（查看/控制 token 指标显示）
 - `/metrics`（查看运行指标：tool 耗时/错误率/权限等待/token）
 - `/timeline [N]`（查看最近 N 条执行时间线）
@@ -78,7 +78,7 @@ TUI 快捷键（默认 REPL）：
   - `ready`：实时流开启，当前空闲
   - `live`：实时流开启，正在接收广播事件
   - `poll`：实时流不可用，已回退轮询
-- 状态栏会显示 `workflow=<stage>` 与 `tok_round/tok_session`（可通过 `/tokens hide` 隐藏）
+- 状态栏会显示 `workflow=<stage>`、`workflow_progress=<percent(index/total)>`、`workflow_ms=<阶段耗时>`、`blocked=<yes|no>` 与 `tok_round/tok_session`（可通过 `/tokens hide` 隐藏）
 - `Esc`：退出 REPL
 - 若需回退旧行式 REPL：`NDC_REPL_LEGACY=1 ndc repl`
 - 快捷键可通过环境变量覆盖：
@@ -115,7 +115,15 @@ TUI 快捷键（默认 REPL）：
      - 订阅默认走实时事件推送；并带轮询补偿以覆盖 lag/短时中断窗口
    - SSE 侧可通过 `GET /agent/session_timeline/subscribe?session_id=<id>&limit=<N>` 订阅同一时间线（`text/event-stream`）
      - 事件类型：`execution_event`（正常事件）、`error`（流错误）
-     - 事件数据为 JSON，字段与 gRPC `ExecutionEvent` 对齐（`kind/timestamp/message/round/tool_name/tool_call_id/duration_ms/is_error`）
+     - 事件数据为 JSON，字段与 gRPC `ExecutionEvent` 对齐：
+       - 基础字段：`kind/timestamp/message/round/tool_name/tool_call_id/duration_ms/is_error`
+     - workflow 字段：`workflow_stage/workflow_detail`
+       - 进度字段：`workflow_stage_index/workflow_stage_total`
+      - token 字段：`token_source/token_prompt/token_completion/token_total/token_session_prompt_total/token_session_completion_total/token_session_total`
+     - 兼容策略：
+       - 旧客户端：忽略未知字段，仍可使用基础字段正常展示。
+       - 新客户端：若 `workflow_*` 或 `token_*` 为空/0，按“数据不可用”处理并回退到基础字段。
+       - 服务端：保持基础字段稳定，新增字段仅做增量扩展，不影响旧协议消费。
      - 若 `session_id` 指向当前 daemon 非活跃会话，将返回 `404`
      - `limit>0` 时会先回放历史事件，再推送增量；回放事件同样使用 `execution_event` 类型
    - 订阅接口的 `limit` 语义：
@@ -141,7 +149,7 @@ TUI 快捷键（默认 REPL）：
 5. Workflow 与指标观测
    - `WorkflowStage` 事件会实时更新状态栏中的 `workflow=<stage>`
    - `TokenUsage` 事件会实时更新 `tok_round/tok_session`
-   - 使用 `/workflow` 查看阶段切换轨迹；使用 `/metrics` 查看聚合运行指标
+   - 使用 `/workflow` 查看阶段切换轨迹；使用 `/metrics` 查看聚合运行指标（包含 `blocked_on_permission`）
 
 推荐组合：
 

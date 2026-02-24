@@ -133,7 +133,7 @@
 > 输出要求：终端中可实时看到“正在哪个 workflow 阶段 + 该阶段的进度 + 本轮/累计 token 使用 + 工具耗时/错误分布”。
 
 1. Workflow 阶段模型统一（单一真相）【第一批完成】
-   - 设计并固化 Agent 可视化阶段枚举（与 runtime workflow 语义对齐）：`planning/discovery/executing/verifying/completing`。
+   - 已在 core 固化 `AgentWorkflowStage` 枚举（`planning/discovery/executing/verifying/completing`）。
    - 在 `core` 层增加阶段事件载荷（当前实现通过 `WorkflowStage` 事件消息承载阶段与细节）。
    - 明确“阶段”和“事件”的关系：阶段用于状态展示，事件用于细粒度回放。
 2. Orchestrator 阶段驱动与步骤对齐【第一批完成】
@@ -145,23 +145,24 @@
    - 增加 token 事件或 token 字段：`prompt/completion/total`（本轮）与 `session_total`（累计）。
    - REPL 状态栏/指标栏实时显示 token 消耗，并支持开关显示。
 4. REPL 展示层升级（workflow-first）【进行中（第一批完成）】
-   - 新增固定 workflow 状态区：当前阶段、阶段耗时、阶段进度、是否阻塞。
-   - Session 面板已新增 `Workflow/Usage` 实时事件行（后续补“按阶段分组视图”）。
+   - 状态栏已接入 `workflow/current stage`、`workflow_progress`、`workflow_ms`、`blocked(on permission)`。
+   - `/workflow` 已补阶段进度摘要（各阶段 `count/total_ms/active_ms`）。
+   - Session 面板与 `/timeline` 已支持按阶段分组显示（`[stage:<name>]` 分段）。
    - 已新增指标视图命令 `/metrics`（token、工具耗时、错误率、权限等待、错误事件）。
 5. 交互命令与引导补齐【进行中（第一批完成）】
    - 新增命令：`/workflow`（阶段视图）、`/tokens`（token 统计）、`/metrics`（运行指标）。
    - 命令提示（Hints）补齐参数引导（如 `/tokens show|hide|reset|status`）。
    - 保持快捷键与 slash 命令双通道一致。
-6. 对外协议同步（gRPC/SSE/SDK）【待开始】
-   - 扩展 `ExecutionEvent`（或新增 `ExecutionMetric`）以承载 workflow 阶段与 token usage。
-   - `GetSessionTimeline/SubscribeSessionTimeline/SSE` 统一输出上述新增字段。
-   - 文档化字段语义与兼容策略（老客户端降级行为）。
+6. 对外协议同步（gRPC/SSE/SDK）【进行中（第一批完成）】
+   - 已扩展 `ExecutionEvent`：新增 `workflow_*`、`workflow_stage_index/total` 与 `token_*` 字段。
+   - `GetSessionTimeline/SubscribeSessionTimeline/SSE` 已统一输出上述新增字段。
+   - 字段语义与兼容策略文档已补（老客户端降级行为说明）。
 7. 验收与测试【进行中（第一批完成）】
    - core：已补阶段切换顺序与 token 统计（provider usage + estimated fallback）测试。
    - interface：已补 REPL workflow/token 渲染与 runtime metrics 聚合测试。
-   - grpc/sse：新增字段映射与订阅流一致性测试。
+   - grpc/sse：已补新增字段映射测试与 SSE 回放字段一致性断言。
 8. 文档与迁移说明【进行中（第一批完成）】
-   - 已更新 `docs/USER_GUIDE.md`：workflow/token/metrics 使用方式与状态栏说明。
+   - 已更新 `docs/USER_GUIDE.md`：workflow/token/metrics 使用方式、分组 timeline 与兼容策略说明。
    - 更新 `docs/plan/current_plan.md`：将“workflow-native REPL”设为短期主线。
 
 实施顺序（建议）：
