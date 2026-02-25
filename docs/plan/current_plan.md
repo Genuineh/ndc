@@ -199,6 +199,7 @@ Status（2026-02-25）：
 6. 已补齐结构化阶段载荷：`AgentExecutionEvent` 增加 `stage/detail/index/total` 显式字段，REPL/gRPC 优先读取结构化字段。
 7. 已新增综合 e2e（orchestrator）：多轮 + 多次 tool call + permission + timeline replay + workflow/token 断言。
 8. 已新增 interface 侧结构化字段测试：REPL workflow 渲染与 gRPC workflow 映射均覆盖结构化载荷路径。
+9. 已新增订阅端一致性 e2e：`SubscribeSessionTimeline` 与 `GetSessionTimeline` 在 replay 事件上的 workflow/token 字段一致。
 
 1. 以 NDC 内部 workflow 语义驱动 REPL 展示（Planning/Discovery/Executing/Verifying/Completing）。
 2. 在 orchestrator 主循环中发射阶段切换事件，并保证多轮会话可恢复当前阶段。

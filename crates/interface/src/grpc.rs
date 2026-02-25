@@ -1132,6 +1132,7 @@ mod tests {
     use std::sync::{Mutex, OnceLock};
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio_stream::StreamExt;
 
     async fn read_http_response_head(
         address: SocketAddr,
@@ -1603,5 +1604,85 @@ mod tests {
         assert!(body.contains("\"token_total\""));
 
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_subscribe_session_timeline_replay_matches_snapshot_fields() {
+        let context = ExecutionContext::default();
+        let executor = Arc::new(Executor::new(context));
+        let daemon_addr: SocketAddr = "127.0.0.1:50053".parse().unwrap();
+        let daemon = Arc::new(NdcDaemon::new(executor, daemon_addr));
+        let manager = AgentGrpcService::build_agent_manager(&daemon);
+
+        let mut config = AgentModeConfig::default();
+        config.provider = "ollama".to_string();
+        config.model = "llama3.2".to_string();
+        manager.enable(config).await.unwrap();
+
+        // Seed timeline. Provider availability is not required; early events are enough.
+        let _ = tokio::time::timeout(
+            Duration::from_secs(3),
+            manager.process_input("seed timeline for grpc subscribe replay"),
+        )
+        .await;
+
+        let session_id = manager.status().await.session_id.unwrap_or_default();
+        assert!(!session_id.is_empty());
+
+        let service = AgentGrpcService::with_manager(daemon, manager.clone());
+        let snapshot_resp =
+            <AgentGrpcService as generated::agent_service_server::AgentService>::get_session_timeline(
+                &service,
+                tonic::Request::new(generated::SessionTimelineRequest {
+                    session_id: session_id.clone(),
+                    limit: 1,
+                }),
+            )
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(snapshot_resp.events.len(), 1);
+        let snapshot = snapshot_resp.events[0].clone();
+
+        let stream_resp =
+            <AgentGrpcService as generated::agent_service_server::AgentService>::subscribe_session_timeline(
+                &service,
+                tonic::Request::new(generated::SessionTimelineRequest {
+                    session_id,
+                    limit: 1,
+                }),
+            )
+            .await
+            .unwrap();
+        let mut stream = stream_resp.into_inner();
+        let replay = tokio::time::timeout(Duration::from_secs(2), stream.next())
+            .await
+            .expect("stream item timeout")
+            .expect("stream closed")
+            .expect("stream result");
+
+        assert_eq!(replay.kind, snapshot.kind);
+        assert_eq!(replay.round, snapshot.round);
+        assert_eq!(replay.tool_name, snapshot.tool_name);
+        assert_eq!(replay.tool_call_id, snapshot.tool_call_id);
+        assert_eq!(replay.duration_ms, snapshot.duration_ms);
+        assert_eq!(replay.is_error, snapshot.is_error);
+        assert_eq!(replay.workflow_stage, snapshot.workflow_stage);
+        assert_eq!(replay.workflow_detail, snapshot.workflow_detail);
+        assert_eq!(replay.workflow_stage_index, snapshot.workflow_stage_index);
+        assert_eq!(replay.workflow_stage_total, snapshot.workflow_stage_total);
+        assert_eq!(replay.token_source, snapshot.token_source);
+        assert_eq!(replay.token_prompt, snapshot.token_prompt);
+        assert_eq!(replay.token_completion, snapshot.token_completion);
+        assert_eq!(replay.token_total, snapshot.token_total);
+        assert_eq!(
+            replay.token_session_prompt_total,
+            snapshot.token_session_prompt_total
+        );
+        assert_eq!(
+            replay.token_session_completion_total,
+            snapshot.token_session_completion_total
+        );
+        assert_eq!(replay.token_session_total, snapshot.token_session_total);
     }
 }
