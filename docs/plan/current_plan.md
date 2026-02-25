@@ -1,5 +1,20 @@
 # NDC 架构排查与重规划（2026-02-12）
 
+> 最新同步：2026-02-25  
+> 当前阶段：`P1`（核心自治能力与治理）  
+> 上一阶段：`P0-C`（Workflow-Native REPL 与实时可观测）已完成
+
+## 当前快照（2026-02-25）
+
+1. P0-C 已完成并通过核心回归：
+   - REPL/gRPC/SSE 统一 workflow + token 可观测语义
+   - `/workflow compact|verbose`、timeline replay、订阅一致性测试已落地
+2. 稳定性修复已补齐：
+   - MiniMax 别名 provider 的配置凭证查找回退已修复（支持 `minimax` 键）
+   - `ndc_task_update` 非法状态迁移已改为严格拒绝（不再强制覆盖状态）
+3. 下阶段进入 P1：
+   - GoldMemory Top-K 注入、Failure Taxonomy 重试策略、Invariant 执行前检查、Telemetry 指标落地
+
 ## 0. 基础愿景（统一口径）
 
 NDC 的目标不是“再造一个 CLI 工具集”，而是：
@@ -200,6 +215,7 @@ Status（2026-02-25）：
 7. 已新增综合 e2e（orchestrator）：多轮 + 多次 tool call + permission + timeline replay + workflow/token 断言。
 8. 已新增 interface 侧结构化字段测试：REPL workflow 渲染与 gRPC workflow 映射均覆盖结构化载荷路径。
 9. 已新增订阅端一致性 e2e：`SubscribeSessionTimeline` 与 `GetSessionTimeline` 在 replay 事件上的 workflow/token 字段一致。
+10. 已完成稳定性修复：MiniMax 别名配置凭证回退与 `ndc_task_update` 非法迁移拒绝（状态机约束恢复）。
 
 1. 以 NDC 内部 workflow 语义驱动 REPL 展示（Planning/Discovery/Executing/Verifying/Completing）。
 2. 在 orchestrator 主循环中发射阶段切换事件，并保证多轮会话可恢复当前阶段。

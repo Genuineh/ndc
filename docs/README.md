@@ -1,35 +1,44 @@
 # NDC 文档导航
 
-> **最后更新**: 2026-02-12
+> **最后更新**: 2026-02-25
 
 本文档整合了 NDC 项目的所有文档，提供清晰的导航结构。
+
+当前执行状态：
+
+- `P0-C`（Workflow-Native REPL 与实时可观测）已完成
+- `P1`（核心自治能力与治理）为当前最高优先级
 
 ## 快速链接
 
 - **[USER_GUIDE.md](./USER_GUIDE.md) - 用户使用指南**
-- **[GRPC_CLIENT.md](./GRPC_CLIENT.md) - gRPC 客户端指南
-- **[NDC_AGENT_INTEGRATION_PLAN.md](./NDC_AGENT_INTEGRATION_PLAN.md) - AI Agent 集成计划
-- **[LLM_INTEGRATION.md](./LLM_INTEGRATION.md) - LLM 提供商集成方案
+- **[GRPC_CLIENT.md](./GRPC_CLIENT.md) - gRPC 客户端指南**
+- **[LLM_INTEGRATION.md](./LLM_INTEGRATION.md) - LLM 提供商集成方案**
+- **[ENGINEERING_CONSTRAINTS.md](./ENGINEERING_CONSTRAINTS.md) - 工程约束与阶段设计**
+- **[plan/current_plan.md](./plan/current_plan.md) - 当前执行计划**
+- **[plan/archive/NDC_AGENT_INTEGRATION_PLAN.md](./plan/archive/NDC_AGENT_INTEGRATION_PLAN.md) - 历史计划（归档）**
 
 ## 项目概述
 
-NDC (Neo Development Companion) 是一个工业级自治 AI 开发系统，采用 OpenCode 模式的流式响应与多工具集成能力。
+NDC (Neo Development Companion) 是一个面向 coding agent 的工程框架，采用自然语言交互 + 工具驱动执行模式。
 
-### 核心特性
+### 当前能力
 
-- **工业级 AI Agent**: 无需人工干预即可完成复杂任务
-- **流式 LLM 集成**: 支持 OpenAI/Anthropic/Ollama/MiniMax/OpenRouter
-- **多工具系统**: MCP/Skills/OpenCode 可扩展工具生态
-- **分布式架构**: 支持多 Agent 协作和任务分发
-- **知识库持久化**: 基于 Gold Memory 机制的学习和积累
-- **任务验证**: 内置 Quality Gates 保证代码质量
+- **自然语言交互主链**: `run/repl` 直接调用 Agent
+- **多 Provider LLM 支持**: OpenAI/Anthropic/Ollama/MiniMax/OpenRouter
+- **默认工具生态**: 文件、搜索、Shell、Git、Web 工具统一注册
+- **验证与工作流基础**: TaskVerifier、Workflow/Saga、QualityGate 基础能力
+- **扩展接口**: MCP/Skills 结构已具备，持续接入中
 
 ### 文档结构
 
 ```
 docs/
 ├── README.md           # 本文档（导航页）
-├── TODO.md             # 开发计划和进度追踪
+├── TODO.md             # 代办清单（只维护待办）
+├── plan/
+│   ├── current_plan.md # 当前执行计划（唯一）
+│   └── archive/        # 已完成计划归档
 ├── USER_GUIDE.md       # 用户使用指南（必读）
 ├── GRPC_CLIENT.md      # gRPC 客户端指南
 └── ...
@@ -44,22 +53,19 @@ docs/
 | core/llm | crates/core/src/llm/ | LLM Provider 系统 (OpenAI/Anthropic/Ollama/MiniMax/OpenRouter) |
 | runtime/tools | crates/runtime/src/tools/ | MCP, Skills, File, Git, Shell |
 | interface | crates/interface/src/ | CLI, REPL, gRPC, Interactive |
-| bin | crates/bin/src/ | 二进制入口 |
+| bin | bin/main.rs | 二进制入口 |
 
 ## 快速开始
 
 ```bash
 # 构建项目
-cargo build --release
+cargo build
 
 # 运行测试
-cargo test --release
-
-# 启用 gRPC 功能
-cargo build --release --features grpc
+cargo test -q
 
 # 查看帮助
-./target/release/ndc --help
+cargo run -- --help
 ```
 
 ## 配置系统 (OpenCode 风格)
@@ -149,6 +155,6 @@ git push origin main
 
 ---
 
-> **提示**: 首次使用请阅读 [USER_GUIDE.md](./USER_GUIDE.md) 了解详细用法。
+> 提示：当前计划请阅读 [plan/current_plan.md](./plan/current_plan.md)，历史方案请查阅 [plan/archive/](./plan/archive/)。
 
 ---

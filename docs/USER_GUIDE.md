@@ -199,6 +199,12 @@ export NDC_MINIMAX_GROUP_ID="..."
 
 优先级：项目 > 用户 > 全局。
 
+补充说明（MiniMax 别名）：
+
+- 当 provider 使用 `minimax-coding-plan`、`minimax-cn`、`minimax-cn-coding-plan` 时：
+  - 环境变量读取统一走 `NDC_MINIMAX_API_KEY` / `NDC_MINIMAX_GROUP_ID`
+  - 配置文件会先查精确 provider 键，未命中时自动回退查 `llm.providers.minimax`
+
 ## 5. 当前工具体系（默认注册）
 
 - `fs`
@@ -212,6 +218,16 @@ export NDC_MINIMAX_GROUP_ID="..."
 - `glob`
 - `webfetch`
 - `websearch`
+- `ndc_task_create`
+- `ndc_task_list`
+- `ndc_task_update`
+- `ndc_task_verify`
+- `ndc_memory_query`
+
+任务状态更新约束：
+
+- `ndc_task_update` 会严格遵守任务状态机，不允许非法跨阶段迁移。
+- 非法迁移（例如 `Pending -> Completed`）会返回错误，并保持任务原状态不变。
 
 ## 6. 已知限制
 
