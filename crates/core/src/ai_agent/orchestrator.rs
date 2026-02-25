@@ -2071,6 +2071,206 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_e2e_multiround_workflow_token_permission_timeline() {
+        let first_response = CompletionResponse {
+            id: "resp-e2e-1".to_string(),
+            object: "chat.completion".to_string(),
+            created: 0,
+            model: "mock-model".to_string(),
+            choices: vec![Choice {
+                index: 0,
+                message: Message {
+                    role: MessageRole::Assistant,
+                    content: String::new(),
+                    name: None,
+                    tool_calls: Some(vec![ToolCall {
+                        id: "tool-e2e-1".to_string(),
+                        function: ToolCallFunction {
+                            name: "write".to_string(),
+                            arguments: r#"{"path":"/tmp/e2e-a.txt","content":"x"}"#.to_string(),
+                        },
+                    }]),
+                },
+                finish_reason: None,
+                logprobs: None,
+            }],
+            usage: Some(Usage {
+                prompt_tokens: 8,
+                completion_tokens: 3,
+                total_tokens: 11,
+            }),
+        };
+        let second_response = CompletionResponse {
+            id: "resp-e2e-2".to_string(),
+            object: "chat.completion".to_string(),
+            created: 0,
+            model: "mock-model".to_string(),
+            choices: vec![Choice {
+                index: 0,
+                message: Message {
+                    role: MessageRole::Assistant,
+                    content: "Round one blocked by permission.".to_string(),
+                    name: None,
+                    tool_calls: None,
+                },
+                finish_reason: Some("stop".to_string()),
+                logprobs: None,
+            }],
+            usage: Some(Usage {
+                prompt_tokens: 7,
+                completion_tokens: 4,
+                total_tokens: 11,
+            }),
+        };
+        let third_response = CompletionResponse {
+            id: "resp-e2e-3".to_string(),
+            object: "chat.completion".to_string(),
+            created: 0,
+            model: "mock-model".to_string(),
+            choices: vec![Choice {
+                index: 0,
+                message: Message {
+                    role: MessageRole::Assistant,
+                    content: String::new(),
+                    name: None,
+                    tool_calls: Some(vec![ToolCall {
+                        id: "tool-e2e-2".to_string(),
+                        function: ToolCallFunction {
+                            name: "write".to_string(),
+                            arguments: r#"{"path":"/tmp/e2e-b.txt","content":"y"}"#.to_string(),
+                        },
+                    }]),
+                },
+                finish_reason: None,
+                logprobs: None,
+            }],
+            usage: Some(Usage {
+                prompt_tokens: 9,
+                completion_tokens: 3,
+                total_tokens: 12,
+            }),
+        };
+        let fourth_response = CompletionResponse {
+            id: "resp-e2e-4".to_string(),
+            object: "chat.completion".to_string(),
+            created: 0,
+            model: "mock-model".to_string(),
+            choices: vec![Choice {
+                index: 0,
+                message: Message {
+                    role: MessageRole::Assistant,
+                    content: "Round two blocked by permission as well.".to_string(),
+                    name: None,
+                    tool_calls: None,
+                },
+                finish_reason: Some("stop".to_string()),
+                logprobs: None,
+            }],
+            usage: Some(Usage {
+                prompt_tokens: 6,
+                completion_tokens: 4,
+                total_tokens: 10,
+            }),
+        };
+
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            first_response,
+            second_response,
+            third_response,
+            fourth_response,
+        ]));
+        let verifier = Arc::new(TaskVerifier::new(Arc::new(MockStorage)));
+        let orchestrator = AgentOrchestrator::new(
+            provider,
+            Arc::new(PermissionDeniedToolExecutor),
+            verifier,
+            AgentConfig::default(),
+        );
+
+        let first = orchestrator
+            .process(AgentRequest {
+                user_input: "first write attempt".to_string(),
+                session_id: None,
+                working_dir: None,
+                role: None,
+                active_task_id: None,
+                working_memory: None,
+            })
+            .await
+            .unwrap();
+        let second = orchestrator
+            .process(AgentRequest {
+                user_input: "second write attempt".to_string(),
+                session_id: Some(first.session_id.clone()),
+                working_dir: None,
+                role: None,
+                active_task_id: None,
+                working_memory: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(second.session_id, first.session_id);
+
+        let replay = orchestrator
+            .get_session_execution_events(&first.session_id, None)
+            .await
+            .unwrap();
+        assert!(!replay.is_empty());
+
+        let permission_count = replay
+            .iter()
+            .filter(|e| e.kind == AgentExecutionEventKind::PermissionAsked)
+            .count();
+        assert!(permission_count >= 2);
+
+        let workflow_events = replay
+            .iter()
+            .filter(|e| e.kind == AgentExecutionEventKind::WorkflowStage)
+            .collect::<Vec<_>>();
+        assert!(
+            workflow_events
+                .iter()
+                .any(|e| matches!(e.workflow_stage, Some(AgentWorkflowStage::Planning)))
+        );
+        assert!(
+            workflow_events
+                .iter()
+                .any(|e| matches!(e.workflow_stage, Some(AgentWorkflowStage::Executing)))
+        );
+        assert!(
+            workflow_events
+                .iter()
+                .any(|e| matches!(e.workflow_stage, Some(AgentWorkflowStage::Completing)))
+        );
+        assert!(workflow_events.iter().all(|event| {
+            event.workflow_stage_index.is_some() && event.workflow_stage_total.is_some()
+        }));
+
+        let usage_events = replay
+            .iter()
+            .filter(|e| e.kind == AgentExecutionEventKind::TokenUsage)
+            .filter_map(|e| e.token_usage_info())
+            .collect::<Vec<_>>();
+        assert!(usage_events.len() >= 4);
+        assert!(usage_events.iter().all(|usage| usage.total_tokens > 0));
+        let first_session_total = usage_events
+            .first()
+            .map(|usage| usage.session_total)
+            .unwrap_or(0);
+        let last_session_total = usage_events
+            .last()
+            .map(|usage| usage.session_total)
+            .unwrap_or(0);
+        assert!(last_session_total > first_session_total);
+
+        let limited = orchestrator
+            .get_session_execution_events(&first.session_id, Some(5))
+            .await
+            .unwrap();
+        assert!(limited.len() <= 5);
+    }
+
+    #[tokio::test]
     async fn test_subscribe_execution_events_broadcasts_session_events() {
         let response = CompletionResponse {
             id: "resp-live-1".to_string(),

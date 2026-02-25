@@ -5,7 +5,7 @@
 
 ## 看板总览
 
-- `P0-C`（最高优先级，进行中）：Workflow-Native REPL 与实时可观测
+- `P0-C`（最高优先级，收尾中）：Workflow-Native REPL 与实时可观测
 - `P1`（高优先级，待开始）：核心自治能力与治理
 - `P2`（后续增强，待开始）：多 Agent 与知识回灌体验
 
@@ -39,14 +39,13 @@
   - workflow：`workflow_stage/workflow_detail/workflow_stage_index/workflow_stage_total`
   - token：`token_source/token_prompt/token_completion/token_total/token_session_prompt_total/token_session_completion_total/token_session_total`
 - 兼容策略文档已补齐（旧客户端忽略新增字段可降级）
+- 已新增综合 e2e（core orchestrator）：多轮 + 多次 tool call + permission + timeline replay + workflow/token 断言
 - 单测已覆盖 core/interface/grpc 关键路径
 
 ### 待完成（当前执行清单）
 
-1. 验证闭环补齐
-   - 新增 e2e：多轮 + 多次 tool call + permission + timeline replay + workflow/token 断言
-2. 文档同步
-   - `docs/plan/current_plan.md` 更新 P0-C 剩余项状态
+1. P0-C 收尾
+   - 补充 interface 层同口径 e2e（订阅端视角，验证 workflow/token 字段渲染一致性）
 
 ## P1（高优先级）
 
