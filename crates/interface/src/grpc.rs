@@ -2,11 +2,11 @@
 //!
 //! 使用 tonic 框架提供 gRPC 服务
 
+use axum::Router;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::routing::get;
-use axum::Router;
 use futures::stream::Stream;
 use serde::Deserialize;
 use std::convert::Infallible;
@@ -23,7 +23,7 @@ use ndc_runtime::{ExecutionContext, Executor};
 
 use crate::agent_mode::{AgentModeConfig, AgentModeManager};
 use crate::daemon::NdcDaemon;
-use crate::redaction::{sanitize_text, RedactionMode};
+use crate::redaction::{RedactionMode, sanitize_text};
 
 // Re-export generated types from the proto
 pub use super::generated;
@@ -155,20 +155,20 @@ impl AgentGrpcService {
         if requested_session_id.is_empty() {
             return Ok(());
         }
-        let current = self.agent_manager.status().await;
-        let same = current
-            .session_id
-            .as_ref()
-            .map(|sid| sid == requested_session_id)
-            .unwrap_or(false);
-        if same {
-            Ok(())
-        } else {
-            Err(tonic::Status::not_found(format!(
-                "session '{}' is not active on this daemon",
-                requested_session_id
-            )))
-        }
+        self.agent_manager
+            .use_session(requested_session_id, false)
+            .await
+            .map(|_| ())
+            .map_err(|e| match e {
+                ndc_core::AgentError::SessionNotFound(_) => tonic::Status::not_found(format!(
+                    "session '{}' not found for current project",
+                    requested_session_id
+                )),
+                ndc_core::AgentError::InvalidRequest(message) => {
+                    tonic::Status::permission_denied(message)
+                }
+                other => tonic::Status::internal(format!("session validation failed: {}", other)),
+            })
     }
 
     fn map_execution_event(event: ndc_core::AgentExecutionEvent) -> generated::ExecutionEvent {
@@ -577,14 +577,13 @@ async fn subscribe_session_timeline_sse(
     }
 
     if !query.session_id.is_empty() {
-        let current = state.manager.status().await;
-        let same = current
-            .session_id
-            .as_ref()
-            .map(|sid| sid == &query.session_id)
-            .unwrap_or(false);
-        if !same {
-            return Err(StatusCode::NOT_FOUND);
+        let validate = state.manager.use_session(&query.session_id, false).await;
+        if let Err(err) = validate {
+            return match err {
+                ndc_core::AgentError::SessionNotFound(_) => Err(StatusCode::NOT_FOUND),
+                ndc_core::AgentError::InvalidRequest(_) => Err(StatusCode::FORBIDDEN),
+                _ => Err(StatusCode::INTERNAL_SERVER_ERROR),
+            };
         }
     }
 
@@ -1129,16 +1128,36 @@ pub async fn run_grpc_server(address: SocketAddr) -> Result<(), Box<dyn std::err
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
     use std::sync::{Mutex, OnceLock};
     use std::time::Duration;
+    use tempfile::TempDir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio_stream::StreamExt;
+
+    async fn connect_with_retry(
+        address: SocketAddr,
+        max_wait: Duration,
+    ) -> Result<tokio::net::TcpStream, std::io::Error> {
+        let start = std::time::Instant::now();
+        loop {
+            match tokio::net::TcpStream::connect(address).await {
+                Ok(stream) => return Ok(stream),
+                Err(err) => {
+                    if start.elapsed() >= max_wait {
+                        return Err(err);
+                    }
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+            }
+        }
+    }
 
     async fn read_http_response_head(
         address: SocketAddr,
         path: &str,
     ) -> Result<String, Box<dyn std::error::Error>> {
-        let mut stream = tokio::net::TcpStream::connect(address).await?;
+        let mut stream = connect_with_retry(address, Duration::from_secs(2)).await?;
         let request = format!(
             "GET {} HTTP/1.1\r\nHost: {}\r\nAccept: text/event-stream\r\nConnection: close\r\n\r\n",
             path, address
@@ -1171,7 +1190,7 @@ mod tests {
         path: &str,
         min_bytes: usize,
     ) -> Result<String, Box<dyn std::error::Error>> {
-        let mut stream = tokio::net::TcpStream::connect(address).await?;
+        let mut stream = connect_with_retry(address, Duration::from_secs(2)).await?;
         let request = format!(
             "GET {} HTTP/1.1\r\nHost: {}\r\nAccept: text/event-stream\r\nConnection: keep-alive\r\n\r\n",
             path, address
@@ -1226,6 +1245,66 @@ mod tests {
             }
         }
         result
+    }
+
+    fn permission_event(
+        message: &str,
+        is_error: bool,
+        tool_call_id: &str,
+    ) -> ndc_core::AgentExecutionEvent {
+        ndc_core::AgentExecutionEvent {
+            kind: ndc_core::AgentExecutionEventKind::PermissionAsked,
+            timestamp: chrono::Utc::now(),
+            message: message.to_string(),
+            round: 3,
+            tool_name: Some("git".to_string()),
+            tool_call_id: Some(tool_call_id.to_string()),
+            duration_ms: None,
+            is_error,
+            workflow_stage: None,
+            workflow_detail: None,
+            workflow_stage_index: None,
+            workflow_stage_total: None,
+        }
+    }
+
+    fn build_persisted_permission_session(
+        project_root: &Path,
+        session_id: &str,
+    ) -> ndc_core::AgentSession {
+        let identity = ndc_core::ProjectIdentity::detect(Some(project_root.to_path_buf()));
+        let mut session =
+            ndc_core::AgentSession::new_with_project_identity(session_id.to_string(), identity);
+        session.add_execution_event(permission_event(
+            "permission_asked: requires_confirmation permission=git_commit risk=high git commit requires confirmation",
+            true,
+            "call-perm-ask",
+        ));
+        session.add_execution_event(permission_event(
+            "permission_asked: permission_approved: requires_confirmation permission=git_commit risk=high git commit requires confirmation",
+            false,
+            "call-perm-approve",
+        ));
+        session.add_execution_event(permission_event(
+            "permission_asked: permission_rejected: requires_confirmation permission=git_commit risk=high denied",
+            true,
+            "call-perm-reject",
+        ));
+        session
+    }
+
+    fn write_session_archive(path: &Path, session: &ndc_core::AgentSession) {
+        let archive = serde_json::json!({
+            "version": 1u32,
+            "sessions": [
+                {
+                    "session": session,
+                    "last_seen_unix_ms": chrono::Utc::now().timestamp_millis(),
+                }
+            ],
+        });
+        let bytes = serde_json::to_vec_pretty(&archive).expect("serialize archive");
+        std::fs::write(path, bytes).expect("write session archive");
     }
 
     #[test]
@@ -1306,6 +1385,71 @@ mod tests {
         assert_eq!(mapped.tool_name, "write");
         assert_eq!(mapped.tool_call_id, "call-perm-1");
         assert!(mapped.is_error);
+    }
+
+    #[test]
+    fn test_permission_lifecycle_mapping_and_sse_json_consistency() {
+        let asked = ndc_core::AgentExecutionEvent {
+            kind: ndc_core::AgentExecutionEventKind::PermissionAsked,
+            timestamp: chrono::Utc::now(),
+            message: "permission_asked: requires_confirmation permission=git_commit risk=high git commit requires confirmation".to_string(),
+            round: 3,
+            tool_name: Some("git".to_string()),
+            tool_call_id: Some("call-perm-ask".to_string()),
+            duration_ms: None,
+            is_error: true,
+            workflow_stage: None,
+            workflow_detail: None,
+            workflow_stage_index: None,
+            workflow_stage_total: None,
+        };
+        let approved = ndc_core::AgentExecutionEvent {
+            kind: ndc_core::AgentExecutionEventKind::PermissionAsked,
+            timestamp: chrono::Utc::now(),
+            message: "permission_asked: permission_approved: requires_confirmation permission=git_commit risk=high git commit requires confirmation".to_string(),
+            round: 3,
+            tool_name: Some("git".to_string()),
+            tool_call_id: Some("call-perm-approve".to_string()),
+            duration_ms: None,
+            is_error: false,
+            workflow_stage: None,
+            workflow_detail: None,
+            workflow_stage_index: None,
+            workflow_stage_total: None,
+        };
+        let rejected = ndc_core::AgentExecutionEvent {
+            kind: ndc_core::AgentExecutionEventKind::PermissionAsked,
+            timestamp: chrono::Utc::now(),
+            message: "permission_asked: permission_rejected: requires_confirmation permission=git_commit risk=high denied".to_string(),
+            round: 3,
+            tool_name: Some("git".to_string()),
+            tool_call_id: Some("call-perm-reject".to_string()),
+            duration_ms: None,
+            is_error: true,
+            workflow_stage: None,
+            workflow_detail: None,
+            workflow_stage_index: None,
+            workflow_stage_total: None,
+        };
+
+        for event in [asked, approved, rejected] {
+            let mapped = AgentGrpcService::map_execution_event(event.clone());
+            assert_eq!(mapped.kind, "PermissionAsked");
+            assert_eq!(mapped.round, event.round as u32);
+            assert_eq!(mapped.tool_name, event.tool_name.unwrap_or_default());
+            assert_eq!(mapped.tool_call_id, event.tool_call_id.unwrap_or_default());
+            assert_eq!(mapped.is_error, event.is_error);
+            assert!(mapped.message.contains("permission_asked:"));
+
+            let payload = execution_event_to_json(mapped.clone());
+            let parsed: serde_json::Value = serde_json::from_str(&payload).unwrap();
+            assert_eq!(parsed["kind"], "PermissionAsked");
+            assert_eq!(parsed["round"], mapped.round);
+            assert_eq!(parsed["is_error"], mapped.is_error);
+            assert_eq!(parsed["tool_name"], mapped.tool_name);
+            assert_eq!(parsed["tool_call_id"], mapped.tool_call_id);
+            assert_eq!(parsed["message"], mapped.message);
+        }
     }
 
     #[test]
@@ -1526,6 +1670,17 @@ mod tests {
         config.provider = "ollama".to_string();
         config.model = "llama3.2".to_string();
         manager.enable(config).await.unwrap();
+        let first_session_id = manager.status().await.session_id.unwrap_or_default();
+        assert!(!first_session_id.is_empty());
+
+        // Ensure first session is materialized in orchestrator state.
+        let _ = tokio::time::timeout(
+            Duration::from_secs(3),
+            manager.process_input("seed timeline for inactive session check"),
+        )
+        .await;
+        let second_session_id = manager.start_new_session().await.unwrap();
+        assert_ne!(first_session_id, second_session_id);
 
         let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let sse_addr = probe.local_addr().unwrap();
@@ -1539,9 +1694,22 @@ mod tests {
                 .await
                 .unwrap();
         assert!(ok_head.starts_with("HTTP/1.1 200"));
-        assert!(ok_head
-            .to_ascii_lowercase()
-            .contains("content-type: text/event-stream"));
+        assert!(
+            ok_head
+                .to_ascii_lowercase()
+                .contains("content-type: text/event-stream")
+        );
+
+        let inactive_same_project_head = read_http_response_head(
+            sse_addr,
+            &format!(
+                "/agent/session_timeline/subscribe?session_id={}&limit=0",
+                first_session_id
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(inactive_same_project_head.starts_with("HTTP/1.1 200"));
 
         let not_found_head = read_http_response_head(
             sse_addr,
@@ -1552,6 +1720,49 @@ mod tests {
         assert!(not_found_head.starts_with("HTTP/1.1 404"));
 
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_get_session_timeline_accepts_inactive_same_project_session() {
+        let context = ExecutionContext::default();
+        let executor = Arc::new(Executor::new(context));
+        let daemon_addr: SocketAddr = "127.0.0.1:50054".parse().unwrap();
+        let daemon = Arc::new(NdcDaemon::new(executor, daemon_addr));
+        let manager = AgentGrpcService::build_agent_manager(&daemon);
+
+        let mut config = AgentModeConfig::default();
+        config.provider = "ollama".to_string();
+        config.model = "llama3.2".to_string();
+        manager.enable(config).await.unwrap();
+
+        let first_session_id = manager.status().await.session_id.unwrap_or_default();
+        assert!(!first_session_id.is_empty());
+
+        // Ensure first session is created before switching active session.
+        let _ = tokio::time::timeout(
+            Duration::from_secs(3),
+            manager.process_input("seed timeline for grpc inactive session check"),
+        )
+        .await;
+        let _ = manager.start_new_session().await.unwrap();
+
+        let service = AgentGrpcService::with_manager(daemon, manager.clone());
+        let response =
+            <AgentGrpcService as generated::agent_service_server::AgentService>::get_session_timeline(
+                &service,
+                tonic::Request::new(generated::SessionTimelineRequest {
+                    session_id: first_session_id.clone(),
+                    limit: 10,
+                }),
+            )
+            .await;
+
+        assert!(
+            response.is_ok(),
+            "inactive same-project session should be accessible"
+        );
+        let active = manager.status().await.session_id.unwrap_or_default();
+        assert_eq!(active, first_session_id);
     }
 
     #[tokio::test]
@@ -1662,6 +1873,7 @@ mod tests {
             .expect("stream result");
 
         assert_eq!(replay.kind, snapshot.kind);
+        assert_eq!(replay.message, snapshot.message);
         assert_eq!(replay.round, snapshot.round);
         assert_eq!(replay.tool_name, snapshot.tool_name);
         assert_eq!(replay.tool_call_id, snapshot.tool_call_id);
@@ -1684,5 +1896,159 @@ mod tests {
             snapshot.token_session_completion_total
         );
         assert_eq!(replay.token_session_total, snapshot.token_session_total);
+    }
+
+    #[tokio::test]
+    async fn test_get_session_timeline_restores_persisted_permission_events_after_restart() {
+        let _guard = env_lock();
+        let temp = TempDir::new().expect("temp dir");
+        let project_root = temp.path().join("project");
+        std::fs::create_dir_all(project_root.as_path()).expect("create project root");
+        std::fs::write(
+            project_root.join("Cargo.toml"),
+            "[package]\nname=\"project\"\nversion=\"0.1.0\"\n",
+        )
+        .expect("write marker");
+
+        let archive_path = temp.path().join("session_archive.json");
+        let index_path = temp.path().join("project_index.json");
+        std::env::set_var(
+            "NDC_SESSION_ARCHIVE_FILE",
+            archive_path.to_string_lossy().to_string(),
+        );
+        std::env::set_var(
+            "NDC_PROJECT_INDEX_FILE",
+            index_path.to_string_lossy().to_string(),
+        );
+
+        let session_id = "persisted-permission-session";
+        let session = build_persisted_permission_session(project_root.as_path(), session_id);
+        write_session_archive(archive_path.as_path(), &session);
+
+        let mut context = ExecutionContext::default();
+        context.project_root = project_root.clone();
+        let executor = Arc::new(Executor::new(context));
+        let daemon_addr: SocketAddr = "127.0.0.1:50055".parse().unwrap();
+        let daemon = Arc::new(NdcDaemon::new(executor, daemon_addr));
+        let manager = AgentGrpcService::build_agent_manager(&daemon);
+
+        let mut config = AgentModeConfig::default();
+        config.provider = "ollama".to_string();
+        config.model = "llama3.2".to_string();
+        manager.enable(config).await.unwrap();
+        assert_eq!(
+            manager.status().await.session_id.as_deref(),
+            Some(session_id)
+        );
+
+        let service = AgentGrpcService::with_manager(daemon, manager);
+        let response =
+            <AgentGrpcService as generated::agent_service_server::AgentService>::get_session_timeline(
+                &service,
+                tonic::Request::new(generated::SessionTimelineRequest {
+                    session_id: session_id.to_string(),
+                    limit: 20,
+                }),
+            )
+            .await
+            .expect("get session timeline")
+            .into_inner();
+
+        assert_eq!(response.events.len(), 3);
+        assert!(
+            response
+                .events
+                .iter()
+                .all(|event| event.kind == "PermissionAsked")
+        );
+        assert!(
+            response
+                .events
+                .iter()
+                .any(|event| event.message.contains("permission_asked:"))
+        );
+        assert!(
+            response
+                .events
+                .iter()
+                .any(|event| event.message.contains("permission_approved:"))
+        );
+        assert!(
+            response
+                .events
+                .iter()
+                .any(|event| event.message.contains("permission_rejected:"))
+        );
+
+        std::env::remove_var("NDC_PROJECT_INDEX_FILE");
+        std::env::remove_var("NDC_SESSION_ARCHIVE_FILE");
+    }
+
+    #[tokio::test]
+    async fn test_timeline_sse_replays_persisted_permission_events_after_restart() {
+        let _guard = env_lock();
+        let temp = TempDir::new().expect("temp dir");
+        let project_root = temp.path().join("project");
+        std::fs::create_dir_all(project_root.as_path()).expect("create project root");
+        std::fs::write(
+            project_root.join("Cargo.toml"),
+            "[package]\nname=\"project\"\nversion=\"0.1.0\"\n",
+        )
+        .expect("write marker");
+
+        let archive_path = temp.path().join("session_archive.json");
+        let index_path = temp.path().join("project_index.json");
+        std::env::set_var(
+            "NDC_SESSION_ARCHIVE_FILE",
+            archive_path.to_string_lossy().to_string(),
+        );
+        std::env::set_var(
+            "NDC_PROJECT_INDEX_FILE",
+            index_path.to_string_lossy().to_string(),
+        );
+
+        let session_id = "persisted-permission-session";
+        let session = build_persisted_permission_session(project_root.as_path(), session_id);
+        write_session_archive(archive_path.as_path(), &session);
+
+        let mut context = ExecutionContext::default();
+        context.project_root = project_root.clone();
+        let executor = Arc::new(Executor::new(context));
+        let daemon_addr: SocketAddr = "127.0.0.1:50056".parse().unwrap();
+        let daemon = Arc::new(NdcDaemon::new(executor, daemon_addr));
+        let manager = AgentGrpcService::build_agent_manager(&daemon);
+
+        let mut config = AgentModeConfig::default();
+        config.provider = "ollama".to_string();
+        config.model = "llama3.2".to_string();
+        manager.enable(config).await.unwrap();
+
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let sse_addr = probe.local_addr().unwrap();
+        drop(probe);
+        let server = tokio::spawn(run_timeline_sse_server(sse_addr, manager));
+        tokio::time::sleep(Duration::from_millis(120)).await;
+
+        let body = read_http_response_prefix(
+            sse_addr,
+            &format!(
+                "/agent/session_timeline/subscribe?session_id={}&limit=20",
+                session_id
+            ),
+            2048,
+        )
+        .await
+        .expect("read sse response");
+
+        assert!(body.starts_with("HTTP/1.1 200"));
+        assert!(body.contains("event: execution_event"));
+        assert!(body.contains("\"kind\":\"PermissionAsked\""));
+        assert!(body.contains("permission_asked:"));
+        assert!(body.contains("permission_approved:"));
+        assert!(body.contains("permission_rejected:"));
+
+        server.abort();
+        std::env::remove_var("NDC_PROJECT_INDEX_FILE");
+        std::env::remove_var("NDC_SESSION_ARCHIVE_FILE");
     }
 }

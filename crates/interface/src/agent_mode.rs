@@ -12,9 +12,10 @@
 //! - 增强内置 NDC 工程能力
 //! - 集成 NDC 反馈循环验证
 
-use std::collections::HashMap;
-use std::io::{self, Write};
-use std::path::PathBuf;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeSet, HashMap};
+use std::io::{self, IsTerminal, Write};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
 use tracing::{debug, info};
@@ -25,7 +26,246 @@ use ndc_core::{
     NdcConfigLoader, ProviderConfig, ProviderType, RawCurrent, StepContext, SubTaskId, TaskId,
     TaskStorage, TaskVerifier, ToolExecutor, TrajectoryState, VersionedInvariant, WorkingMemory,
 };
-use ndc_runtime::{tools::ToolRegistry, Executor, SharedStorage};
+use ndc_runtime::{
+    tools::{extract_confirmation_permission, with_security_overrides, ToolError, ToolRegistry},
+    Executor, SharedStorage,
+};
+
+const PROJECT_INDEX_VERSION: u32 = 1;
+const PROJECT_INDEX_MAX_ENTRIES: usize = 256;
+const PROJECT_INDEX_MAX_SESSION_IDS: usize = 16;
+const SESSION_ARCHIVE_VERSION: u32 = 1;
+const SESSION_ARCHIVE_MAX_ENTRIES: usize = 128;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedProjectRecord {
+    project_id: String,
+    project_root: PathBuf,
+    working_dir: PathBuf,
+    worktree: PathBuf,
+    recent_session_ids: Vec<String>,
+    last_seen_unix_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedProjectIndex {
+    version: u32,
+    projects: Vec<PersistedProjectRecord>,
+}
+
+impl Default for PersistedProjectIndex {
+    fn default() -> Self {
+        Self {
+            version: PROJECT_INDEX_VERSION,
+            projects: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ProjectIndexStore {
+    path: PathBuf,
+    index: PersistedProjectIndex,
+}
+
+impl ProjectIndexStore {
+    fn load_default() -> Self {
+        let path = project_index_file_path();
+        let index = load_project_index(path.as_path()).unwrap_or_default();
+        Self { path, index }
+    }
+
+    fn known_project_roots(&self, limit: usize) -> Vec<PathBuf> {
+        let mut entries = self.index.projects.clone();
+        entries.sort_by(|left, right| right.last_seen_unix_ms.cmp(&left.last_seen_unix_ms));
+        entries
+            .into_iter()
+            .filter_map(|entry| canonicalize_existing_dir(entry.project_root.as_path()))
+            .take(limit.max(1))
+            .collect()
+    }
+
+    fn known_project_ids(&self) -> Vec<String> {
+        let mut ids = self
+            .index
+            .projects
+            .iter()
+            .map(|entry| entry.project_id.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        ids.sort();
+        ids
+    }
+
+    fn upsert(&mut self, identity: &ndc_core::ProjectIdentity, session_id: Option<&str>) {
+        let now = chrono::Utc::now().timestamp_millis();
+        let index = self.index.projects.iter().position(|entry| {
+            entry.project_id == identity.project_id && entry.project_root == identity.project_root
+        });
+        let mut sessions = session_id
+            .map(|value| vec![value.to_string()])
+            .unwrap_or_default();
+        if let Some(idx) = index {
+            let entry = &mut self.index.projects[idx];
+            if let Some(sid) = session_id {
+                sessions.extend(
+                    entry
+                        .recent_session_ids
+                        .iter()
+                        .filter(|existing| existing.as_str() != sid)
+                        .cloned(),
+                );
+            } else {
+                sessions.extend(entry.recent_session_ids.iter().cloned());
+            }
+            sessions.truncate(PROJECT_INDEX_MAX_SESSION_IDS);
+            entry.working_dir = identity.working_dir.clone();
+            entry.worktree = identity.worktree.clone();
+            entry.recent_session_ids = sessions;
+            entry.last_seen_unix_ms = now;
+        } else {
+            self.index.projects.push(PersistedProjectRecord {
+                project_id: identity.project_id.clone(),
+                project_root: identity.project_root.clone(),
+                working_dir: identity.working_dir.clone(),
+                worktree: identity.worktree.clone(),
+                recent_session_ids: sessions,
+                last_seen_unix_ms: now,
+            });
+        }
+
+        self.index
+            .projects
+            .sort_by(|left, right| right.last_seen_unix_ms.cmp(&left.last_seen_unix_ms));
+        self.index.projects.truncate(PROJECT_INDEX_MAX_ENTRIES);
+    }
+
+    fn save(&self) -> io::Result<()> {
+        save_project_index(self.path.as_path(), &self.index)
+    }
+}
+
+fn project_index_file_path() -> PathBuf {
+    if let Ok(value) = std::env::var("NDC_PROJECT_INDEX_FILE") {
+        let path = PathBuf::from(value);
+        if !path.as_os_str().is_empty() {
+            return path;
+        }
+    }
+    ndc_core::ConfigLayer::User
+        .path()
+        .join("project_index.json")
+}
+
+fn load_project_index(path: &Path) -> Option<PersistedProjectIndex> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    let parsed: PersistedProjectIndex = serde_json::from_str(raw.as_str()).ok()?;
+    Some(parsed)
+}
+
+fn save_project_index(path: &Path, index: &PersistedProjectIndex) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let data = serde_json::to_vec_pretty(index).map_err(io::Error::other)?;
+    std::fs::write(path, data)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedSessionRecord {
+    session: ndc_core::AgentSession,
+    last_seen_unix_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedSessionArchive {
+    version: u32,
+    sessions: Vec<PersistedSessionRecord>,
+}
+
+impl Default for PersistedSessionArchive {
+    fn default() -> Self {
+        Self {
+            version: SESSION_ARCHIVE_VERSION,
+            sessions: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SessionArchiveStore {
+    path: PathBuf,
+    archive: PersistedSessionArchive,
+}
+
+impl SessionArchiveStore {
+    fn load_default() -> Self {
+        let path = session_archive_file_path();
+        let archive = load_session_archive(path.as_path()).unwrap_or_default();
+        Self { path, archive }
+    }
+
+    fn all_sessions(&self) -> Vec<ndc_core::AgentSession> {
+        self.archive
+            .sessions
+            .iter()
+            .map(|record| record.session.clone())
+            .collect()
+    }
+
+    fn upsert(&mut self, session: &ndc_core::AgentSession) {
+        let now = chrono::Utc::now().timestamp_millis();
+        if let Some(idx) = self
+            .archive
+            .sessions
+            .iter()
+            .position(|record| record.session.id == session.id)
+        {
+            self.archive.sessions[idx].session = session.clone();
+            self.archive.sessions[idx].last_seen_unix_ms = now;
+        } else {
+            self.archive.sessions.push(PersistedSessionRecord {
+                session: session.clone(),
+                last_seen_unix_ms: now,
+            });
+        }
+        self.archive
+            .sessions
+            .sort_by(|left, right| right.last_seen_unix_ms.cmp(&left.last_seen_unix_ms));
+        self.archive.sessions.truncate(SESSION_ARCHIVE_MAX_ENTRIES);
+    }
+
+    fn save(&self) -> io::Result<()> {
+        save_session_archive(self.path.as_path(), &self.archive)
+    }
+}
+
+fn session_archive_file_path() -> PathBuf {
+    if let Ok(value) = std::env::var("NDC_SESSION_ARCHIVE_FILE") {
+        let path = PathBuf::from(value);
+        if !path.as_os_str().is_empty() {
+            return path;
+        }
+    }
+    ndc_core::ConfigLayer::User
+        .path()
+        .join("session_archive.json")
+}
+
+fn load_session_archive(path: &Path) -> Option<PersistedSessionArchive> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    let parsed: PersistedSessionArchive = serde_json::from_str(raw.as_str()).ok()?;
+    Some(parsed)
+}
+
+fn save_session_archive(path: &Path, archive: &PersistedSessionArchive) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let data = serde_json::to_vec_pretty(archive).map_err(io::Error::other)?;
+    std::fs::write(path, data)
+}
 
 fn is_minimax_family(provider: &str) -> bool {
     matches!(
@@ -61,6 +301,113 @@ fn provider_override_from_config<'a>(
             llm.providers.get(normalized)
         }
     })
+}
+
+fn build_project_scoped_session_id(project_id: &str) -> String {
+    let short_project = project_id.chars().take(8).collect::<String>();
+    format!("agent-{}-{}", short_project, ulid::Ulid::new())
+}
+
+fn canonicalize_existing_dir(path: &Path) -> Option<PathBuf> {
+    let metadata = std::fs::metadata(path).ok()?;
+    if !metadata.is_dir() {
+        return None;
+    }
+    Some(std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()))
+}
+
+fn looks_like_project_root(path: &Path) -> bool {
+    path.join(".git").exists()
+        || path.join(".ndc").exists()
+        || [
+            "Cargo.toml",
+            "package.json",
+            "pyproject.toml",
+            "go.mod",
+            "pom.xml",
+            "Makefile",
+        ]
+        .iter()
+        .any(|marker| path.join(marker).exists())
+}
+
+fn discover_project_directories(seed_dirs: &[PathBuf], limit: usize) -> Vec<PathBuf> {
+    let cap = limit.max(1);
+    let mut seen = BTreeSet::<PathBuf>::new();
+    let mut candidates = Vec::<PathBuf>::new();
+    fn push_unique(
+        seen: &mut BTreeSet<PathBuf>,
+        candidates: &mut Vec<PathBuf>,
+        path: PathBuf,
+    ) -> bool {
+        if seen.insert(path.clone()) {
+            candidates.push(path);
+            true
+        } else {
+            false
+        }
+    }
+    let mut canonical_seeds = Vec::<PathBuf>::new();
+    let mut seed_seen = BTreeSet::<PathBuf>::new();
+    for seed in seed_dirs {
+        let Some(seed) = canonicalize_existing_dir(seed.as_path()) else {
+            continue;
+        };
+        if seed_seen.insert(seed.clone()) {
+            canonical_seeds.push(seed);
+        }
+    }
+
+    // First pass: include seed project roots directly (ensures persisted projects are not starved).
+    for seed in &canonical_seeds {
+        if looks_like_project_root(seed.as_path()) {
+            let inserted = push_unique(&mut seen, &mut candidates, seed.clone());
+            if inserted && candidates.len() >= cap {
+                return candidates;
+            }
+        }
+    }
+
+    // Second pass: expand parent/sibling/child directories.
+    for seed in canonical_seeds {
+        if let Some(parent) = seed.parent().and_then(canonicalize_existing_dir) {
+            if looks_like_project_root(parent.as_path()) {
+                let inserted = push_unique(&mut seen, &mut candidates, parent.clone());
+                if inserted && candidates.len() >= cap {
+                    return candidates;
+                }
+            }
+            if let Ok(entries) = std::fs::read_dir(parent) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    let Some(path) = canonicalize_existing_dir(path.as_path()) else {
+                        continue;
+                    };
+                    if looks_like_project_root(path.as_path()) {
+                        let inserted = push_unique(&mut seen, &mut candidates, path);
+                        if inserted && candidates.len() >= cap {
+                            return candidates;
+                        }
+                    }
+                }
+            }
+        }
+        if let Ok(entries) = std::fs::read_dir(seed.as_path()) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Some(path) = canonicalize_existing_dir(path.as_path()) else {
+                    continue;
+                };
+                if looks_like_project_root(path.as_path()) {
+                    let inserted = push_unique(&mut seen, &mut candidates, path);
+                    if inserted && candidates.len() >= cap {
+                        return candidates;
+                    }
+                }
+            }
+        }
+    }
+    candidates
 }
 
 /// Get API key from environment variable with NDC_ prefix
@@ -311,6 +658,15 @@ pub struct AgentModeState {
 
     /// 工作目录
     pub working_dir: Option<PathBuf>,
+
+    /// 当前项目 ID
+    pub project_id: Option<String>,
+
+    /// 当前项目根目录
+    pub project_root: Option<PathBuf>,
+
+    /// 当前工作树根目录
+    pub worktree: Option<PathBuf>,
 }
 
 impl Default for AgentModeState {
@@ -321,6 +677,9 @@ impl Default for AgentModeState {
             session_id: None,
             active_task_id: None,
             working_dir: None,
+            project_id: None,
+            project_root: None,
+            worktree: None,
         }
     }
 }
@@ -338,6 +697,15 @@ pub struct AgentModeManager {
 
     /// Tool Registry
     tool_registry: Arc<ToolRegistry>,
+
+    /// Runtime working directory shared with tool executor.
+    runtime_working_dir: Arc<Mutex<Option<PathBuf>>>,
+
+    /// Persistent cross-process project index.
+    project_index: Arc<Mutex<ProjectIndexStore>>,
+
+    /// Persistent cross-process session archive.
+    session_archive: Arc<Mutex<SessionArchiveStore>>,
 }
 
 impl AgentModeManager {
@@ -348,20 +716,24 @@ impl AgentModeManager {
             orchestrator: Arc::new(Mutex::new(None)),
             _executor: executor,
             tool_registry,
+            runtime_working_dir: Arc::new(Mutex::new(None)),
+            project_index: Arc::new(Mutex::new(ProjectIndexStore::load_default())),
+            session_archive: Arc::new(Mutex::new(SessionArchiveStore::load_default())),
         }
     }
 
     /// 启用 Agent 模式
     pub async fn enable(&self, config: AgentModeConfig) -> Result<(), AgentError> {
-        let mut state = self.state.lock().await;
-        state.enabled = true;
-        state.config = config.clone();
-        state.session_id = Some(format!("agent-{}", ulid::Ulid::new()));
+        let detected_identity =
+            ndc_core::ProjectIdentity::detect(Some(self._executor.context().project_root.clone()));
+        let bootstrap_session_id =
+            build_project_scoped_session_id(detected_identity.project_id.as_str());
 
         // 创建 Agent Orchestrator
         let tool_executor = Arc::new(ReplToolExecutor::new(
             self.tool_registry.clone(),
             config.permissions.clone(),
+            self.runtime_working_dir.clone(),
         ));
         let provider = self.create_provider(&config.provider, &config.model)?;
 
@@ -381,6 +753,30 @@ impl AgentModeManager {
         };
 
         let orchestrator = AgentOrchestrator::new(provider, tool_executor, verifier, agent_config);
+        self.hydrate_orchestrator_sessions(&orchestrator).await;
+
+        let restored_session_id = orchestrator
+            .latest_session_id_for_project(detected_identity.project_id.as_str())
+            .await;
+        let active_session_id = restored_session_id.unwrap_or(bootstrap_session_id);
+        let active_identity = orchestrator
+            .session_project_identity(active_session_id.as_str())
+            .await
+            .unwrap_or(detected_identity);
+
+        {
+            let mut state = self.state.lock().await;
+            state.enabled = true;
+            state.config = config.clone();
+            state.session_id = Some(active_session_id.clone());
+            state.working_dir = Some(active_identity.working_dir.clone());
+            state.project_id = Some(active_identity.project_id.clone());
+            state.project_root = Some(active_identity.project_root.clone());
+            state.worktree = Some(active_identity.worktree.clone());
+        }
+        self.sync_runtime_project_context(&active_identity).await;
+        self.remember_project_identity(&active_identity, Some(active_session_id.as_str()))
+            .await;
 
         let mut orch = self.orchestrator.lock().await;
         *orch = Some(orchestrator);
@@ -395,9 +791,16 @@ impl AgentModeManager {
         state.enabled = false;
         state.session_id = None;
         state.active_task_id = None;
+        state.working_dir = None;
+        state.project_id = None;
+        state.project_root = None;
+        state.worktree = None;
 
         let mut orch = self.orchestrator.lock().await;
         *orch = None;
+
+        let mut runtime_working_dir = self.runtime_working_dir.lock().await;
+        *runtime_working_dir = None;
 
         info!("Agent mode disabled");
     }
@@ -440,7 +843,469 @@ impl AgentModeManager {
             working_memory: self.build_working_memory(active_task_id).await,
         };
 
-        orchestrator.process(request).await
+        let response = orchestrator.process(request).await?;
+        let identity = {
+            let state = self.state.lock().await;
+            let Some(project_id) = state.project_id.clone() else {
+                return Ok(response);
+            };
+            let Some(project_root) = state.project_root.clone() else {
+                return Ok(response);
+            };
+            let Some(working_dir) = state.working_dir.clone() else {
+                return Ok(response);
+            };
+            let Some(worktree) = state.worktree.clone() else {
+                return Ok(response);
+            };
+            ndc_core::ProjectIdentity {
+                project_id,
+                project_root,
+                working_dir,
+                worktree,
+            }
+        };
+        self.remember_project_identity(&identity, Some(response.session_id.as_str()))
+            .await;
+        self.persist_session_snapshot(response.session_id.as_str())
+            .await;
+        Ok(response)
+    }
+
+    /// Start a new project-scoped session within current project context.
+    pub async fn start_new_session(&self) -> Result<String, AgentError> {
+        let identity_hint = {
+            let state = self.state.lock().await;
+            if !state.enabled {
+                return Err(AgentError::InvalidRequest(
+                    "Agent mode is not enabled".to_string(),
+                ));
+            }
+            state
+                .working_dir
+                .clone()
+                .or_else(|| state.project_root.clone())
+        };
+        let identity = ndc_core::ProjectIdentity::detect(identity_hint);
+        let next_session_id = build_project_scoped_session_id(identity.project_id.as_str());
+
+        let mut state = self.state.lock().await;
+        if !state.enabled {
+            return Err(AgentError::InvalidRequest(
+                "Agent mode is not enabled".to_string(),
+            ));
+        }
+        state.session_id = Some(next_session_id.clone());
+        state.working_dir = Some(identity.working_dir.clone());
+        state.project_id = Some(identity.project_id.clone());
+        state.project_root = Some(identity.project_root.clone());
+        state.worktree = Some(identity.worktree.clone());
+        drop(state);
+        self.sync_runtime_project_context(&identity).await;
+        self.remember_project_identity(&identity, Some(next_session_id.as_str()))
+            .await;
+        Ok(next_session_id)
+    }
+
+    /// Resume latest session in current project.
+    pub async fn resume_latest_project_session(&self) -> Result<String, AgentError> {
+        let (current_project_id, fallback_hint) = {
+            let state = self.state.lock().await;
+            if !state.enabled {
+                return Err(AgentError::InvalidRequest(
+                    "Agent mode is not enabled".to_string(),
+                ));
+            }
+            (
+                state.project_id.clone(),
+                state
+                    .working_dir
+                    .clone()
+                    .or_else(|| state.project_root.clone()),
+            )
+        };
+        let current_identity = ndc_core::ProjectIdentity::detect(fallback_hint);
+        let project_id = current_project_id.unwrap_or_else(|| current_identity.project_id.clone());
+
+        let orchestrator = {
+            let orch = self.orchestrator.lock().await;
+            orch.as_ref().cloned().ok_or_else(|| {
+                AgentError::InvalidRequest("Orchestrator not initialized".to_string())
+            })?
+        };
+
+        let session_id = orchestrator
+            .latest_session_id_for_project(project_id.as_str())
+            .await
+            .ok_or_else(|| {
+                AgentError::SessionNotFound(format!(
+                    "No session found for project '{}'",
+                    project_id
+                ))
+            })?;
+
+        if let Some(identity) = orchestrator
+            .session_project_identity(session_id.as_str())
+            .await
+        {
+            let identity_for_runtime = identity.clone();
+            let mut state = self.state.lock().await;
+            if !state.enabled {
+                return Err(AgentError::InvalidRequest(
+                    "Agent mode is not enabled".to_string(),
+                ));
+            }
+            state.session_id = Some(session_id.clone());
+            state.project_id = Some(identity.project_id);
+            state.project_root = Some(identity.project_root);
+            state.working_dir = Some(identity.working_dir);
+            state.worktree = Some(identity.worktree);
+            drop(state);
+            self.sync_runtime_project_context(&identity_for_runtime)
+                .await;
+            self.remember_project_identity(&identity_for_runtime, Some(session_id.as_str()))
+                .await;
+        }
+
+        Ok(session_id)
+    }
+
+    /// Use a specific session id, with optional explicit cross-project override.
+    pub async fn use_session(
+        &self,
+        session_id: &str,
+        allow_cross_project_session: bool,
+    ) -> Result<String, AgentError> {
+        let (current_project_id, fallback_hint) = {
+            let state = self.state.lock().await;
+            if !state.enabled {
+                return Err(AgentError::InvalidRequest(
+                    "Agent mode is not enabled".to_string(),
+                ));
+            }
+            (
+                state.project_id.clone(),
+                state
+                    .working_dir
+                    .clone()
+                    .or_else(|| state.project_root.clone()),
+            )
+        };
+        let current_identity = ndc_core::ProjectIdentity::detect(fallback_hint);
+        let active_project_id =
+            current_project_id.unwrap_or_else(|| current_identity.project_id.clone());
+
+        let orchestrator = {
+            let orch = self.orchestrator.lock().await;
+            orch.as_ref().cloned().ok_or_else(|| {
+                AgentError::InvalidRequest("Orchestrator not initialized".to_string())
+            })?
+        };
+        let target_identity = orchestrator
+            .session_project_identity(session_id)
+            .await
+            .ok_or_else(|| {
+                AgentError::SessionNotFound(format!("Session '{}' not found", session_id))
+            })?;
+
+        let cross_project = target_identity.project_id != active_project_id;
+        if cross_project && !allow_cross_project_session {
+            return Err(AgentError::InvalidRequest(format!(
+                "session '{}' belongs to project '{}', current project is '{}'; pass --allow-cross-project-session to override",
+                session_id, target_identity.project_id, active_project_id
+            )));
+        }
+
+        let mut state = self.state.lock().await;
+        if !state.enabled {
+            return Err(AgentError::InvalidRequest(
+                "Agent mode is not enabled".to_string(),
+            ));
+        }
+        state.session_id = Some(session_id.to_string());
+        state.project_id = Some(target_identity.project_id.clone());
+        state.project_root = Some(target_identity.project_root.clone());
+        state.working_dir = Some(target_identity.working_dir.clone());
+        state.worktree = Some(target_identity.worktree.clone());
+        drop(state);
+        self.sync_runtime_project_context(&target_identity).await;
+        self.remember_project_identity(&target_identity, Some(session_id))
+            .await;
+
+        Ok(session_id.to_string())
+    }
+
+    /// Discover nearby projects for interactive switching.
+    pub async fn discover_projects(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<AgentProjectCandidate>, AgentError> {
+        let (current_working_dir, current_project_root) = {
+            let state = self.state.lock().await;
+            if !state.enabled {
+                return Err(AgentError::InvalidRequest(
+                    "Agent mode is not enabled".to_string(),
+                ));
+            }
+            (state.working_dir.clone(), state.project_root.clone())
+        };
+        let current_identity_hint = current_project_root
+            .clone()
+            .or_else(|| current_working_dir.clone());
+
+        let mut seed_dirs = self.persisted_project_roots(limit.saturating_mul(2)).await;
+        if let Some(path) = current_working_dir {
+            seed_dirs.push(path);
+        }
+        if let Some(path) = current_project_root {
+            seed_dirs.push(path);
+        }
+        if let Ok(cwd) = std::env::current_dir() {
+            seed_dirs.push(cwd);
+        }
+        if seed_dirs.is_empty() {
+            seed_dirs.push(PathBuf::from("."));
+        }
+
+        let roots = discover_project_directories(seed_dirs.as_slice(), limit.saturating_mul(4));
+        let mut seen = BTreeSet::<String>::new();
+        let mut candidates = Vec::<AgentProjectCandidate>::new();
+        if let Some(path) = current_identity_hint {
+            let identity = ndc_core::ProjectIdentity::detect(Some(path));
+            let key = format!(
+                "{}::{}",
+                identity.project_id,
+                identity.project_root.display()
+            );
+            if seen.insert(key) {
+                candidates.push(AgentProjectCandidate {
+                    project_id: identity.project_id,
+                    project_root: identity.project_root,
+                    working_dir: identity.working_dir,
+                    worktree: identity.worktree,
+                });
+            }
+        }
+        for root in roots {
+            let identity = ndc_core::ProjectIdentity::detect(Some(root));
+            let key = format!(
+                "{}::{}",
+                identity.project_id,
+                identity.project_root.display()
+            );
+            if !seen.insert(key) {
+                continue;
+            }
+            candidates.push(AgentProjectCandidate {
+                project_id: identity.project_id,
+                project_root: identity.project_root,
+                working_dir: identity.working_dir,
+                worktree: identity.worktree,
+            });
+            if candidates.len() >= limit.max(1) {
+                break;
+            }
+        }
+        Ok(candidates)
+    }
+
+    /// Switch to a project context using a directory.
+    pub async fn switch_project_context(
+        &self,
+        directory: PathBuf,
+    ) -> Result<ProjectSwitchOutcome, AgentError> {
+        {
+            let state = self.state.lock().await;
+            if !state.enabled {
+                return Err(AgentError::InvalidRequest(
+                    "Agent mode is not enabled".to_string(),
+                ));
+            }
+        }
+
+        let directory = if directory.is_absolute() {
+            directory
+        } else {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(directory)
+        };
+        let directory = canonicalize_existing_dir(directory.as_path()).ok_or_else(|| {
+            AgentError::InvalidRequest(format!(
+                "project directory not found or not a directory: {}",
+                directory.display()
+            ))
+        })?;
+        let identity = ndc_core::ProjectIdentity::detect(Some(directory));
+
+        let orchestrator = {
+            let orch = self.orchestrator.lock().await;
+            orch.as_ref().cloned().ok_or_else(|| {
+                AgentError::InvalidRequest("Orchestrator not initialized".to_string())
+            })?
+        };
+        let latest_session = orchestrator
+            .latest_session_id_for_project(identity.project_id.as_str())
+            .await;
+        let session_id = latest_session
+            .clone()
+            .unwrap_or_else(|| build_project_scoped_session_id(identity.project_id.as_str()));
+
+        let mut state = self.state.lock().await;
+        if !state.enabled {
+            return Err(AgentError::InvalidRequest(
+                "Agent mode is not enabled".to_string(),
+            ));
+        }
+        state.active_task_id = None;
+        state.session_id = Some(session_id.clone());
+        state.project_id = Some(identity.project_id.clone());
+        state.project_root = Some(identity.project_root.clone());
+        state.working_dir = Some(identity.working_dir.clone());
+        state.worktree = Some(identity.worktree.clone());
+        drop(state);
+        self.sync_runtime_project_context(&identity).await;
+        self.remember_project_identity(&identity, Some(session_id.as_str()))
+            .await;
+
+        Ok(ProjectSwitchOutcome {
+            project_id: identity.project_id,
+            project_root: identity.project_root,
+            working_dir: identity.working_dir,
+            worktree: identity.worktree,
+            session_id,
+            resumed_existing_session: latest_session.is_some(),
+        })
+    }
+
+    /// Return known project ids from in-memory session index.
+    pub async fn known_project_ids(&self) -> Result<Vec<String>, AgentError> {
+        let orchestrator = {
+            let orch = self.orchestrator.lock().await;
+            orch.as_ref().cloned().ok_or_else(|| {
+                AgentError::InvalidRequest("Orchestrator not initialized".to_string())
+            })?
+        };
+        let mut ids = orchestrator
+            .known_project_ids()
+            .await
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let persisted_ids = {
+            let store = self.project_index.lock().await;
+            store.known_project_ids()
+        };
+        ids.extend(persisted_ids);
+        Ok(ids.into_iter().collect())
+    }
+
+    /// Return recent session ids for a project (defaults to current project).
+    pub async fn list_project_session_ids(
+        &self,
+        project_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<String>, AgentError> {
+        let fallback_project_id = {
+            let state = self.state.lock().await;
+            if !state.enabled {
+                return Err(AgentError::InvalidRequest(
+                    "Agent mode is not enabled".to_string(),
+                ));
+            }
+            state.project_id.clone()
+        };
+        let project_id = project_id
+            .map(|value| value.to_string())
+            .or(fallback_project_id)
+            .ok_or_else(|| AgentError::InvalidRequest("No current project".to_string()))?;
+
+        let orchestrator = {
+            let orch = self.orchestrator.lock().await;
+            orch.as_ref().cloned().ok_or_else(|| {
+                AgentError::InvalidRequest("Orchestrator not initialized".to_string())
+            })?
+        };
+        Ok(orchestrator
+            .session_ids_for_project(project_id.as_str(), Some(limit.max(1)))
+            .await)
+    }
+
+    async fn persisted_project_roots(&self, limit: usize) -> Vec<PathBuf> {
+        let store = self.project_index.lock().await;
+        store.known_project_roots(limit)
+    }
+
+    async fn hydrate_orchestrator_sessions(&self, orchestrator: &AgentOrchestrator) {
+        let mut sessions = {
+            let store = self.session_archive.lock().await;
+            store.all_sessions()
+        };
+        if sessions.is_empty() {
+            return;
+        }
+        // Archive is stored newest-first by last_seen; hydrate oldest->newest so
+        // project latest-session cursor lands on the most recently active session.
+        sessions.reverse();
+        orchestrator.hydrate_sessions(sessions).await;
+    }
+
+    async fn persist_session_snapshot(&self, session_id: &str) {
+        let orchestrator = {
+            let orch = self.orchestrator.lock().await;
+            orch.as_ref().cloned()
+        };
+        let Some(orchestrator) = orchestrator else {
+            return;
+        };
+        let Some(session) = orchestrator.session_snapshot(session_id).await else {
+            return;
+        };
+        let mut store = self.session_archive.lock().await;
+        store.upsert(&session);
+        if let Err(err) = store.save() {
+            debug!(
+                error = %err,
+                path = %store.path.display(),
+                "failed to persist session archive"
+            );
+        }
+    }
+
+    async fn remember_project_identity(
+        &self,
+        identity: &ndc_core::ProjectIdentity,
+        session_id: Option<&str>,
+    ) {
+        let mut store = self.project_index.lock().await;
+        store.upsert(identity, session_id);
+        if let Err(err) = store.save() {
+            debug!(
+                error = %err,
+                path = %store.path.display(),
+                "failed to persist project index"
+            );
+        }
+    }
+
+    async fn sync_runtime_project_context(&self, identity: &ndc_core::ProjectIdentity) {
+        let mut working_dir = self.runtime_working_dir.lock().await;
+        *working_dir = Some(identity.working_dir.clone());
+        drop(working_dir);
+        Self::apply_runtime_project_environment(identity);
+    }
+
+    fn apply_runtime_project_environment(identity: &ndc_core::ProjectIdentity) {
+        if cfg!(test) {
+            return;
+        }
+        std::env::set_var("NDC_PROJECT_ROOT", &identity.project_root);
+        if let Err(err) = std::env::set_current_dir(&identity.working_dir) {
+            debug!(
+                error = %err,
+                working_dir = %identity.working_dir.display(),
+                "failed to update process current directory for project switch"
+            );
+        }
     }
 
     /// 获取当前会话的执行时间线（用于 REPL /timeline 重放）
@@ -700,6 +1565,9 @@ impl AgentModeManager {
             model: state.config.model.clone(),
             session_id: state.session_id.clone(),
             active_task_id: state.active_task_id,
+            project_id: state.project_id.clone(),
+            project_root: state.project_root.clone(),
+            worktree: state.worktree.clone(),
         }
     }
 
@@ -866,9 +1734,10 @@ impl AgentModeManager {
                 let provider = OpenAiProvider::new(config, token_counter);
                 Ok(Arc::new(provider))
             }
-            _ => Err(AgentError::InvalidRequest(
-                format!("Provider '{}' is not supported. Supported: openai, anthropic, minimax, openrouter, ollama", provider_name)
-            ))
+            _ => Err(AgentError::InvalidRequest(format!(
+                "Provider '{}' is not supported. Supported: openai, anthropic, minimax, openrouter, ollama",
+                provider_name
+            ))),
         }
     }
 }
@@ -882,22 +1751,46 @@ pub struct AgentModeStatus {
     pub model: String,
     pub session_id: Option<String>,
     pub active_task_id: Option<TaskId>,
+    pub project_id: Option<String>,
+    pub project_root: Option<PathBuf>,
+    pub worktree: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AgentProjectCandidate {
+    pub project_id: String,
+    pub project_root: PathBuf,
+    pub working_dir: PathBuf,
+    pub worktree: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProjectSwitchOutcome {
+    pub project_id: String,
+    pub project_root: PathBuf,
+    pub working_dir: PathBuf,
+    pub worktree: PathBuf,
+    pub session_id: String,
+    pub resumed_existing_session: bool,
 }
 
 /// REPL Tool Executor - 桥接 Agent Orchestrator 和 Tool Registry
 pub struct ReplToolExecutor {
     tool_registry: Arc<ToolRegistry>,
     permissions: HashMap<String, PermissionRule>,
+    runtime_working_dir: Arc<Mutex<Option<PathBuf>>>,
 }
 
 impl ReplToolExecutor {
     pub fn new(
         tool_registry: Arc<ToolRegistry>,
         permissions: HashMap<String, PermissionRule>,
+        runtime_working_dir: Arc<Mutex<Option<PathBuf>>>,
     ) -> Self {
         Self {
             tool_registry,
             permissions,
+            runtime_working_dir,
         }
     }
 
@@ -997,6 +1890,13 @@ impl ReplToolExecutor {
             return Ok(true);
         }
 
+        if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+            return Err(AgentError::PermissionDenied(format!(
+                "non_interactive confirmation required: {}; set NDC_AUTO_APPROVE_TOOLS=1 for CI/tests or configure explicit allow policy",
+                description
+            )));
+        }
+
         tokio::task::spawn_blocking(move || -> Result<bool, String> {
             print!("\n[Permission] {}. Allow? [y/N]: ", description);
             io::stdout().flush().map_err(|e| e.to_string())?;
@@ -1011,6 +1911,80 @@ impl ReplToolExecutor {
         .map_err(|e| AgentError::PermissionDenied(format!("Permission prompt failed: {}", e)))?
         .map_err(AgentError::PermissionDenied)
     }
+
+    fn map_tool_error(err: ToolError) -> AgentError {
+        match err {
+            ToolError::PermissionDenied(message) => AgentError::PermissionDenied(message),
+            other => AgentError::ToolError(format!("Tool execution failed: {}", other)),
+        }
+    }
+
+    async fn inject_runtime_working_dir(&self, tool_name: &str, params: &mut serde_json::Value) {
+        if !matches!(tool_name, "shell" | "fs") {
+            return;
+        }
+        let Some(path) = self.runtime_working_dir.lock().await.clone() else {
+            return;
+        };
+        let Some(obj) = params.as_object_mut() else {
+            return;
+        };
+        if obj.contains_key("working_dir") {
+            return;
+        }
+        obj.insert(
+            "working_dir".to_string(),
+            serde_json::Value::String(path.to_string_lossy().to_string()),
+        );
+    }
+
+    async fn execute_tool_with_runtime_confirmation(
+        &self,
+        tool: Arc<dyn ndc_runtime::tools::Tool>,
+        params: &serde_json::Value,
+        description: &str,
+    ) -> Result<ndc_runtime::tools::ToolResult, AgentError> {
+        let mut approved_permissions = std::collections::BTreeSet::<String>::new();
+
+        for _attempt in 0..4 {
+            let run = async { tool.execute(params).await };
+            let execute_result = if approved_permissions.is_empty() {
+                run.await
+            } else {
+                let overrides = approved_permissions.iter().cloned().collect::<Vec<_>>();
+                with_security_overrides(overrides.as_slice(), run).await
+            };
+
+            match execute_result {
+                Ok(result) => return Ok(result),
+                Err(ToolError::PermissionDenied(message)) => {
+                    let Some(permission) = extract_confirmation_permission(message.as_str()) else {
+                        return Err(AgentError::PermissionDenied(message));
+                    };
+                    if approved_permissions.contains(permission) {
+                        return Err(AgentError::PermissionDenied(message));
+                    }
+
+                    let allowed = self
+                        .confirm_operation(format!("{} [{}]", description, message))
+                        .await?;
+                    if !allowed {
+                        return Err(AgentError::PermissionDenied(format!(
+                            "permission_rejected: {}",
+                            message
+                        )));
+                    }
+                    println!("[Permission] approved {} (single tool call)", permission);
+                    approved_permissions.insert(permission.to_string());
+                }
+                Err(other) => return Err(Self::map_tool_error(other)),
+            }
+        }
+
+        Err(AgentError::PermissionDenied(
+            "Permission confirmation loop exceeded retry limit".to_string(),
+        ))
+    }
 }
 
 #[async_trait::async_trait]
@@ -1019,8 +1993,9 @@ impl ToolExecutor for ReplToolExecutor {
         debug!(tool = %name, args = %arguments, "Executing tool via REPL ToolExecutor");
 
         // 解析参数
-        let params: serde_json::Value = serde_json::from_str(arguments)
+        let mut params: serde_json::Value = serde_json::from_str(arguments)
             .map_err(|e| AgentError::ToolError(format!("Invalid arguments: {}", e)))?;
+        self.inject_runtime_working_dir(name, &mut params).await;
 
         let (permission_key, description) = self.classify_permission(name, &params);
         match self.resolve_permission_rule(&permission_key) {
@@ -1046,16 +2021,46 @@ impl ToolExecutor for ReplToolExecutor {
         let tool = self
             .tool_registry
             .get(name)
-            .ok_or_else(|| AgentError::ToolError(format!("Tool '{}' not found", name)))?;
+            .ok_or_else(|| AgentError::ToolError(format!("Tool '{}' not found", name)))?
+            .clone();
 
         // 执行工具 (Tool::execute 只需要一个参数)
-        let result = tool
-            .execute(&params)
-            .await
-            .map_err(|e| AgentError::ToolError(format!("Tool execution failed: {}", e)))?;
+        let result = tool.execute(&params).await.map_err(Self::map_tool_error)?;
 
         if result.success {
             Ok(result.output)
+        } else {
+            Err(AgentError::ToolError(
+                result.error.unwrap_or_else(|| "Unknown error".to_string()),
+            ))
+        }
+    }
+
+    async fn confirm_and_retry_permission(
+        &self,
+        name: &str,
+        arguments: &str,
+        permission_message: &str,
+    ) -> Result<Option<String>, AgentError> {
+        if extract_confirmation_permission(permission_message).is_none() {
+            return Ok(None);
+        }
+
+        let mut params: serde_json::Value = serde_json::from_str(arguments)
+            .map_err(|e| AgentError::ToolError(format!("Invalid arguments: {}", e)))?;
+        self.inject_runtime_working_dir(name, &mut params).await;
+        let (_, description) = self.classify_permission(name, &params);
+        let tool = self
+            .tool_registry
+            .get(name)
+            .ok_or_else(|| AgentError::ToolError(format!("Tool '{}' not found", name)))?
+            .clone();
+
+        let result = self
+            .execute_tool_with_runtime_confirmation(tool, &params, description.as_str())
+            .await?;
+        if result.success {
+            Ok(Some(result.output))
         } else {
             Err(AgentError::ToolError(
                 result.error.unwrap_or_else(|| "Unknown error".to_string()),
@@ -1111,6 +2116,12 @@ pub fn show_agent_status(status: AgentModeStatus) {
             println!(
                 "│  Session: {}                                                   │",
                 sid
+            );
+        }
+        if let Some(pid) = &status.project_id {
+            println!(
+                "│  Project: {}                                                   │",
+                pid
             );
         }
         if let Some(tid) = &status.active_task_id {
@@ -1184,12 +2195,21 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use ndc_core::{
-        Action, AgentRole, GateStrategy, QualityCheck, QualityCheckType, QualityGate, Task,
+        Action, AgentExecutionEvent, AgentExecutionEventKind, AgentRole, GateStrategy,
+        QualityCheck, QualityCheckType, QualityGate, Task,
     };
     use ndc_runtime::tools::{Tool, ToolError, ToolMetadata, ToolResult};
     use ndc_runtime::{create_default_tool_registry_with_storage, ExecutionContext, Executor};
     use std::collections::HashMap;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex, OnceLock};
+    use tempfile::TempDir;
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
 
     #[test]
     fn test_agent_mode_config_default() {
@@ -1257,6 +2277,346 @@ mod tests {
             rx.try_recv(),
             Err(tokio::sync::broadcast::error::TryRecvError::Empty)
         ));
+    }
+
+    #[tokio::test]
+    async fn test_start_new_session_rotates_session_id() {
+        let context = ExecutionContext::default();
+        let storage = context.storage.clone();
+        let executor = Arc::new(Executor::new(context));
+        let tool_registry = Arc::new(create_default_tool_registry_with_storage(storage));
+        let manager = AgentModeManager::new(executor, tool_registry);
+
+        manager.enable(AgentModeConfig::default()).await.unwrap();
+        let before = manager.status().await.session_id.unwrap_or_default();
+        assert!(!before.is_empty());
+
+        let next = manager.start_new_session().await.unwrap();
+        let after = manager.status().await.session_id.unwrap_or_default();
+        assert_eq!(next, after);
+        assert_ne!(before, after);
+    }
+
+    #[tokio::test]
+    async fn test_resume_latest_project_session_without_history_returns_not_found() {
+        let context = ExecutionContext::default();
+        let storage = context.storage.clone();
+        let executor = Arc::new(Executor::new(context));
+        let tool_registry = Arc::new(create_default_tool_registry_with_storage(storage));
+        let manager = AgentModeManager::new(executor, tool_registry);
+
+        manager.enable(AgentModeConfig::default()).await.unwrap();
+        let result = manager.resume_latest_project_session().await;
+        assert!(matches!(result, Err(AgentError::SessionNotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn test_use_session_unknown_returns_not_found() {
+        let context = ExecutionContext::default();
+        let storage = context.storage.clone();
+        let executor = Arc::new(Executor::new(context));
+        let tool_registry = Arc::new(create_default_tool_registry_with_storage(storage));
+        let manager = AgentModeManager::new(executor, tool_registry);
+
+        manager.enable(AgentModeConfig::default()).await.unwrap();
+        let result = manager.use_session("missing-session", false).await;
+        assert!(matches!(result, Err(AgentError::SessionNotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn test_switch_project_context_updates_status_and_discovery() {
+        let context = ExecutionContext::default();
+        let storage = context.storage.clone();
+        let executor = Arc::new(Executor::new(context));
+        let tool_registry = Arc::new(create_default_tool_registry_with_storage(storage));
+        let manager = AgentModeManager::new(executor, tool_registry);
+
+        manager.enable(AgentModeConfig::default()).await.unwrap();
+
+        let temp = TempDir::new().expect("temp dir");
+        std::fs::write(
+            temp.path().join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("write marker");
+        let expected_root = std::fs::canonicalize(temp.path()).expect("canonical");
+
+        let outcome = manager
+            .switch_project_context(temp.path().to_path_buf())
+            .await
+            .expect("switch project");
+        assert_eq!(outcome.project_root, expected_root);
+
+        let status = manager.status().await;
+        assert_eq!(status.project_root.as_ref(), Some(&expected_root));
+        assert_eq!(status.session_id, Some(outcome.session_id.clone()));
+
+        let discovered = manager.discover_projects(20).await.expect("discover");
+        assert!(discovered
+            .iter()
+            .any(|candidate| candidate.project_root == expected_root));
+
+        let sessions = manager
+            .list_project_session_ids(None, 10)
+            .await
+            .expect("list sessions");
+        assert!(sessions.is_empty());
+    }
+
+    #[test]
+    fn test_project_index_store_roundtrip() {
+        let _guard = env_lock();
+        let temp = TempDir::new().expect("temp dir");
+        let index_path = temp.path().join("project_index.json");
+        std::env::set_var(
+            "NDC_PROJECT_INDEX_FILE",
+            index_path.to_string_lossy().to_string(),
+        );
+
+        let project = temp.path().join("demo");
+        std::fs::create_dir_all(project.as_path()).expect("create project dir");
+        std::fs::write(
+            project.join("Cargo.toml"),
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n",
+        )
+        .expect("write marker");
+        let identity = ndc_core::ProjectIdentity::detect(Some(project.clone()));
+
+        let mut store = ProjectIndexStore::load_default();
+        store.upsert(&identity, Some("agent-demo-session"));
+        store.save().expect("save index");
+
+        let reloaded = ProjectIndexStore::load_default();
+        let ids = reloaded.known_project_ids();
+        assert!(ids.contains(&identity.project_id));
+        let roots = reloaded.known_project_roots(10);
+        assert!(roots.contains(&identity.project_root));
+
+        std::env::remove_var("NDC_PROJECT_INDEX_FILE");
+    }
+
+    #[test]
+    fn test_session_archive_store_roundtrip() {
+        let _guard = env_lock();
+        let temp = TempDir::new().expect("temp dir");
+        let archive_path = temp.path().join("session_archive.json");
+        std::env::set_var(
+            "NDC_SESSION_ARCHIVE_FILE",
+            archive_path.to_string_lossy().to_string(),
+        );
+
+        let project = temp.path().join("demo");
+        std::fs::create_dir_all(project.as_path()).expect("create project dir");
+        std::fs::write(
+            project.join("Cargo.toml"),
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n",
+        )
+        .expect("write marker");
+        let identity = ndc_core::ProjectIdentity::detect(Some(project.clone()));
+
+        let mut session = ndc_core::AgentSession::new_with_project_identity(
+            "agent-demo-session".to_string(),
+            identity,
+        );
+        session.add_execution_event(AgentExecutionEvent {
+            kind: AgentExecutionEventKind::Text,
+            timestamp: chrono::Utc::now(),
+            message: "persisted timeline event".to_string(),
+            round: 1,
+            tool_name: None,
+            tool_call_id: None,
+            duration_ms: Some(7),
+            is_error: false,
+            workflow_stage: None,
+            workflow_detail: None,
+            workflow_stage_index: None,
+            workflow_stage_total: None,
+        });
+
+        let mut store = SessionArchiveStore::load_default();
+        store.upsert(&session);
+        store.save().expect("save archive");
+
+        let reloaded = SessionArchiveStore::load_default();
+        let sessions = reloaded.all_sessions();
+        let restored = sessions
+            .iter()
+            .find(|entry| entry.id == "agent-demo-session")
+            .expect("restored session");
+        assert_eq!(restored.project_id, session.project_id);
+        assert_eq!(restored.execution_events.len(), 1);
+        assert_eq!(
+            restored.execution_events[0].message,
+            "persisted timeline event"
+        );
+
+        std::env::remove_var("NDC_SESSION_ARCHIVE_FILE");
+    }
+
+    #[tokio::test]
+    async fn test_discover_projects_includes_persisted_index_entries() {
+        let _guard = env_lock();
+        let temp = TempDir::new().expect("temp dir");
+        let index_path = temp.path().join("project_index.json");
+        std::env::set_var(
+            "NDC_PROJECT_INDEX_FILE",
+            index_path.to_string_lossy().to_string(),
+        );
+
+        let project_a = temp.path().join("project-a");
+        let project_b = temp.path().join("project-b");
+        std::fs::create_dir_all(project_a.as_path()).expect("create project a");
+        std::fs::create_dir_all(project_b.as_path()).expect("create project b");
+        std::fs::write(
+            project_a.join("Cargo.toml"),
+            "[package]\nname=\"project-a\"\nversion=\"0.1.0\"\n",
+        )
+        .expect("write marker a");
+        std::fs::write(project_b.join("package.json"), "{\"name\":\"project-b\"}")
+            .expect("write marker b");
+
+        let identity_a = ndc_core::ProjectIdentity::detect(Some(project_a));
+        let identity_b = ndc_core::ProjectIdentity::detect(Some(project_b));
+        {
+            let mut store = ProjectIndexStore::load_default();
+            store.upsert(&identity_a, None);
+            store.upsert(&identity_b, None);
+            store.save().expect("save seeded index");
+        }
+
+        let context = ExecutionContext::default();
+        let storage = context.storage.clone();
+        let executor = Arc::new(Executor::new(context));
+        let tool_registry = Arc::new(create_default_tool_registry_with_storage(storage));
+        let manager = AgentModeManager::new(executor, tool_registry);
+        let known_roots = {
+            let store = manager.project_index.lock().await;
+            store.known_project_roots(20)
+        };
+        assert!(
+            known_roots.contains(&identity_a.project_root),
+            "persisted store missing identity_a: {:?}",
+            known_roots
+        );
+        assert!(
+            known_roots.contains(&identity_b.project_root),
+            "persisted store missing identity_b: {:?}",
+            known_roots
+        );
+        manager.enable(AgentModeConfig::default()).await.unwrap();
+
+        let discovered = manager.discover_projects(20).await.expect("discover");
+        let discovered_roots = discovered
+            .iter()
+            .map(|candidate| candidate.project_root.display().to_string())
+            .collect::<Vec<_>>();
+        assert!(
+            discovered
+                .iter()
+                .any(|candidate| candidate.project_root == identity_a.project_root),
+            "missing project-a root: {} in {:?}",
+            identity_a.project_root.display(),
+            discovered_roots
+        );
+        assert!(
+            discovered
+                .iter()
+                .any(|candidate| candidate.project_root == identity_b.project_root),
+            "missing project-b root: {} in {:?}",
+            identity_b.project_root.display(),
+            discovered_roots
+        );
+
+        let known_ids = manager.known_project_ids().await.expect("known projects");
+        assert!(known_ids.contains(&identity_a.project_id));
+        assert!(known_ids.contains(&identity_b.project_id));
+
+        std::env::remove_var("NDC_PROJECT_INDEX_FILE");
+    }
+
+    #[tokio::test]
+    async fn test_enable_restores_session_from_archive_and_timeline() {
+        let _guard = env_lock();
+        let temp = TempDir::new().expect("temp dir");
+        let archive_path = temp.path().join("session_archive.json");
+        let index_path = temp.path().join("project_index.json");
+        std::env::set_var(
+            "NDC_SESSION_ARCHIVE_FILE",
+            archive_path.to_string_lossy().to_string(),
+        );
+        std::env::set_var(
+            "NDC_PROJECT_INDEX_FILE",
+            index_path.to_string_lossy().to_string(),
+        );
+
+        let project_root = temp.path().join("project");
+        std::fs::create_dir_all(project_root.as_path()).expect("create project");
+        std::fs::write(
+            project_root.join("Cargo.toml"),
+            "[package]\nname=\"project\"\nversion=\"0.1.0\"\n",
+        )
+        .expect("write marker");
+        let identity = ndc_core::ProjectIdentity::detect(Some(project_root.clone()));
+
+        let mut context_a = ExecutionContext::default();
+        context_a.project_root = project_root.clone();
+        let storage_a = context_a.storage.clone();
+        let executor_a = Arc::new(Executor::new(context_a));
+        let tool_registry_a = Arc::new(create_default_tool_registry_with_storage(storage_a));
+        let manager_a = AgentModeManager::new(executor_a, tool_registry_a);
+        manager_a.enable(AgentModeConfig::default()).await.unwrap();
+
+        let archived_session_id = "agent-restored-session";
+        let mut archived_session = ndc_core::AgentSession::new_with_project_identity(
+            archived_session_id.to_string(),
+            identity,
+        );
+        archived_session.add_execution_event(AgentExecutionEvent {
+            kind: AgentExecutionEventKind::WorkflowStage,
+            timestamp: chrono::Utc::now(),
+            message: "workflow_stage: planning | restore".to_string(),
+            round: 1,
+            tool_name: None,
+            tool_call_id: None,
+            duration_ms: None,
+            is_error: false,
+            workflow_stage: Some(ndc_core::AgentWorkflowStage::Planning),
+            workflow_detail: Some("restore".to_string()),
+            workflow_stage_index: Some(1),
+            workflow_stage_total: Some(ndc_core::AgentWorkflowStage::TOTAL_STAGES),
+        });
+
+        {
+            let orch = manager_a.orchestrator.lock().await;
+            let orchestrator = orch.as_ref().cloned().expect("orchestrator");
+            drop(orch);
+            orchestrator
+                .upsert_session_snapshot(archived_session.clone())
+                .await;
+        }
+        manager_a
+            .persist_session_snapshot(archived_session_id)
+            .await;
+
+        let mut context_b = ExecutionContext::default();
+        context_b.project_root = project_root.clone();
+        let storage_b = context_b.storage.clone();
+        let executor_b = Arc::new(Executor::new(context_b));
+        let tool_registry_b = Arc::new(create_default_tool_registry_with_storage(storage_b));
+        let manager_b = AgentModeManager::new(executor_b, tool_registry_b);
+        manager_b.enable(AgentModeConfig::default()).await.unwrap();
+
+        let status = manager_b.status().await;
+        assert_eq!(status.session_id.as_deref(), Some(archived_session_id));
+        let timeline = manager_b
+            .session_timeline(Some(10))
+            .await
+            .expect("timeline");
+        assert_eq!(timeline.len(), 1);
+        assert_eq!(timeline[0].message, "workflow_stage: planning | restore");
+
+        std::env::remove_var("NDC_PROJECT_INDEX_FILE");
+        std::env::remove_var("NDC_SESSION_ARCHIVE_FILE");
     }
 
     #[tokio::test]
@@ -1442,6 +2802,50 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct DummyRuntimeDeniedTool;
+
+    #[async_trait]
+    impl Tool for DummyRuntimeDeniedTool {
+        fn name(&self) -> &str {
+            "write"
+        }
+
+        fn description(&self) -> &str {
+            "dummy denied write"
+        }
+
+        async fn execute(&self, _params: &serde_json::Value) -> Result<ToolResult, ToolError> {
+            Err(ToolError::PermissionDenied(
+                "external_directory requires confirmation".to_string(),
+            ))
+        }
+    }
+
+    #[derive(Debug)]
+    struct DummyRuntimeGitCommitTool;
+
+    #[async_trait]
+    impl Tool for DummyRuntimeGitCommitTool {
+        fn name(&self) -> &str {
+            "git"
+        }
+
+        fn description(&self) -> &str {
+            "dummy git commit gate"
+        }
+
+        async fn execute(&self, _params: &serde_json::Value) -> Result<ToolResult, ToolError> {
+            ndc_runtime::tools::enforce_git_operation("commit")?;
+            Ok(ToolResult {
+                success: true,
+                output: "commit-ok".to_string(),
+                error: None,
+                metadata: ToolMetadata::default(),
+            })
+        }
+    }
+
     #[tokio::test]
     async fn test_permission_deny_blocks_tool_execution() {
         let mut registry = ToolRegistry::new();
@@ -1452,7 +2856,11 @@ mod tests {
         permissions.insert("file_write".to_string(), PermissionRule::Deny);
         permissions.insert("*".to_string(), PermissionRule::Allow);
 
-        let executor = ReplToolExecutor::new(registry, permissions);
+        let executor = ReplToolExecutor::new(
+            registry,
+            permissions,
+            Arc::new(tokio::sync::Mutex::new(None)),
+        );
         let result = executor
             .execute_tool("write", r#"{"path":"/tmp/a.txt","content":"x"}"#)
             .await;
@@ -1471,12 +2879,119 @@ mod tests {
         permissions.insert("file_write".to_string(), PermissionRule::Ask);
         permissions.insert("*".to_string(), PermissionRule::Allow);
 
-        let executor = ReplToolExecutor::new(registry, permissions);
+        let executor = ReplToolExecutor::new(
+            registry,
+            permissions,
+            Arc::new(tokio::sync::Mutex::new(None)),
+        );
         let result = executor
             .execute_tool("write", r#"{"path":"/tmp/a.txt","content":"x"}"#)
             .await;
         assert!(result.is_ok());
 
         std::env::remove_var("NDC_AUTO_APPROVE_TOOLS");
+    }
+
+    #[tokio::test]
+    async fn test_runtime_permission_denied_maps_to_agent_permission_denied() {
+        let mut registry = ToolRegistry::new();
+        registry.register(DummyRuntimeDeniedTool);
+        let registry = Arc::new(registry);
+
+        let mut permissions = HashMap::new();
+        permissions.insert("file_write".to_string(), PermissionRule::Allow);
+        permissions.insert("*".to_string(), PermissionRule::Allow);
+
+        let executor = ReplToolExecutor::new(
+            registry,
+            permissions,
+            Arc::new(tokio::sync::Mutex::new(None)),
+        );
+        let result = executor
+            .execute_tool("write", r#"{"path":"/tmp/a.txt","content":"x"}"#)
+            .await;
+        assert!(matches!(result, Err(AgentError::PermissionDenied(_))));
+    }
+
+    #[tokio::test]
+    async fn test_runtime_permission_ask_can_auto_confirm_and_retry() {
+        let _guard = env_lock();
+        std::env::set_var("NDC_SECURITY_PERMISSION_ENFORCE_GATEWAY", "1");
+        std::env::set_var("NDC_SECURITY_GIT_COMMIT_ACTION", "ask");
+        std::env::set_var("NDC_AUTO_APPROVE_TOOLS", "1");
+
+        let mut registry = ToolRegistry::new();
+        registry.register(DummyRuntimeGitCommitTool);
+        let registry = Arc::new(registry);
+
+        let mut permissions = HashMap::new();
+        permissions.insert("git_commit".to_string(), PermissionRule::Allow);
+        permissions.insert("*".to_string(), PermissionRule::Allow);
+
+        let executor = ReplToolExecutor::new(
+            registry,
+            permissions,
+            Arc::new(tokio::sync::Mutex::new(None)),
+        );
+        let initial = executor
+            .execute_tool("git", r#"{"operation":"commit"}"#)
+            .await;
+        let permission_message = match initial {
+            Err(AgentError::PermissionDenied(message)) => message,
+            other => panic!(
+                "expected permission denied on first attempt, got {:?}",
+                other
+            ),
+        };
+        assert!(permission_message.starts_with("requires_confirmation permission=git_commit"));
+
+        let retry = executor
+            .confirm_and_retry_permission(
+                "git",
+                r#"{"operation":"commit"}"#,
+                permission_message.as_str(),
+            )
+            .await
+            .expect("retry result");
+        assert_eq!(retry.as_deref(), Some("commit-ok"));
+
+        std::env::remove_var("NDC_AUTO_APPROVE_TOOLS");
+        std::env::remove_var("NDC_SECURITY_GIT_COMMIT_ACTION");
+        std::env::remove_var("NDC_SECURITY_PERMISSION_ENFORCE_GATEWAY");
+    }
+
+    #[tokio::test]
+    async fn test_runtime_permission_retry_non_interactive_returns_denied() {
+        let _guard = env_lock();
+        std::env::set_var("NDC_SECURITY_PERMISSION_ENFORCE_GATEWAY", "1");
+        std::env::set_var("NDC_SECURITY_GIT_COMMIT_ACTION", "ask");
+        std::env::remove_var("NDC_AUTO_APPROVE_TOOLS");
+
+        let mut registry = ToolRegistry::new();
+        registry.register(DummyRuntimeGitCommitTool);
+        let registry = Arc::new(registry);
+
+        let mut permissions = HashMap::new();
+        permissions.insert("git_commit".to_string(), PermissionRule::Allow);
+        permissions.insert("*".to_string(), PermissionRule::Allow);
+
+        let executor = ReplToolExecutor::new(
+            registry,
+            permissions,
+            Arc::new(tokio::sync::Mutex::new(None)),
+        );
+        let result = executor
+            .confirm_and_retry_permission(
+                "git",
+                r#"{"operation":"commit"}"#,
+                "requires_confirmation permission=git_commit risk=high git commit requires confirmation",
+            )
+            .await;
+        assert!(
+            matches!(result, Err(AgentError::PermissionDenied(message)) if message.contains("non_interactive confirmation required"))
+        );
+
+        std::env::remove_var("NDC_SECURITY_GIT_COMMIT_ACTION");
+        std::env::remove_var("NDC_SECURITY_PERMISSION_ENFORCE_GATEWAY");
     }
 }

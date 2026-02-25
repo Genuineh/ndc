@@ -1,6 +1,6 @@
 # NDC TODO / Backlog
 
-> 更新时间：2026-02-25（v4）  
+> 更新时间：2026-02-25（v6）  
 > 关联文档：`docs/plan/current_plan.md`、`docs/USER_GUIDE.md`、`docs/design/p0-d-security-project-session.md`
 
 ## 看板总览
@@ -31,8 +31,8 @@
 - 关键缺口（必须补齐）：
   - `runtime::tools::permission` 尚未成为统一强制入口（当前主要依赖 REPL 层分类确认）。
   - 缺少 `external_directory`（项目外目录访问）边界判定与专门权限语义。
-  - Agent session 仅按 `session_id` 管理，缺少稳定 `project_id` 与项目级索引。
-  - `run --continue/--session` 在当前 CLI 主链未形成“按项目恢复”的可用闭环。
+  - 已有 `project_id` 与项目级索引首批实现，但尚未完成跨进程持久化索引。
+  - `run --continue/--session` 已接入同项目恢复与跨项目默认拒绝，仍需补齐 daemon/E2E 端到端回归。
 
 ### P0-D 当前执行清单
 
@@ -63,6 +63,82 @@
    - 设计章节：`3.7`、`4 (P0-D6)`、`8`
    - 更新 `docs/USER_GUIDE.md`：安全模型、权限策略、项目级 resume 规则。
    - 更新 `docs/plan/current_plan.md`：P0-D 里程碑、验收门禁与迁移说明。
+
+### P0-D 最新进展（2026-02-25）
+
+- 已完成（P0-D1 首批）：
+  - `core` 新增 `ProjectIdentity` 解析（git root commit / non-git path fingerprint）。
+  - `AgentSession` 新增项目元数据字段：`project_id/project_root/working_dir/worktree`。
+  - `orchestrator` 创建新会话时已注入项目身份。
+  - REPL 状态栏与 `/status` 已展示 `project` 标识。
+- 已完成（P0-D2 首批）：
+  - `orchestrator` 新增项目会话索引与最近会话游标（`project_sessions/project_last_root_session`）。
+  - `orchestrator` 新增 `session_project_identity` 查询接口，供 interface 做会话归属校验。
+  - `AgentModeManager` 新增会话控制 API：`start_new_session`、`resume_latest_project_session`、`use_session`。
+  - REPL 新增 `/new`、`/resume`（支持 `/resume <id> [--cross]`），并接入 hints/补全。
+  - CLI `run` 已接入 `--continue`、`--session <id>`、`--allow-cross-project-session`。
+  - 新增回归测试：跨项目会话拒绝、项目最近会话游标、REPL `/resume` 参数补全、manager 会话控制。
+- 已完成（P0-D2 补齐：daemon/gRPC 一致性）：
+  - gRPC `GetSessionTimeline/SubscribeSessionTimeline` 已接入 `AgentModeManager::use_session`，不再仅允许“当前活跃会话”。
+  - SSE `/agent/session_timeline/subscribe` 已接入同样的 session 归属校验（同项目可切换，跨项目默认拒绝）。
+  - 新增回归测试：同项目“非活跃旧 session”可被 gRPC/SSE 访问；无效 session 仍返回 `404`。
+- 已完成（P0-D3 首批：统一权限网关）：
+  - runtime 新增 `tools::security` 网关，统一处理：
+    - `external_directory` 边界判定（默认 `ask` 语义）
+    - shell 风险分级（`Critical` deny、`High` ask、`Medium` 可配置）
+    - git `commit` 默认 `ask`
+  - 已接入工具主链：`shell/fs/git/read/write/edit/list/glob/grep`（非仅 REPL UI）。
+  - 新增单测：外部目录拒绝、shell critical 拒绝、git commit ask。
+- 已完成（P0-D3 第二批：REPL 确认闭环首版）：
+  - runtime `ask` 错误改为可解析格式：`requires_confirmation permission=<...> risk=<...> ...`。
+  - 新增单次授权覆盖机制（task-local）：`with_security_overrides(...)`。
+  - `ReplToolExecutor` 收到 runtime `requires_confirmation` 后可确认并重试（非仅返回拒绝提示）。
+  - 新增回归测试：`test_runtime_permission_ask_can_auto_confirm_and_retry`。
+- 已完成（P0-D4 首批：状态栏权限可观测增强）：
+  - REPL 状态栏新增 `perm_state/perm_type/perm_risk` 字段。
+  - Permission 事件行新增结构化标签：`[state=...][type=...][risk=...]`。
+  - orchestrator 已补齐权限事件链：`permission_asked -> permission_approved/rejected -> tool_call_end`。
+  - 新增回归测试：permission 事件解析与状态切换。
+- 已完成（P0-D5 首批：gRPC/SSE 权限事件一致性回归）：
+  - 新增 `grpc` 映射/序列化回归：`permission_asked/approved/rejected` 在 `map_execution_event` 与 `execution_event_to_json` 路径保持一致。
+  - `SubscribeSessionTimeline` vs `GetSessionTimeline` replay 断言新增 `message` 字段一致性校验，避免权限事件语义在订阅回放中丢失。
+- 已完成（P0-D5 第二批：daemon 跨进程权限事件回归）：
+  - 新增回归测试：跨 manager/重启场景下，gRPC `GetSessionTimeline` 可读取持久化会话中的权限事件链（`permission_asked/approved/rejected`）。
+  - 新增回归测试：SSE `/agent/session_timeline/subscribe` 可回放同一持久化权限事件链，并保持字段语义一致。
+  - 修复 SSE 测试连接抖动：测试 HTTP 客户端新增短时重试，避免服务启动竞态导致 `ConnectionRefused` 偶发失败。
+- 已完成（P0-D6 首批：非交互通道确认策略落地）：
+  - `ReplToolExecutor` 在无 TTY 场景不再尝试 stdin 阻塞确认，返回结构化拒绝：`non_interactive confirmation required: ...`。
+  - 新增回归测试：`test_runtime_permission_retry_non_interactive_returns_denied`。
+- 已完成（P0-D1/P0-D2 第二批：REPL 项目识别与切换引导）：
+  - REPL 启动时展示当前识别项目：`project_id/project_root/session`，并提示项目导航入口。
+  - 新增 `/project` 命令族：
+    - `/project status`（当前项目上下文）
+    - `/project list`（发现附近项目并编号）
+    - `/project use <index|path>`（切换项目并绑定/恢复 session）
+    - `/project sessions [index|project-id]`（查看项目会话）
+  - 命令补全与 hints 已接入 `/project` 参数提示与用法引导。
+- 已完成（P0-D1/P0-D2 第三批：项目导引强化与快捷切换）：
+  - REPL 启动首屏补充“附近项目列表（带 index）”与“当前项目最近 session 列表”，并标记当前 active 项。
+  - TUI 项目选择器新增 active 项标识与选中项目详情，降低误切换风险。
+  - 新增 `Ctrl+P` 快捷键（可通过 `NDC_REPL_KEY_OPEN_PROJECT_PICKER` 覆盖）直接打开项目选择器。
+  - 启动引导文案补强：明确 `/project pick`、`/project use`、`/project sessions`、`/resume` 的串联路径。
+- 已完成（P0-D1/P0-D2 第四批：跨进程项目索引持久化与快速恢复）：
+  - 新增持久化项目索引：`~/.config/ndc/project_index.json`（可用 `NDC_PROJECT_INDEX_FILE` 覆盖）。
+  - `enable/process_input/switch_project_context/start_new_session/resume/use_session` 全链路写入项目索引，记录最近活跃项目与会话指针。
+  - `discover_projects` 已接入持久化索引种子，重启进程后仍可恢复“已知项目”候选（并保持当前项目优先）。
+  - `known_project_ids` 已合并内存索引 + 持久化索引，跨进程项目识别更稳定。
+  - 新增回归测试：项目索引 roundtrip、持久化索引驱动 discover/known_project_ids。
+- 已完成（P0-D1/P0-D2 第五批：跨进程会话归档与启动恢复）：
+  - 新增持久化会话归档：`~/.config/ndc/session_archive.json`（可用 `NDC_SESSION_ARCHIVE_FILE` 覆盖）。
+  - `enable` 会加载归档并 hydrate 到 orchestrator，默认恢复“当前项目最近会话”。
+  - `process_input` 成功后会将当前会话快照回写归档，包含消息与 execution timeline。
+  - 新增回归测试：会话归档 roundtrip、跨 manager 启动后自动恢复 session 与 timeline。
+- 已完成（P0-D3 补强：项目切换后的工具上下文生效）：
+  - `ReplToolExecutor` 对 `shell/fs` 注入当前项目 `working_dir`，避免“只切 UI 不切执行上下文”。
+  - `ShellTool` 新增可选 `working_dir` 参数，执行目录与安全判定目录统一。
+  - `PromptBuilder` 新增 `Project Context` 段落，向模型显式注入当前工作目录。
+- 下一步：
+  - 推进 `P0-D6`：补充“非交互通道确认策略”迁移说明与运维默认值建议。
 
 ## P0-C（已完成：Workflow-Native REPL 与实时可观测）
 
@@ -111,6 +187,10 @@
    - `ndc_task_update` 不再允许非法强制迁移；非法迁移会明确报错并保持原状态不变。
 3. 回归测试修复
    - tool 链 smoke 改为合法状态链：`preparing -> in_progress -> awaiting_verification -> completed`。
+4. 执行链与安全边界修复
+   - 修复 `Executor` 执行 intent 时误用 `task.clone()` 导致步骤结果丢失的问题（现已回写到真实 task）。
+   - 安全边界判定已支持以 `working_dir/project_root` 作为项目根提示，避免测试/多项目上下文下误判 `external_directory`。
+   - `USER_GUIDE` 已修正会话订阅语义：同项目非活跃 session 可自动切换并返回 `200`。
 
 ## P1（次高优先级）
 

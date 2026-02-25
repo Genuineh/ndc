@@ -24,6 +24,10 @@ cargo run -- run --message "请分析当前项目结构并提出改进建议"
 
 - `run --message` 会启动 Agent 并执行一次请求
 - Agent 会使用默认工具集（文件读写/搜索/Shell/Git 等）
+- 可选会话参数：
+  - `--continue`：恢复当前项目最近会话
+  - `--session <id>`：指定会话 ID
+  - `--allow-cross-project-session`：显式允许跨项目使用 `--session`（默认拒绝）
 
 ### 2.2 REPL 模式
 
@@ -40,6 +44,9 @@ cargo run -- repl
 可用命令：
 
 - `/help`
+- `/new`（在当前项目创建新会话）
+- `/resume [session-id] [--cross]`（恢复当前项目最近会话，或切换指定会话）
+- `/project [status|list|pick|use|sessions]`（项目识别/切换/会话导航）
 - `/provider`（或 `/providers`，切换供应商）
 - `/model <provider>[/<model>]`
 - `/status`
@@ -58,7 +65,7 @@ cargo run -- repl
 - `/clear`
 - `exit`
 - 输入以 `/` 开头时，Hints 面板会实时显示命令提示；按 `Tab`/`Shift+Tab` 可循环补全并遍历全部候选（提示会显示 `Selected [k/N]`）
-- 参数提示已接入（例如输入 `/provider ` 或 `/workflow ` 会显示可选参数并可直接 Tab 选择）
+- 参数提示已接入（例如输入 `/provider `、`/project `、`/workflow ` 或 `/resume ` 会显示可选参数并可直接 Tab 选择）
 
 TUI 快捷键（默认 REPL）：
 
@@ -67,6 +74,7 @@ TUI 快捷键（默认 REPL）：
 - `Ctrl+E`：切换 tool 卡片展开/折叠
 - `Ctrl+Y`：即时查看最近 thinking（不改变折叠状态）
 - `Ctrl+I`：即时查看最近 timeline
+- `Ctrl+P`：打开项目选择器（等价于 `/project pick`，TUI）
 - `Ctrl+L`：清空会话面板
 - `Up/Down`：按行滚动 Session 面板
 - `PgUp/PgDn`：按半页滚动 Session 面板
@@ -79,6 +87,9 @@ TUI 快捷键（默认 REPL）：
   - `live`：实时流开启，正在接收广播事件
   - `poll`：实时流不可用，已回退轮询
 - 状态栏会显示 `workflow=<stage>`、`workflow_progress=<percent(index/total)>`、`workflow_ms=<阶段耗时>`、`blocked=<yes|no>` 与 `tok_round/tok_session`（可通过 `/tokens hide` 隐藏）
+- 启动时会显示当前识别项目（`project_id/project_root/session`）、附近项目索引（带编号）以及当前项目最近 session 列表（带 active 标记）
+- REPL 会将“已知项目索引”持久化到 `~/.config/ndc/project_index.json`，重启后可继续在 `/project list` / `/project pick` 中看到已识别项目
+- REPL 会将会话正文与 timeline 持久化到 `~/.config/ndc/session_archive.json`，重启后会自动恢复当前项目最近会话（含 `/timeline` 回放）
 - `Esc`：退出 REPL
 - 若需回退旧行式 REPL：`NDC_REPL_LEGACY=1 ndc repl`
 - 快捷键可通过环境变量覆盖：
@@ -87,7 +98,10 @@ TUI 快捷键（默认 REPL）：
   - `NDC_REPL_KEY_TOGGLE_TOOL_CARDS`（默认 `e`）
   - `NDC_REPL_KEY_SHOW_RECENT_THINKING`（默认 `y`）
   - `NDC_REPL_KEY_SHOW_TIMELINE`（默认 `i`）
+  - `NDC_REPL_KEY_OPEN_PROJECT_PICKER`（默认 `p`）
   - `NDC_REPL_KEY_CLEAR_PANEL`（默认 `l`）
+  - `NDC_PROJECT_INDEX_FILE`（覆盖项目索引文件路径，默认 `~/.config/ndc/project_index.json`）
+  - `NDC_SESSION_ARCHIVE_FILE`（覆盖会话归档路径，默认 `~/.config/ndc/session_archive.json`）
   - `NDC_TOOL_CARDS_EXPANDED=true|false`（默认折叠）
   - `NDC_REPL_LIVE_EVENTS=true|false`（默认 `true`）
 
@@ -117,14 +131,16 @@ TUI 快捷键（默认 REPL）：
      - 事件类型：`execution_event`（正常事件）、`error`（流错误）
      - 事件数据为 JSON，字段与 gRPC `ExecutionEvent` 对齐：
        - 基础字段：`kind/timestamp/message/round/tool_name/tool_call_id/duration_ms/is_error`
-     - workflow 字段：`workflow_stage/workflow_detail`
+       - workflow 字段：`workflow_stage/workflow_detail`
        - 进度字段：`workflow_stage_index/workflow_stage_total`
-      - token 字段：`token_source/token_prompt/token_completion/token_total/token_session_prompt_total/token_session_completion_total/token_session_total`
+       - token 字段：`token_source/token_prompt/token_completion/token_total/token_session_prompt_total/token_session_completion_total/token_session_total`
      - 兼容策略：
        - 旧客户端：忽略未知字段，仍可使用基础字段正常展示。
        - 新客户端：若 `workflow_*` 或 `token_*` 为空/0，按“数据不可用”处理并回退到基础字段。
        - 服务端：保持基础字段稳定，新增字段仅做增量扩展，不影响旧协议消费。
-     - 若 `session_id` 指向当前 daemon 非活跃会话，将返回 `404`
+     - `session_id` 若属于“同项目的非活跃会话”，服务会自动切换并正常返回（`200`）
+     - `session_id` 若不存在，返回 `404`
+     - `session_id` 若跨项目且未显式允许，返回 `403`
      - `limit>0` 时会先回放历史事件，再推送增量；回放事件同样使用 `execution_event` 类型
    - 订阅接口的 `limit` 语义：
      - `limit=0`：仅订阅“从现在开始”的新事件（不回放历史）
@@ -158,6 +174,7 @@ TUI 快捷键（默认 REPL）：
 - 初次排障：`/details` 打开，`/thinking` 关闭
 - 需要理解策略：`/thinking` + `/details` 都打开
 - 复盘多轮执行：使用 `/timeline 100`
+- 跨项目协作：先 `/project list`，再 `/project use <index|path>`，最后 `/project sessions` 查看该项目会话
 
 对外订阅（gRPC + SSE）示例：
 
@@ -234,6 +251,44 @@ export NDC_MINIMAX_GROUP_ID="..."
 - REPL 已实现“事件级”实时渲染（步骤/工具/thinking/time-line 增量刷新），但尚未实现逐 token 文本流式渲染
 - gRPC/SSE 时间线订阅已支持实时推送 + 轮询补偿，但尚未接入跨进程持久事件总线
 - `crates/storage` 仍在重构中，尚未并入 workspace 主链
+- 运行时权限网关已接入工具主链（shell/fs/git/read/write/edit/list/glob/grep）；
+  REPL 通道已支持 runtime `ask` 的确认后重试；daemon/gRPC 的“确认应答闭环”仍待补齐
+
+## 6.1 运行时安全网关（P0-D3）
+
+默认策略（当 `NDC_SECURITY_PERMISSION_ENFORCE_GATEWAY` 未显式关闭时）：
+
+- `shell`：
+  - `Critical` 风险：直接拒绝
+  - `High` 风险：要求确认
+  - `Medium` 风险：可配置（默认 ask）
+- `git`：
+  - `commit` 默认 ask
+- `fs/read/write/edit/list/glob/grep`：
+  - 访问项目根目录外路径触发 `external_directory`（默认 ask）
+
+确认闭环（REPL）：
+
+- runtime `ask` 会返回结构化提示：`requires_confirmation permission=<type> risk=<level> ...`
+- `ReplToolExecutor` 会在确认后进行“单次授权重试”，无需用户重输命令
+- timeline 事件链会显示：`permission_asked -> permission_approved/rejected -> tool_call_end`
+- 状态栏会显示：`perm_state/perm_type/perm_risk`
+- Session 面板会显示结构化 Permission 行：`[state=...][type=...][risk=...]`
+
+非交互通道策略（daemon/gRPC/CI）：
+
+- 当通道不可交互（无 TTY）且命中 `ask`，不会尝试 stdin 阻塞确认
+- 会直接返回 `non_interactive confirmation required: ...`，并在 timeline 中保留权限事件链
+- 可通过 `NDC_AUTO_APPROVE_TOOLS=1`（仅测试/CI）或显式 `allow` 策略放行
+
+相关环境变量：
+
+- `NDC_SECURITY_PERMISSION_ENFORCE_GATEWAY=true|false`（默认 `true`）
+- `NDC_PROJECT_ROOT=<absolute-path>`（可选，指定项目边界根目录）
+- `NDC_SECURITY_EXTERNAL_DIRECTORY_ACTION=ask|allow|deny`（默认 `ask`）
+- `NDC_SECURITY_MEDIUM_RISK_ACTION=ask|allow|deny`（默认 `ask`）
+- `NDC_SECURITY_GIT_COMMIT_ACTION=ask|allow|deny`（默认 `ask`）
+- `NDC_SECURITY_OVERRIDE_PERMISSIONS=<comma-separated>`（调试/测试用途，通常不需要手动设置）
 
 ## 7. 建议使用流程
 
