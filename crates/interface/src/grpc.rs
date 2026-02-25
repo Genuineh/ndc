@@ -210,14 +210,8 @@ impl AgentGrpcService {
                 .map(|value| value.session_completion_total)
                 .unwrap_or(0),
             token_session_total: usage.as_ref().map(|value| value.session_total).unwrap_or(0),
-            workflow_stage_index: workflow
-                .as_ref()
-                .map(|value| value.stage.index())
-                .unwrap_or(0),
-            workflow_stage_total: workflow
-                .as_ref()
-                .map(|_| ndc_core::AgentWorkflowStage::TOTAL_STAGES)
-                .unwrap_or(0),
+            workflow_stage_index: workflow.as_ref().map(|value| value.index).unwrap_or(0),
+            workflow_stage_total: workflow.as_ref().map(|value| value.total).unwrap_or(0),
         }
     }
 }
@@ -1244,6 +1238,10 @@ mod tests {
             tool_call_id: Some("call-1".to_string()),
             duration_ms: Some(37),
             is_error: false,
+            workflow_stage: None,
+            workflow_detail: None,
+            workflow_stage_index: None,
+            workflow_stage_total: None,
         };
         let mapped = AgentGrpcService::map_execution_event(event);
         assert_eq!(mapped.kind, "ToolCallEnd");
@@ -1266,6 +1264,10 @@ mod tests {
             tool_call_id: None,
             duration_ms: None,
             is_error: false,
+            workflow_stage: None,
+            workflow_detail: None,
+            workflow_stage_index: None,
+            workflow_stage_total: None,
         };
         let mapped = AgentGrpcService::map_execution_event(event);
         assert_eq!(mapped.kind, "StepStart");
@@ -1292,6 +1294,10 @@ mod tests {
             tool_call_id: Some("call-perm-1".to_string()),
             duration_ms: None,
             is_error: true,
+            workflow_stage: None,
+            workflow_detail: None,
+            workflow_stage_index: None,
+            workflow_stage_total: None,
         };
         let mapped = AgentGrpcService::map_execution_event(event);
         assert_eq!(mapped.kind, "PermissionAsked");
@@ -1312,6 +1318,10 @@ mod tests {
             tool_call_id: None,
             duration_ms: None,
             is_error: false,
+            workflow_stage: Some(ndc_core::AgentWorkflowStage::Discovery),
+            workflow_detail: Some("tool_calls_planned".to_string()),
+            workflow_stage_index: Some(2),
+            workflow_stage_total: Some(ndc_core::AgentWorkflowStage::TOTAL_STAGES),
         };
         let mapped = AgentGrpcService::map_execution_event(event);
         assert_eq!(mapped.kind, "WorkflowStage");
@@ -1335,6 +1345,10 @@ mod tests {
             tool_call_id: None,
             duration_ms: None,
             is_error: false,
+            workflow_stage: None,
+            workflow_detail: None,
+            workflow_stage_index: None,
+            workflow_stage_total: None,
         };
         let mapped = AgentGrpcService::map_execution_event(event);
         assert_eq!(mapped.kind, "TokenUsage");

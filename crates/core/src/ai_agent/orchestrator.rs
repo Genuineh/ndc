@@ -243,6 +243,10 @@ impl AgentOrchestrator {
                 tool_call_id: None,
                 duration_ms: None,
                 is_error: false,
+                workflow_stage: Some(stage),
+                workflow_detail: Some(detail.to_string()),
+                workflow_stage_index: Some(stage.index()),
+                workflow_stage_total: Some(AgentWorkflowStage::TOTAL_STAGES),
             },
         )
         .await;
@@ -281,6 +285,10 @@ impl AgentOrchestrator {
                 tool_call_id: None,
                 duration_ms: None,
                 is_error: false,
+            workflow_stage: None,
+            workflow_detail: None,
+            workflow_stage_index: None,
+            workflow_stage_total: None,
             },
         )
         .await;
@@ -531,6 +539,10 @@ impl AgentOrchestrator {
                 tool_call_id: None,
                 duration_ms: None,
                 is_error: false,
+                workflow_stage: None,
+                workflow_detail: None,
+                workflow_stage_index: None,
+                workflow_stage_total: None,
             },
         )
         .await;
@@ -561,6 +573,10 @@ impl AgentOrchestrator {
                         tool_call_id: None,
                         duration_ms: None,
                         is_error: true,
+                        workflow_stage: None,
+                        workflow_detail: None,
+                        workflow_stage_index: None,
+                        workflow_stage_total: None,
                     },
                 )
                 .await;
@@ -599,6 +615,10 @@ impl AgentOrchestrator {
                     tool_call_id: None,
                     duration_ms: None,
                     is_error: false,
+                    workflow_stage: None,
+                    workflow_detail: None,
+                    workflow_stage_index: None,
+                    workflow_stage_total: None,
                 },
             )
             .await;
@@ -667,6 +687,10 @@ impl AgentOrchestrator {
                     tool_call_id: None,
                     duration_ms: Some(llm_started.elapsed().as_millis() as u64),
                     is_error: false,
+                    workflow_stage: None,
+                    workflow_detail: None,
+                    workflow_stage_index: None,
+                    workflow_stage_total: None,
                 },
             )
             .await;
@@ -695,6 +719,10 @@ impl AgentOrchestrator {
                                 tool_call_id: None,
                                 duration_ms: None,
                                 is_error: false,
+                                workflow_stage: None,
+                                workflow_detail: None,
+                                workflow_stage_index: None,
+                                workflow_stage_total: None,
                             },
                         )
                         .await;
@@ -711,6 +739,10 @@ impl AgentOrchestrator {
                                 tool_call_id: None,
                                 duration_ms: None,
                                 is_error: false,
+                                workflow_stage: None,
+                                workflow_detail: None,
+                                workflow_stage_index: None,
+                                workflow_stage_total: None,
                             },
                         )
                         .await;
@@ -793,6 +825,10 @@ impl AgentOrchestrator {
                         tool_call_id: None,
                         duration_ms: None,
                         is_error: false,
+                        workflow_stage: None,
+                        workflow_detail: None,
+                        workflow_stage_index: None,
+                        workflow_stage_total: None,
                     },
                 )
                 .await;
@@ -828,6 +864,10 @@ impl AgentOrchestrator {
                             tool_call_id: None,
                             duration_ms: None,
                             is_error: false,
+                            workflow_stage: None,
+                            workflow_detail: None,
+                            workflow_stage_index: None,
+                            workflow_stage_total: None,
                         },
                     )
                     .await;
@@ -893,6 +933,10 @@ impl AgentOrchestrator {
                     tool_call_id: None,
                     duration_ms: None,
                     is_error: false,
+                    workflow_stage: None,
+                    workflow_detail: None,
+                    workflow_stage_index: None,
+                    workflow_stage_total: None,
                 },
             )
             .await;
@@ -1060,6 +1104,10 @@ impl AgentOrchestrator {
                     tool_call_id: Some(tool_call.id.clone()),
                     duration_ms: None,
                     is_error: false,
+                    workflow_stage: None,
+                    workflow_detail: None,
+                    workflow_stage_index: None,
+                    workflow_stage_total: None,
                 },
             )
             .await;
@@ -1090,6 +1138,10 @@ impl AgentOrchestrator {
                                 tool_call_id: Some(tool_call.id.clone()),
                                 duration_ms: None,
                                 is_error: true,
+                                workflow_stage: None,
+                                workflow_detail: None,
+                                workflow_stage_index: None,
+                                workflow_stage_total: None,
                             },
                         )
                         .await;
@@ -1120,6 +1172,10 @@ impl AgentOrchestrator {
                     tool_call_id: Some(tool_call.id.clone()),
                     duration_ms: Some(started.elapsed().as_millis() as u64),
                     is_error: tool_result.is_error,
+                    workflow_stage: None,
+                    workflow_detail: None,
+                    workflow_stage_index: None,
+                    workflow_stage_total: None,
                 },
             )
             .await;

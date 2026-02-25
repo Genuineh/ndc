@@ -1,6 +1,6 @@
 # NDC 用户指南
 
-本文档基于当前代码实现（2026-02-24）整理，重点说明可直接使用的交互方式。
+本文档基于当前代码实现（2026-02-25）整理，重点说明可直接使用的交互方式。
 
 ## 1. 安装与运行
 
@@ -50,7 +50,7 @@ cargo run -- repl
 - `/d`（`/details` 快捷别名）
 - `/cards`（切换 tool 卡片展开/折叠）
 - `/stream [on|off|status]`（切换/查看实时事件流；关闭后仅轮询）
-- `/workflow`（查看当前会话的 workflow 阶段视图与阶段进度摘要）
+- `/workflow [compact|verbose]`（查看 workflow 阶段视图；默认 `verbose`）
 - `/tokens [show|hide|reset|status]`（查看/控制 token 指标显示）
 - `/metrics`（查看运行指标：tool 耗时/错误率/权限等待/token）
 - `/timeline [N]`（查看最近 N 条执行时间线）
@@ -58,7 +58,7 @@ cargo run -- repl
 - `/clear`
 - `exit`
 - 输入以 `/` 开头时，Hints 面板会实时显示命令提示；按 `Tab`/`Shift+Tab` 可循环补全并遍历全部候选（提示会显示 `Selected [k/N]`）
-- 参数提示已接入（例如输入 `/provider ` 会显示所有 provider 选项并可直接 Tab 选择）
+- 参数提示已接入（例如输入 `/provider ` 或 `/workflow ` 会显示可选参数并可直接 Tab 选择）
 
 TUI 快捷键（默认 REPL）：
 
@@ -149,7 +149,9 @@ TUI 快捷键（默认 REPL）：
 5. Workflow 与指标观测
    - `WorkflowStage` 事件会实时更新状态栏中的 `workflow=<stage>`
    - `TokenUsage` 事件会实时更新 `tok_round/tok_session`
-   - 使用 `/workflow` 查看阶段切换轨迹；使用 `/metrics` 查看聚合运行指标（包含 `blocked_on_permission`）
+   - 使用 `/workflow compact` 查看阶段进度聚合（适合日常观测）
+   - 使用 `/workflow verbose` 查看阶段切换轨迹明细（含最近阶段事件列表）
+   - 使用 `/metrics` 查看聚合运行指标（包含 `blocked_on_permission`）
 
 推荐组合：
 

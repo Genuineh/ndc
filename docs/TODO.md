@@ -15,10 +15,12 @@
 - 终端实时看到：`当前 workflow 阶段 + 阶段进度 + 本轮/累计 token + 工具耗时/错误分布`
 - REPL / gRPC / SSE 使用同一套观测语义
 
-### 已完成（第一批）
+### 已完成（持续推进）
 
 - `core` 已固化 `AgentWorkflowStage` 作为阶段真相源（planning/discovery/executing/verifying/completing）
 - orchestrator 主循环已发射阶段事件并覆盖多轮
+- `AgentExecutionEvent` 已补齐结构化 workflow 字段：`workflow_stage/workflow_detail/workflow_stage_index/workflow_stage_total`
+- REPL / gRPC 已优先消费结构化 workflow 字段（message 仅作人类可读回退）
 - token usage 已接入（provider 优先，缺失回退 estimate）
 - REPL 状态栏已展示：
   - `workflow`
@@ -27,6 +29,11 @@
   - `blocked`
   - `tok_round/tok_session`
 - REPL `/workflow`、`/tokens`、`/metrics` 已可用
+- REPL `/workflow` 已支持 `compact|verbose` 双视图（默认 `verbose`）
+- 命令提示补全已覆盖 `/workflow` 参数（`compact/verbose`）
+- workflow 阶段耗时统计已补边界：
+  - 当前阶段无后继事件时，`total_ms` 会累计 `active_ms`
+  - 历史缓存达到上限时会提示“统计可能不完整”
 - Session 面板与 `/timeline` 已按 `[stage:<name>]` 分段展示
 - gRPC/SSE `ExecutionEvent` 已扩展字段：
   - workflow：`workflow_stage/workflow_detail/workflow_stage_index/workflow_stage_total`
@@ -36,16 +43,9 @@
 
 ### 待完成（当前执行清单）
 
-1. 结构化阶段载荷收敛（避免依赖 message 解析）
-   - 在 `AgentExecutionEvent` 增加显式结构化字段（stage/detail/index/total）
-   - REPL / gRPC 全量改为读取结构化字段，保留 message 仅做人类可读文本
-2. 阶段视图交互增强
-   - `/workflow` 支持 `compact|verbose` 两种视图
-   - 补阶段耗时统计边界处理（无后继阶段、长会话截断）
-3. 验证闭环补齐
+1. 验证闭环补齐
    - 新增 e2e：多轮 + 多次 tool call + permission + timeline replay + workflow/token 断言
-4. 文档同步
-   - `docs/USER_GUIDE.md` 增加 `/workflow compact|verbose` 用法
+2. 文档同步
    - `docs/plan/current_plan.md` 更新 P0-C 剩余项状态
 
 ## P1（高优先级）

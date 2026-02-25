@@ -189,6 +189,18 @@ pub struct AgentExecutionEvent {
     pub duration_ms: Option<u64>,
     /// 是否错误
     pub is_error: bool,
+    /// 结构化 workflow stage（仅 WorkflowStage 事件）
+    #[serde(default)]
+    pub workflow_stage: Option<AgentWorkflowStage>,
+    /// 结构化 workflow detail（仅 WorkflowStage 事件）
+    #[serde(default)]
+    pub workflow_detail: Option<String>,
+    /// workflow stage index（从 1 开始）
+    #[serde(default)]
+    pub workflow_stage_index: Option<u32>,
+    /// workflow stage total（通常为常量 TOTAL_STAGES）
+    #[serde(default)]
+    pub workflow_stage_total: Option<u32>,
 }
 
 /// Workflow 阶段解析结果
@@ -196,6 +208,8 @@ pub struct AgentExecutionEvent {
 pub struct AgentWorkflowStageInfo {
     pub stage: AgentWorkflowStage,
     pub detail: String,
+    pub index: u32,
+    pub total: u32,
 }
 
 /// Token 使用量解析结果
@@ -223,6 +237,18 @@ impl AgentExecutionEvent {
         if self.kind != AgentExecutionEventKind::WorkflowStage {
             return None;
         }
+        if let Some(stage) = self.workflow_stage {
+            let detail = self.workflow_detail.clone().unwrap_or_default();
+            return Some(AgentWorkflowStageInfo {
+                stage,
+                detail,
+                index: self.workflow_stage_index.unwrap_or_else(|| stage.index()),
+                total: self
+                    .workflow_stage_total
+                    .unwrap_or(AgentWorkflowStage::TOTAL_STAGES),
+            });
+        }
+
         let rest = self.message.strip_prefix("workflow_stage:")?.trim();
         let mut parts = rest.splitn(2, '|');
         let stage = AgentWorkflowStage::parse(parts.next()?.trim())?;
@@ -230,6 +256,8 @@ impl AgentExecutionEvent {
         Some(AgentWorkflowStageInfo {
             stage,
             detail: detail.to_string(),
+            index: stage.index(),
+            total: AgentWorkflowStage::TOTAL_STAGES,
         })
     }
 
@@ -357,10 +385,16 @@ mod tests {
             tool_call_id: None,
             duration_ms: None,
             is_error: false,
+            workflow_stage: Some(AgentWorkflowStage::Executing),
+            workflow_detail: Some("llm_round_start".to_string()),
+            workflow_stage_index: Some(3),
+            workflow_stage_total: Some(AgentWorkflowStage::TOTAL_STAGES),
         };
         let info = event.workflow_stage_info().expect("workflow info");
         assert_eq!(info.stage, AgentWorkflowStage::Executing);
         assert_eq!(info.detail, "llm_round_start");
+        assert_eq!(info.index, 3);
+        assert_eq!(info.total, AgentWorkflowStage::TOTAL_STAGES);
     }
 
     #[test]
@@ -374,6 +408,10 @@ mod tests {
             tool_call_id: None,
             duration_ms: None,
             is_error: false,
+            workflow_stage: None,
+            workflow_detail: None,
+            workflow_stage_index: None,
+            workflow_stage_total: None,
         };
         let info = event.token_usage_info().expect("token info");
         assert_eq!(info.source, "provider");

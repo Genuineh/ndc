@@ -43,6 +43,7 @@ use crate::redaction::{sanitize_text, RedactionMode};
 
 const TUI_MAX_LOG_LINES: usize = 3000;
 const TUI_SCROLL_STEP: usize = 3;
+const TIMELINE_CACHE_MAX_EVENTS: usize = 1_000;
 const AVAILABLE_PROVIDERS: &[&str] = &[
     "openai",
     "anthropic",
@@ -136,6 +137,8 @@ struct ReplVisualizationState {
     redaction_mode: RedactionMode,
     hidden_thinking_round_hints: BTreeSet<usize>,
     current_workflow_stage: Option<String>,
+    current_workflow_stage_index: Option<u32>,
+    current_workflow_stage_total: Option<u32>,
     current_workflow_stage_started_at: Option<chrono::DateTime<chrono::Utc>>,
     session_token_total: u64,
     latest_round_token_total: u64,
@@ -160,6 +163,32 @@ enum TuiShortcutAction {
     ShowRecentThinking,
     ShowTimeline,
     ClearPanel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkflowOverviewMode {
+    Compact,
+    Verbose,
+}
+
+impl WorkflowOverviewMode {
+    fn parse(value: Option<&str>) -> Result<Self, String> {
+        let Some(raw) = value else {
+            return Ok(Self::Verbose);
+        };
+        match raw.to_ascii_lowercase().as_str() {
+            "compact" => Ok(Self::Compact),
+            "verbose" => Ok(Self::Verbose),
+            _ => Err("Usage: /workflow [compact|verbose]".to_string()),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            WorkflowOverviewMode::Compact => "compact",
+            WorkflowOverviewMode::Verbose => "verbose",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -234,7 +263,7 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     },
     SlashCommandSpec {
         command: "/workflow",
-        summary: "show workflow stage",
+        summary: "workflow overview",
     },
     SlashCommandSpec {
         command: "/tokens",
@@ -302,6 +331,8 @@ impl ReplVisualizationState {
             redaction_mode: RedactionMode::from_env(),
             hidden_thinking_round_hints: BTreeSet::new(),
             current_workflow_stage: None,
+            current_workflow_stage_index: None,
+            current_workflow_stage_total: None,
             current_workflow_stage_started_at: None,
             session_token_total: 0,
             latest_round_token_total: 0,
@@ -384,6 +415,7 @@ fn slash_argument_options(command: &str) -> Option<&'static [&'static str]> {
     match canonical_slash_command(command) {
         "/provider" => Some(AVAILABLE_PROVIDERS),
         "/stream" => Some(&["on", "off", "status"]),
+        "/workflow" => Some(&["compact", "verbose"]),
         "/thinking" => Some(&["show", "now"]),
         "/tokens" => Some(&["show", "hide", "reset", "status"]),
         _ => None,
@@ -677,12 +709,26 @@ fn short_session_id(value: Option<&str>) -> String {
     format!("{}…", prefix)
 }
 
-fn workflow_progress_descriptor(stage_name: Option<&str>) -> String {
-    let Some(stage) = stage_name.and_then(ndc_core::AgentWorkflowStage::parse) else {
-        return "-".to_string();
+fn workflow_progress_descriptor(
+    stage_name: Option<&str>,
+    stage_index: Option<u32>,
+    stage_total: Option<u32>,
+) -> String {
+    let (index, total) = if let (Some(index), Some(total)) = (stage_index, stage_total) {
+        if index > 0 && total > 0 {
+            (index, total)
+        } else {
+            let Some(stage) = stage_name.and_then(ndc_core::AgentWorkflowStage::parse) else {
+                return "-".to_string();
+            };
+            (stage.index(), ndc_core::AgentWorkflowStage::TOTAL_STAGES)
+        }
+    } else {
+        let Some(stage) = stage_name.and_then(ndc_core::AgentWorkflowStage::parse) else {
+            return "-".to_string();
+        };
+        (stage.index(), ndc_core::AgentWorkflowStage::TOTAL_STAGES)
     };
-    let index = stage.index();
-    let total = ndc_core::AgentWorkflowStage::TOTAL_STAGES;
     let percent = if total == 0 { 0 } else { (index * 100) / total };
     format!("{}%({}/{})", percent, index, total)
 }
@@ -695,8 +741,11 @@ fn build_status_line(
     stream_state: &str,
 ) -> String {
     let workflow_stage = viz_state.current_workflow_stage.as_deref().unwrap_or("-");
-    let workflow_progress =
-        workflow_progress_descriptor(viz_state.current_workflow_stage.as_deref());
+    let workflow_progress = workflow_progress_descriptor(
+        viz_state.current_workflow_stage.as_deref(),
+        viz_state.current_workflow_stage_index,
+        viz_state.current_workflow_stage_total,
+    );
     let workflow_elapsed_ms = viz_state
         .current_workflow_stage_started_at
         .map(|started| {
@@ -1214,10 +1263,17 @@ async fn run_repl_tui(
 
         if let Some(handle) = processing_handle.as_ref() {
             if live_events.is_none() && last_poll.elapsed() >= Duration::from_millis(120) {
-                if let Ok(events) = agent_manager.session_timeline(Some(1_000)).await {
+                if let Ok(events) = agent_manager
+                    .session_timeline(Some(TIMELINE_CACHE_MAX_EVENTS))
+                    .await
+                {
                     if events.len() > streamed_count {
                         let new_events = &events[streamed_count..];
-                        append_timeline_events(&mut viz_state.timeline_cache, new_events, 1_000);
+                        append_timeline_events(
+                            &mut viz_state.timeline_cache,
+                            new_events,
+                            TIMELINE_CACHE_MAX_EVENTS,
+                        );
                         for event in new_events {
                             for line in event_to_lines(event, viz_state) {
                                 push_log_line(&mut logs, &line);
@@ -1238,7 +1294,7 @@ async fn run_repl_tui(
                             append_timeline_events(
                                 &mut viz_state.timeline_cache,
                                 &response.execution_events,
-                                1_000,
+                                TIMELINE_CACHE_MAX_EVENTS,
                             );
                             for event in &response.execution_events {
                                 for line in event_to_lines(event, viz_state) {
@@ -1336,7 +1392,7 @@ async fn run_repl_tui(
                             live_session_id = None;
 
                             streamed_count = agent_manager
-                                .session_timeline(Some(1_000))
+                                .session_timeline(Some(TIMELINE_CACHE_MAX_EVENTS))
                                 .await
                                 .map(|events| events.len())
                                 .unwrap_or(0);
@@ -1563,11 +1619,21 @@ async fn handle_command(
             Err(message) => println!("[Error] {}", message),
         },
         "/workflow" => {
+            let mode = match WorkflowOverviewMode::parse(parts.get(1).copied()) {
+                Ok(mode) => mode,
+                Err(message) => {
+                    println!("[Error] {}", message);
+                    return;
+                }
+            };
             show_workflow_overview(
                 viz_state.timeline_cache.as_slice(),
                 viz_state.timeline_limit,
                 viz_state.redaction_mode,
                 viz_state.current_workflow_stage.as_deref(),
+                viz_state.current_workflow_stage_index,
+                viz_state.current_workflow_stage_total,
+                mode,
             );
         }
         "/tokens" => match apply_tokens_command(viz_state, parts.get(1).copied()) {
@@ -1598,7 +1664,7 @@ async fn handle_agent_dialogue(
     let handle = tokio::spawn(async move { manager.process_input(&input_owned).await });
 
     let mut streamed_count = agent_manager
-        .session_timeline(Some(1_000))
+        .session_timeline(Some(TIMELINE_CACHE_MAX_EVENTS))
         .await
         .map(|events| events.len())
         .unwrap_or(0);
@@ -1609,10 +1675,17 @@ async fn handle_agent_dialogue(
             break;
         }
 
-        if let Ok(events) = agent_manager.session_timeline(Some(1_000)).await {
+        if let Ok(events) = agent_manager
+            .session_timeline(Some(TIMELINE_CACHE_MAX_EVENTS))
+            .await
+        {
             if events.len() > streamed_count {
                 let new_events = &events[streamed_count..];
-                append_timeline_events(&mut viz_state.timeline_cache, new_events, 1_000);
+                append_timeline_events(
+                    &mut viz_state.timeline_cache,
+                    new_events,
+                    TIMELINE_CACHE_MAX_EVENTS,
+                );
                 render_execution_events(new_events, viz_state);
                 streamed_count = events.len();
                 streamed_any = true;
@@ -1622,10 +1695,17 @@ async fn handle_agent_dialogue(
         tokio::time::sleep(Duration::from_millis(120)).await;
     }
 
-    if let Ok(events) = agent_manager.session_timeline(Some(1_000)).await {
+    if let Ok(events) = agent_manager
+        .session_timeline(Some(TIMELINE_CACHE_MAX_EVENTS))
+        .await
+    {
         if events.len() > streamed_count {
             let new_events = &events[streamed_count..];
-            append_timeline_events(&mut viz_state.timeline_cache, new_events, 1_000);
+            append_timeline_events(
+                &mut viz_state.timeline_cache,
+                new_events,
+                TIMELINE_CACHE_MAX_EVENTS,
+            );
             render_execution_events(new_events, viz_state);
             streamed_any = true;
         }
@@ -1637,11 +1717,14 @@ async fn handle_agent_dialogue(
                 append_timeline_events(
                     &mut viz_state.timeline_cache,
                     &response.execution_events,
-                    1_000,
+                    TIMELINE_CACHE_MAX_EVENTS,
                 );
                 render_execution_events(&response.execution_events, viz_state);
             }
-            if let Ok(events) = agent_manager.session_timeline(Some(1_000)).await {
+            if let Ok(events) = agent_manager
+                .session_timeline(Some(TIMELINE_CACHE_MAX_EVENTS))
+                .await
+            {
                 viz_state.timeline_cache = events;
             }
 
@@ -1794,7 +1877,7 @@ Available Commands:
   /details, /d    Toggle tool step/details display
   /cards          Toggle tool cards expanded/collapsed
   /stream [mode]  Toggle realtime event stream (on/off/status)
-  /workflow       Show workflow stage overview
+  /workflow [mode] Show workflow overview (compact|verbose; default verbose)
   /tokens [mode]  Token metrics: show/hide/reset/status
   /metrics        Runtime metrics (tools/errors/permission/tokens)
   /timeline [N]   Show recent execution timeline (default N=40)
@@ -1886,7 +1969,7 @@ fn drain_live_execution_events(
                 append_timeline_events(
                     &mut viz_state.timeline_cache,
                     std::slice::from_ref(&message.event),
-                    1_000,
+                    TIMELINE_CACHE_MAX_EVENTS,
                 );
                 for line in event_to_lines(&message.event, viz_state) {
                     push_log_line(logs, &line);
@@ -1934,6 +2017,8 @@ fn event_to_lines(
             if let Some(stage_info) = event.workflow_stage_info() {
                 let stage = stage_info.stage;
                 viz_state.current_workflow_stage = Some(stage.as_str().to_string());
+                viz_state.current_workflow_stage_index = Some(stage_info.index);
+                viz_state.current_workflow_stage_total = Some(stage_info.total);
                 viz_state.current_workflow_stage_started_at = Some(event.timestamp);
                 return vec![
                     format!("[stage:{}]", stage),
@@ -2203,13 +2288,17 @@ struct WorkflowProgressSummary {
     stages: std::collections::BTreeMap<String, WorkflowStageProgress>,
     current_stage: Option<String>,
     current_stage_active_ms: u64,
+    history_may_be_partial: bool,
 }
 
 fn compute_workflow_progress_summary(
     timeline: &[ndc_core::AgentExecutionEvent],
     now: chrono::DateTime<chrono::Utc>,
 ) -> WorkflowProgressSummary {
-    let mut summary = WorkflowProgressSummary::default();
+    let mut summary = WorkflowProgressSummary {
+        history_may_be_partial: timeline.len() >= TIMELINE_CACHE_MAX_EVENTS,
+        ..WorkflowProgressSummary::default()
+    };
     let mut stage_points = Vec::<(String, chrono::DateTime<chrono::Utc>)>::new();
     for event in timeline {
         let Some(info) = event.workflow_stage_info() else {
@@ -2241,6 +2330,11 @@ fn compute_workflow_progress_summary(
             .signed_duration_since(*started_at)
             .num_milliseconds()
             .max(0) as u64;
+        if let Some(entry) = summary.stages.get_mut(stage) {
+            entry.total_ms = entry
+                .total_ms
+                .saturating_add(summary.current_stage_active_ms);
+        }
     }
     summary
 }
@@ -2267,18 +2361,36 @@ fn group_timeline_by_stage<'a>(
     groups
 }
 
-fn append_workflow_overview_to_logs(logs: &mut Vec<String>, viz_state: &ReplVisualizationState) {
+fn append_workflow_overview_to_logs(
+    logs: &mut Vec<String>,
+    viz_state: &ReplVisualizationState,
+    mode: WorkflowOverviewMode,
+) {
     push_log_line(logs, "");
     push_log_line(
         logs,
         &format!(
-            "Workflow Overview: current={} progress={}",
+            "Workflow Overview ({}) current={} progress={}",
+            mode.as_str(),
             viz_state.current_workflow_stage.as_deref().unwrap_or("-"),
-            workflow_progress_descriptor(viz_state.current_workflow_stage.as_deref())
+            workflow_progress_descriptor(
+                viz_state.current_workflow_stage.as_deref(),
+                viz_state.current_workflow_stage_index,
+                viz_state.current_workflow_stage_total,
+            )
         ),
     );
     let summary =
         compute_workflow_progress_summary(viz_state.timeline_cache.as_slice(), chrono::Utc::now());
+    if summary.history_may_be_partial {
+        push_log_line(
+            logs,
+            &format!(
+                "[Warning] workflow history may be partial (cache cap={} events)",
+                TIMELINE_CACHE_MAX_EVENTS
+            ),
+        );
+    }
     push_log_line(logs, "Workflow Progress:");
     for stage in WORKFLOW_STAGE_ORDER {
         let metrics = summary.stages.get(*stage).copied().unwrap_or_default();
@@ -2295,26 +2407,33 @@ fn append_workflow_overview_to_logs(logs: &mut Vec<String>, viz_state: &ReplVisu
             ),
         );
     }
-    let total = viz_state.timeline_cache.len();
-    let start = total.saturating_sub(viz_state.timeline_limit);
-    let mut count = 0usize;
-    for event in viz_state.timeline_cache.iter().skip(start) {
-        if !matches!(event.kind, ndc_core::AgentExecutionEventKind::WorkflowStage) {
-            continue;
+    if mode == WorkflowOverviewMode::Verbose {
+        let total = viz_state.timeline_cache.len();
+        let start = total.saturating_sub(viz_state.timeline_limit);
+        let mut count = 0usize;
+        for event in viz_state.timeline_cache.iter().skip(start) {
+            if !matches!(event.kind, ndc_core::AgentExecutionEventKind::WorkflowStage) {
+                continue;
+            }
+            push_log_line(
+                logs,
+                &format!(
+                    "  - r{} {} | {}",
+                    event.round,
+                    event.timestamp.format("%H:%M:%S"),
+                    sanitize_text(&event.message, viz_state.redaction_mode),
+                ),
+            );
+            count += 1;
         }
+        if count == 0 {
+            push_log_line(logs, "  (no workflow stage events yet)");
+        }
+    } else {
         push_log_line(
             logs,
-            &format!(
-                "  - r{} {} | {}",
-                event.round,
-                event.timestamp.format("%H:%M:%S"),
-                sanitize_text(&event.message, viz_state.redaction_mode),
-            ),
+            "  (use /workflow verbose to inspect stage event timeline)",
         );
-        count += 1;
-    }
-    if count == 0 {
-        push_log_line(logs, "  (no workflow stage events yet)");
     }
 }
 
@@ -2483,7 +2602,7 @@ async fn handle_tui_command(
         "/help" | "/h" => {
             push_log_line(
                 logs,
-                "Commands: /help /provider /model /status /workflow /tokens /metrics /t /d /cards /stream /thinking show /timeline [N] /clear exit",
+                "Commands: /help /provider /model /status /workflow [compact|verbose] /tokens /metrics /t /d /cards /stream /thinking show /timeline [N] /clear exit",
             );
             push_log_line(
                 logs,
@@ -2548,7 +2667,14 @@ async fn handle_tui_command(
             Err(message) => push_log_line(logs, &format!("[Error] {}", message)),
         },
         "/workflow" => {
-            append_workflow_overview_to_logs(logs, viz_state);
+            let mode = match WorkflowOverviewMode::parse(parts.get(1).copied()) {
+                Ok(mode) => mode,
+                Err(message) => {
+                    push_log_line(logs, &format!("[Error] {}", message));
+                    return Ok(false);
+                }
+            };
+            append_workflow_overview_to_logs(logs, viz_state, mode);
         }
         "/tokens" => match apply_tokens_command(viz_state, parts.get(1).copied()) {
             Ok(message) => {
@@ -2693,14 +2819,24 @@ fn show_workflow_overview(
     limit: usize,
     mode: RedactionMode,
     current_stage: Option<&str>,
+    current_stage_index: Option<u32>,
+    current_stage_total: Option<u32>,
+    overview_mode: WorkflowOverviewMode,
 ) {
     println!();
     println!(
-        "Workflow Overview: current={} progress={}",
+        "Workflow Overview ({}): current={} progress={}",
+        overview_mode.as_str(),
         current_stage.unwrap_or("-"),
-        workflow_progress_descriptor(current_stage)
+        workflow_progress_descriptor(current_stage, current_stage_index, current_stage_total)
     );
     let summary = compute_workflow_progress_summary(timeline, chrono::Utc::now());
+    if summary.history_may_be_partial {
+        println!(
+            "[Warning] workflow history may be partial (cache cap={} events)",
+            TIMELINE_CACHE_MAX_EVENTS
+        );
+    }
     println!("Workflow Progress:");
     for stage in WORKFLOW_STAGE_ORDER {
         let metrics = summary.stages.get(*stage).copied().unwrap_or_default();
@@ -2714,23 +2850,27 @@ fn show_workflow_overview(
             stage, metrics.count, metrics.total_ms, active_ms
         );
     }
-    let total = timeline.len();
-    let start = total.saturating_sub(limit);
-    let mut count = 0usize;
-    for event in timeline.iter().skip(start) {
-        if !matches!(event.kind, ndc_core::AgentExecutionEventKind::WorkflowStage) {
-            continue;
+    if overview_mode == WorkflowOverviewMode::Verbose {
+        let total = timeline.len();
+        let start = total.saturating_sub(limit);
+        let mut count = 0usize;
+        for event in timeline.iter().skip(start) {
+            if !matches!(event.kind, ndc_core::AgentExecutionEventKind::WorkflowStage) {
+                continue;
+            }
+            println!(
+                "  - r{} {} | {}",
+                event.round,
+                event.timestamp.format("%H:%M:%S"),
+                sanitize_text(&event.message, mode)
+            );
+            count += 1;
         }
-        println!(
-            "  - r{} {} | {}",
-            event.round,
-            event.timestamp.format("%H:%M:%S"),
-            sanitize_text(&event.message, mode)
-        );
-        count += 1;
-    }
-    if count == 0 {
-        println!("  (no workflow stage events yet)");
+        if count == 0 {
+            println!("  (no workflow stage events yet)");
+        }
+    } else {
+        println!("  (use /workflow verbose to inspect stage event timeline)");
     }
     println!();
 }
@@ -2952,6 +3092,10 @@ mod tests {
             tool_call_id: tool_call_id.map(|s| s.to_string()),
             duration_ms,
             is_error,
+            workflow_stage: None,
+            workflow_detail: None,
+            workflow_stage_index: None,
+            workflow_stage_total: None,
         }
     }
 
@@ -2970,6 +3114,10 @@ mod tests {
             tool_call_id: None,
             duration_ms: None,
             is_error: false,
+            workflow_stage: None,
+            workflow_detail: None,
+            workflow_stage_index: None,
+            workflow_stage_total: None,
         }
     }
 
@@ -3026,6 +3174,10 @@ mod tests {
             tool_call_id: None,
             duration_ms: None,
             is_error: false,
+            workflow_stage: None,
+            workflow_detail: None,
+            workflow_stage_index: None,
+            workflow_stage_total: None,
         };
         let incoming = vec![mk(1), mk(2), mk(3)];
         append_timeline_events(&mut timeline, &incoming, 2);
@@ -3053,6 +3205,8 @@ mod tests {
                 assert_eq!(state.timeline_limit, 40);
                 assert!(state.timeline_cache.is_empty());
                 assert!(state.hidden_thinking_round_hints.is_empty());
+                assert!(state.current_workflow_stage_index.is_none());
+                assert!(state.current_workflow_stage_total.is_none());
                 assert!(state.current_workflow_stage_started_at.is_none());
                 assert!(!state.permission_blocked);
             },
@@ -3172,6 +3326,10 @@ mod tests {
             tool_call_id: None,
             duration_ms: None,
             is_error: false,
+            workflow_stage: None,
+            workflow_detail: None,
+            workflow_stage_index: None,
+            workflow_stage_total: None,
         };
         tx.send(ndc_core::AgentSessionExecutionEvent {
             session_id: "session-a".to_string(),
@@ -3204,6 +3362,10 @@ mod tests {
                 tool_call_id: None,
                 duration_ms: None,
                 is_error: false,
+                workflow_stage: None,
+                workflow_detail: None,
+                workflow_stage_index: None,
+                workflow_stage_total: None,
             },
         })
         .unwrap();
@@ -3231,6 +3393,10 @@ mod tests {
             tool_call_id: None,
             duration_ms: None,
             is_error: false,
+            workflow_stage: None,
+            workflow_detail: None,
+            workflow_stage_index: None,
+            workflow_stage_total: None,
         });
         let mut logs = Vec::new();
         append_recent_thinking_to_logs(&mut logs, &viz);
@@ -3251,6 +3417,10 @@ mod tests {
             tool_call_id: None,
             duration_ms: None,
             is_error: false,
+            workflow_stage: None,
+            workflow_detail: None,
+            workflow_stage_index: None,
+            workflow_stage_total: None,
         });
         viz.timeline_cache.push(ndc_core::AgentExecutionEvent {
             kind: ndc_core::AgentExecutionEventKind::ToolCallEnd,
@@ -3261,6 +3431,10 @@ mod tests {
             tool_call_id: Some("call-x".to_string()),
             duration_ms: Some(3),
             is_error: false,
+            workflow_stage: None,
+            workflow_detail: None,
+            workflow_stage_index: None,
+            workflow_stage_total: None,
         });
         let mut logs = Vec::new();
         append_recent_timeline_to_logs(&mut logs, &viz);
@@ -3315,6 +3489,11 @@ mod tests {
         );
         let lines = event_to_lines(&event, &mut viz);
         assert_eq!(viz.current_workflow_stage.as_deref(), Some("discovery"));
+        assert_eq!(viz.current_workflow_stage_index, Some(2));
+        assert_eq!(
+            viz.current_workflow_stage_total,
+            Some(ndc_core::AgentWorkflowStage::TOTAL_STAGES)
+        );
         assert!(viz.current_workflow_stage_started_at.is_some());
         assert!(!viz.permission_blocked);
         assert!(lines.iter().any(|line| line.contains("[Workflow][r2]")));
@@ -3363,7 +3542,7 @@ mod tests {
         assert_eq!(executing.count, 1);
         assert_eq!(executing.total_ms, 240);
         assert_eq!(completing.count, 1);
-        assert_eq!(completing.total_ms, 0);
+        assert_eq!(completing.total_ms, 240);
     }
 
     #[test]
@@ -3560,12 +3739,33 @@ mod tests {
             ),
         ];
         let mut logs = Vec::new();
-        append_workflow_overview_to_logs(&mut logs, &viz);
+        append_workflow_overview_to_logs(&mut logs, &viz, WorkflowOverviewMode::Verbose);
         let joined = logs.join("\n");
-        assert!(joined.contains("Workflow Overview: current=executing progress=60%(3/5)"));
+        assert!(joined.contains("Workflow Overview (verbose) current=executing progress=60%(3/5)"));
         assert!(joined.contains("Workflow Progress"));
         assert!(joined.contains("planning count="));
         assert!(joined.contains("executing count="));
+    }
+
+    #[test]
+    fn test_append_workflow_overview_to_logs_compact_hides_stage_events() {
+        let mut viz = ReplVisualizationState::new(false);
+        viz.current_workflow_stage = Some("executing".to_string());
+        viz.timeline_cache = vec![mk_event(
+            ndc_core::AgentExecutionEventKind::WorkflowStage,
+            "workflow_stage: executing | llm_round_start",
+            1,
+            None,
+            None,
+            None,
+            false,
+        )];
+        let mut logs = Vec::new();
+        append_workflow_overview_to_logs(&mut logs, &viz, WorkflowOverviewMode::Compact);
+        let joined = logs.join("\n");
+        assert!(joined.contains("Workflow Overview (compact)"));
+        assert!(joined.contains("use /workflow verbose"));
+        assert!(!joined.contains("r1"));
     }
 
     #[test]
@@ -3717,6 +3917,41 @@ mod tests {
     }
 
     #[test]
+    fn test_build_input_hint_line_workflow_options() {
+        let hints = build_input_hint_lines("/workflow ", None);
+        let joined = hints.join(" ");
+        assert!(joined.contains("compact"));
+        assert!(joined.contains("verbose"));
+    }
+
+    #[test]
+    fn test_apply_slash_completion_workflow_argument() {
+        let mut input = "/workflow ".to_string();
+        let mut state = None;
+        assert!(apply_slash_completion(&mut input, &mut state, false));
+        assert_eq!(input, "/workflow compact");
+        assert!(apply_slash_completion(&mut input, &mut state, false));
+        assert_eq!(input, "/workflow verbose");
+    }
+
+    #[test]
+    fn test_workflow_overview_mode_parse() {
+        assert_eq!(
+            WorkflowOverviewMode::parse(None).expect("default"),
+            WorkflowOverviewMode::Verbose
+        );
+        assert_eq!(
+            WorkflowOverviewMode::parse(Some("compact")).expect("compact"),
+            WorkflowOverviewMode::Compact
+        );
+        assert_eq!(
+            WorkflowOverviewMode::parse(Some("verbose")).expect("verbose"),
+            WorkflowOverviewMode::Verbose
+        );
+        assert!(WorkflowOverviewMode::parse(Some("unknown")).is_err());
+    }
+
+    #[test]
     fn test_handle_session_scroll_mouse() {
         let mut view = TuiSessionViewState {
             scroll_offset: 0,
@@ -3801,10 +4036,23 @@ mod tests {
 
     #[test]
     fn test_workflow_progress_descriptor_known_and_unknown() {
-        assert_eq!(workflow_progress_descriptor(None), "-");
-        assert_eq!(workflow_progress_descriptor(Some("unknown")), "-");
-        assert_eq!(workflow_progress_descriptor(Some("planning")), "20%(1/5)");
-        assert_eq!(workflow_progress_descriptor(Some("verifying")), "80%(4/5)");
+        assert_eq!(workflow_progress_descriptor(None, None, None), "-");
+        assert_eq!(
+            workflow_progress_descriptor(Some("unknown"), None, None),
+            "-"
+        );
+        assert_eq!(
+            workflow_progress_descriptor(Some("planning"), None, None),
+            "20%(1/5)"
+        );
+        assert_eq!(
+            workflow_progress_descriptor(Some("verifying"), None, None),
+            "80%(4/5)"
+        );
+        assert_eq!(
+            workflow_progress_descriptor(Some("executing"), Some(3), Some(5)),
+            "60%(3/5)"
+        );
     }
 
     #[test]
@@ -3977,6 +4225,10 @@ mod tests {
             tool_call_id: None,
             duration_ms: None,
             is_error: false,
+            workflow_stage: None,
+            workflow_detail: None,
+            workflow_stage_index: None,
+            workflow_stage_total: None,
         };
         let lines = event_to_lines(&event, &mut viz);
         assert_eq!(lines.len(), 2);
@@ -3997,6 +4249,10 @@ mod tests {
             tool_call_id: Some("call-1".to_string()),
             duration_ms: None,
             is_error: false,
+            workflow_stage: None,
+            workflow_detail: None,
+            workflow_stage_index: None,
+            workflow_stage_total: None,
         };
         let lines = event_to_lines(&event, &mut viz);
         assert!(lines.iter().any(|l| l.contains("start read")));
@@ -4020,6 +4276,10 @@ mod tests {
             tool_call_id: Some("call-2".to_string()),
             duration_ms: Some(4),
             is_error: false,
+        workflow_stage: None,
+        workflow_detail: None,
+        workflow_stage_index: None,
+        workflow_stage_total: None,
         };
         let lines = event_to_lines(&event, &mut viz);
         assert!(lines.iter().any(|l| l.contains("output")));
@@ -4039,6 +4299,10 @@ mod tests {
             tool_call_id: Some("call-3".to_string()),
             duration_ms: Some(5),
             is_error: true,
+        workflow_stage: None,
+        workflow_detail: None,
+        workflow_stage_index: None,
+        workflow_stage_total: None,
         };
         let lines = event_to_lines(&event, &mut viz);
         assert!(lines.iter().any(|l| l.contains("error")));

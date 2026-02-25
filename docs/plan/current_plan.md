@@ -190,10 +190,13 @@ User (run/repl)
 
 ### Phase A.15（短期主线：Workflow-Native REPL）
 
-Status（2026-02-24）：
+Status（2026-02-25）：
 1. 已完成第一批：orchestrator 阶段事件发射 + REPL workflow 状态区（stage/stage_ms/blocked）。
 2. 已落地阶段单一语义：core `AgentWorkflowStage` 枚举作为 workflow stage 真相源。
 3. 已落地阶段分组视图：Session 与 `/timeline` 支持 `[stage:<name>]` 分段展示。
+4. 已新增 `/workflow compact|verbose` 双视图与参数补全提示。
+5. 已补齐阶段耗时边界：当前阶段 `total_ms` 累计 `active_ms`，并在历史缓存达到上限时提示统计可能不完整。
+6. 已补齐结构化阶段载荷：`AgentExecutionEvent` 增加 `stage/detail/index/total` 显式字段，REPL/gRPC 优先读取结构化字段。
 
 1. 以 NDC 内部 workflow 语义驱动 REPL 展示（Planning/Discovery/Executing/Verifying/Completing）。
 2. 在 orchestrator 主循环中发射阶段切换事件，并保证多轮会话可恢复当前阶段。
