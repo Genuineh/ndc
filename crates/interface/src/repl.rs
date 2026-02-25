@@ -3500,6 +3500,33 @@ mod tests {
     }
 
     #[test]
+    fn test_event_to_lines_workflow_stage_prefers_structured_payload() {
+        let mut viz = ReplVisualizationState::new(false);
+        let event = ndc_core::AgentExecutionEvent {
+            kind: ndc_core::AgentExecutionEventKind::WorkflowStage,
+            timestamp: chrono::Utc::now(),
+            message: "stage changed".to_string(),
+            round: 3,
+            tool_name: None,
+            tool_call_id: None,
+            duration_ms: None,
+            is_error: false,
+            workflow_stage: Some(ndc_core::AgentWorkflowStage::Verifying),
+            workflow_detail: Some("quality_gate".to_string()),
+            workflow_stage_index: Some(4),
+            workflow_stage_total: Some(ndc_core::AgentWorkflowStage::TOTAL_STAGES),
+        };
+        let lines = event_to_lines(&event, &mut viz);
+        assert_eq!(viz.current_workflow_stage.as_deref(), Some("verifying"));
+        assert_eq!(viz.current_workflow_stage_index, Some(4));
+        assert_eq!(
+            viz.current_workflow_stage_total,
+            Some(ndc_core::AgentWorkflowStage::TOTAL_STAGES)
+        );
+        assert!(lines.iter().any(|line| line.contains("[stage:verifying]")));
+    }
+
+    #[test]
     fn test_compute_workflow_progress_summary_counts_and_durations() {
         let base = chrono::Utc::now();
         let timeline = vec![

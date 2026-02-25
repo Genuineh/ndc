@@ -40,6 +40,7 @@
   - token：`token_source/token_prompt/token_completion/token_total/token_session_prompt_total/token_session_completion_total/token_session_total`
 - 兼容策略文档已补齐（旧客户端忽略新增字段可降级）
 - 已新增综合 e2e（core orchestrator）：多轮 + 多次 tool call + permission + timeline replay + workflow/token 断言
+- 已新增 interface 侧结构化字段测试（REPL 渲染 + gRPC 映射）
 - 单测已覆盖 core/interface/grpc 关键路径
 
 ### 待完成（当前执行清单）

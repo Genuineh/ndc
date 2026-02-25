@@ -1335,6 +1335,32 @@ mod tests {
     }
 
     #[test]
+    fn test_map_execution_event_workflow_stage_fields_from_structured_payload() {
+        let event = ndc_core::AgentExecutionEvent {
+            kind: ndc_core::AgentExecutionEventKind::WorkflowStage,
+            timestamp: chrono::Utc::now(),
+            message: "workflow stage changed".to_string(),
+            round: 9,
+            tool_name: None,
+            tool_call_id: None,
+            duration_ms: None,
+            is_error: false,
+            workflow_stage: Some(ndc_core::AgentWorkflowStage::Verifying),
+            workflow_detail: Some("quality_gate".to_string()),
+            workflow_stage_index: Some(4),
+            workflow_stage_total: Some(ndc_core::AgentWorkflowStage::TOTAL_STAGES),
+        };
+        let mapped = AgentGrpcService::map_execution_event(event);
+        assert_eq!(mapped.workflow_stage, "verifying");
+        assert_eq!(mapped.workflow_detail, "quality_gate");
+        assert_eq!(mapped.workflow_stage_index, 4);
+        assert_eq!(
+            mapped.workflow_stage_total,
+            ndc_core::AgentWorkflowStage::TOTAL_STAGES
+        );
+    }
+
+    #[test]
     fn test_map_execution_event_token_usage_fields() {
         let event = ndc_core::AgentExecutionEvent {
             kind: ndc_core::AgentExecutionEventKind::TokenUsage,
