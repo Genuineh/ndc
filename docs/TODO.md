@@ -1,6 +1,6 @@
 # NDC TODO / Backlog
 
-> 更新时间：2026-02-26（v7）  
+> 更新时间：2026-02-26（v8）  
 > 关联文档：`docs/plan/current_plan.md`、`docs/USER_GUIDE.md`、`docs/design/p0-d-security-project-session.md`、`docs/design/p0-d6-non-interactive-migration.md`
 
 ## 看板总览
@@ -209,7 +209,7 @@
 3. Invariant 的 TTL/version/conflict 检查接入执行前阶段
 4. Telemetry 指标落地（autonomous_rate / intervention_cost / token_efficiency）
 5. MCP/Skills 接入默认工具发现链与权限治理链
-6. **REPL TUI 布局与体验重设计**（P1-UX）
+6. **REPL TUI 布局与体验重设计**（P1-UX）— P1-UX-1/3/4/5/6 已完成，P1-UX-2（轮次模型）待定
 
 ### P1-UX（REPL TUI 布局与体验重设计）
 
@@ -219,9 +219,51 @@
 - 从"日志行"体验升级为"对话轮次"体验，对齐 OpenCode 等现代 AI 编码助手的交互风格。
 - 解决当前布局信息过密、视觉扁平、缺少结构层次感、Hints 区浪费空间等问题。
 
-执行分 5 个 Phase：
+### P1-UX 最新进展（2026-02-26）
 
-1. `P1-UX-1` 结构改造（基础布局）
+- 已完成（P1-UX-1 布局重构）：
+  - 新 5~6 区动态布局已落地：标题栏(1) → 工作流进度条(1) → 对话区(Min5) → 权限栏(条件2) → 状态提示栏(1) → 输入区(动态3~6)。
+  - `tui_layout_constraints(has_permission, input_lines)` 动态返回约束向量，权限栏按需 0/2 行，输入区高度随多行输入自动扩展。
+  - `build_title_bar()` 精简为核心 4 项：品牌标识、项目名、会话 ID、模型、状态。
+  - `build_workflow_progress_bar()` 显示五阶段 pipeline（planning ── discovery ── [executing] ── verifying ── completing）。
+  - `build_permission_bar()` 权限等待时显示 ⚠ 图标 + 操作提示（y/n/a）+ 待授权消息。
+  - `build_status_hint_bar()` 合并旧 Hints(4行)+Status(1行) 为 1 行上下文敏感提示：斜杠补全态/token进度条态/默认快捷键态。
+  - 输入区去掉冗长标题，改为简洁 `>` 前缀 + 主题边框。
+  - 旧 `build_status_line`/`build_input_hint_lines` 标记 `#[cfg(test)]` 保留测试兼容。
+- 已完成（P1-UX-3 主题系统）：
+  - `TuiTheme` 20 个语义化颜色变量。
+  - `TuiTheme::default_dark()` 提供深色终端默认配色方案。
+  - `style_session_log_line()` 全部颜色已改为 theme 引用，不再硬编码 `Color::*`。
+  - 消息行新增视觉图标：`▌`（角色标记）、`◆ ✗ ✓ ▸ ◇ ◌ →`（状态/工具/流程指示符）。
+  - `tool_status_narrative()` 按工具类型输出语义化文案。
+- 已完成（P1-UX-4 交互增强）：
+  - `InputHistory` 循环缓冲（去重、容量上限 100、草稿保存）。
+  - `↑`/`↓` 在输入区导航历史；`Ctrl+↑`/`Ctrl+↓` 滚动对话区（焦点分离）。
+  - 多行输入：`Shift+Enter` / `Alt+Enter` 插入换行，输入区动态扩展至 4 行上限。
+  - 权限消息提取：`PermissionAsked` 事件设置 `permission_pending_message`，非授权事件自动清除。
+  - 基础 Markdown 渲染：`render_inline_markdown()` 支持 # 标题、- 列表（→•）、代码围栏（```）、行内 `code`、**粗体**、*斜体*。
+- 已完成（P1-UX-5 polish）：
+  - Token 使用进度条：`format_token_count()` 人性化显示 (1.5k/32.0k)，`token_progress_bar()` 8字符可视化 [████░░░░]。
+  - 长输出截断：工具输出超过 200 字符时显示 `… (truncated)` 后缀。
+  - 启动信息精简为单行："NDC — describe what you want, press Enter. /help for commands"。
+- 已完成（P1-UX-6 过程展示优化）：
+  - `DisplayVerbosity { Compact, Normal, Verbose }` 三级详细度模型，`Ctrl+D` 循环切换，`/verbosity` 命令直接设置。
+  - `event_to_lines()` 完全重写：按 verbosity 级别差异化输出所有事件类型。
+  - 阶段切换去重：Compact 单行 `◆ Planning...`，Normal 附带 detail，Verbose 保留原始双行。
+  - 工具调用单行概要：`extract_tool_summary()` 从 JSON 参数提取人性化摘要（shell→command, read→path 等）。
+  - Token 使用分级：Compact 隐藏（状态栏已有），Normal `tok +N (M total)`，Verbose 原始 k=v。
+  - 权限交互增强：`[PermBlock]` 高亮 + `[PermHint]` 操作指引。
+  - 轮次分组：Normal/Verbose 模式在 round 切换时插入 `── Round N ──` 分隔线。
+  - `style_session_log_line()` 新增 6 种行前缀样式：`[RoundSep]`(dim)、`[Stage]`(primary+bold ◆)、`[ToolRun]`(tool_accent ▸)、`[ToolEnd]`(✓/✗)、`[PermBlock]`(⚠)、`[PermHint]`(muted)。
+  - `format_duration_ms()` 人性化时长格式（450ms / 1.5s / 1.0m）。
+- 已完成（测试）：
+  - 116 个 repl 测试通过（含 21 个 P1-UX-6 新增 + 15 个已有测试适配）。
+  - P1-UX-6 新增测试覆盖：`DisplayVerbosity` parse/cycle/label、`capitalize_stage`、`format_duration_ms`、`extract_tool_summary`（shell/read/grep/unknown）、verbosity 分级行为（compact 隐藏 steps/tokens、normal 显示 tokens、stage 单行/双行、round separator、permission hints、compact tool summary）。
+  - 全量 workspace 测试通过（2 个 agent_mode 预存失败不受影响）。
+
+执行分 6 个 Phase：
+
+1. ~~`P1-UX-1` 结构改造（基础布局）~~ ✅ 已完成
    - 新 5~6 区动态布局：标题栏 → 工作流进度条 → 对话区 → 权限栏(条件) → 状态提示栏 → 输入区
    - 精简标题栏为核心 3~4 项信息
    - 合并 Hints+Status 为 1 行上下文敏感状态提示栏
@@ -232,21 +274,175 @@
    - 用户消息 / 助手回复带视觉边框与轮次标识
    - 工具调用渲染为可折叠卡片 `▸/▾ name status duration`
    - 推理内容默认折叠
-3. `P1-UX-3` 样式与主题
+3. ~~`P1-UX-3` 样式与主题~~ ✅ 已完成
    - 引入 `TuiTheme` 语义化颜色变量（`text_strong/text_base/primary/success/danger` 等）
    - 所有渲染颜色经由主题间接引用，不再硬编码
    - 工作流进度条加 spinner 动画
    - 工具执行状态改为语义化文案（"Searching codebase..." 替代 "processing..."）
-4. `P1-UX-4` 交互增强
-   - 输入历史（↑/↓ 回溯）
-   - 多行输入（Shift+Enter 换行）
-   - 权限区独立交互（y/n/a 快捷键）
-   - 焦点管理分离（输入 vs 滚动）
-   - 简单 Markdown 渲染（代码块高亮、列表缩进、标题加粗）
-5. `P1-UX-5` polish
-   - 时间戳格式化、Token 使用进度条
-   - 长输出截断 + 展开提示
-   - 首次启动引导简化
+4. ~~`P1-UX-4` 交互增强~~ ✅ 已完成
+   - ~~输入历史（↑/↓ 回溯）~~ ✅
+   - ~~多行输入（Shift+Enter 换行）~~ ✅
+   - 权限区独立交互（y/n/a 快捷键）— 延期：需 async channel 重构（当前权限确认走 stdin 阻塞）
+   - ~~焦点管理分离（输入 vs 滚动）~~ ✅
+   - ~~简单 Markdown 渲染（代码块高亮、列表缩进、标题加粗）~~ ✅
+5. ~~`P1-UX-5` polish~~ ✅ 已完成
+   - ~~Token 使用进度条~~ ✅
+   - ~~长输出截断 + 展开提示~~ ✅
+   - ~~首次启动引导简化~~ ✅
+6. ~~`P1-UX-6` 过程展示体验优化（Process Display UX）~~ ✅ 已完成
+   - ~~6a 三级详细度模型 (Compact/Normal/Verbose)~~ ✅
+   - ~~6b 阶段切换去重与精简~~ ✅
+   - ~~6c 工具调用单行概要~~ ✅
+   - ~~6d Token 使用内联格式化~~ ✅
+   - ~~6e 权限交互增强（PermBlock + PermHint）~~ ✅
+   - ~~6f 轮次分组与视觉分隔~~ ✅
+   - 设计背景与动机见下方 §P1-UX-6 详细规划
+
+### P1-UX-6 详细规划：过程展示体验优化
+
+**问题诊断**（基于当前 TUI 截图）：
+
+当前对话面板中的过程事件呈现存在以下体验问题：
+
+```
+◆ [stage:planning]                                              ← 与下行重复
+◇ [Workflow][r0] workflow_stage: planning | build_prompt...      ← 同一阶段两行
+◆ [stage:executing]
+◇ [Workflow][r1] workflow_stage: executing | llm_round_start
+→ [Step][r1] llm_round_1_start                                  ← 内部实现细节
+[Usage][r1] token_usage: source=provider prompt=31213 ...        ← 原始 k=v 转储
+→ [Step][r1] llm_round_1_finish (11139ms)                       ← 内部实现细节
+◆ [stage:discovery]
+◇ [Workflow][r1] workflow_stage: discovery | tool_calls_planned
+◌ [Thinking][r1]
+└─ planning tool calls: shell({"command":"ls -la"...})           ← 原始 JSON
+▸ [r1] start shell
+└─ input : {"command":"ls -la","working_dir":"..."}              ← 原始 JSON 重复
+⚠ [Permission][r1] permission_asked: Command not allowed: ls -la ← 无操作指引
+✗ [r1] failed shell (0ms)                                       ← 与上行关联不明显
+```
+
+| # | 问题 | 影响 |
+|---|------|------|
+| 1 | 阶段变更重复显示 | `◆ [stage:X]` + `◇ [Workflow] workflow_stage: X` 两行表达相同语义 |
+| 2 | 内部步骤暴露 | `llm_round_1_start/finish` 是实现细节，非用户关注 |
+| 3 | Token 使用原始转储 | `token_usage: source=provider prompt=31213 completion=76...` 一长行 k=v |
+| 4 | 工具输入为原始 JSON | `{"command":"ls -la","working_dir":"..."}` 对用户不友好 |
+| 5 | 权限拒绝无行动指引 | 只显示 "not allowed"，没有提示如何解除 |
+| 6 | 无视觉层次/分组 | 所有事件扁平排列，无法快速区分"对话轮次 > 工具调用 > 详情" |
+| 7 | 单次工具调用产出 4~5 行 | start + input + permission + failed + output 全部展开，信息密度低 |
+
+**设计目标**：
+
+- **默认模式只展示用户关心的信息**：阶段切换、工具执行概要、结果/错误、权限提示。
+- **内部实现细节按需展开**：Step/Workflow/Token 详情仅在 detail/debug 模式可见。
+- **工具调用一行概要**：`▸ shell "ls -la" → ✗ Permission denied`，只在展开时才显示 JSON。
+- **权限阻塞有明确操作指引**：提示用户可用的操作选项。
+- **轮次分组有视觉边界**：相同 round 的事件视觉纳入一组。
+
+**详细子任务**：
+
+#### P1-UX-6a 三级详细度模型（Verbosity Tiers）
+
+引入 `DisplayVerbosity { Compact, Normal, Verbose }` 枚举，控制 `event_to_lines()` 输出策略：
+
+| 事件类型 | Compact（默认） | Normal（/detail） | Verbose（/debug） |
+|----------|-----------------|-------------------|-------------------|
+| WorkflowStage | `◆ planning` 单行 | + detail 描述 | + 原始 message |
+| StepStart/Finish | 隐藏 | 仅 Finish 含耗时 | start + finish 全展 |
+| TokenUsage | 隐藏（已在状态栏） | `tok 31.3k (+76)` 单行 | 原始 k=v |
+| ToolCallStart | `▸ shell "ls -la"` | + 格式化参数 | + 原始 JSON args |
+| ToolCallEnd | 合并到 start 行尾 | + output preview | + meta/call_id |
+| Reasoning | 折叠提示 | 首行 + "..." | 全文 |
+| PermissionAsked | 高亮 + 操作指引 | 同左 | + 原始消息体 |
+
+切换方式：`Ctrl+D` 循环 Compact → Normal → Verbose，`/verbosity <level>` 直接设置。
+
+#### P1-UX-6b 阶段切换去重与精简
+
+`WorkflowStage` 事件合并为**单行语义摘要**，去掉冗余：
+
+- 当前：
+  ```
+  ◆ [stage:planning]
+  ◇ [Workflow][r0] workflow_stage: planning | build_prompt_and_context
+  ```
+- 目标（Compact）：
+  ```
+  ◆ Planning...
+  ```
+- 目标（Normal）：
+  ```
+  ◆ Planning — building context
+  ```
+
+#### P1-UX-6c 工具调用单行概要
+
+将 ToolCallStart + ToolCallEnd 合并为**一行概要**（配合 Compact 模式）：
+
+- 当前（5 行）：
+  ```
+  ▸ [r1] start shell
+  └─ input : {"command":"ls -la","working_dir":"..."}
+  ⚠ [Permission][r1] permission_asked: Command not allowed: ls -la
+  ✗ [r1] failed shell (0ms)
+  ```
+- 目标 Compact（1~2 行）：
+  ```
+  ▸ shell "ls -la" ✗ permission denied
+    └ Tip: /allow shell 或设置 NDC_TOOL_ALLOW=shell
+  ```
+- 目标 Normal（2~3 行）：
+  ```
+  ▸ shell: ls -la (dir: /home/.../ndc)
+    ✗ Permission denied — command not in allow list
+    └ Tip: /allow shell, or reply 'y' to allow this once
+  ```
+
+实现要点：
+- `extract_tool_summary(tool_name, args_json) -> String`：从 JSON 参数提取人性化摘要（shell→command, read→path, write→path, grep→pattern）。
+- ToolCallStart 在 Compact 模式下缓存到 `pending_tool_call`，等 ToolCallEnd 或 Permission 时一并输出。
+
+#### P1-UX-6d Token 使用内联格式化
+
+- 将原始 `token_usage: source=provider prompt=31213 completion=76 total=31289 | session_...` 替换为：
+  - Compact：隐藏（已在状态栏进度条展示）。
+  - Normal：`  tok +31.3k (31.3k total, 11.1s)` 单行精简。
+  - Verbose：保留原始 k=v 供调试。
+
+#### P1-UX-6e 权限交互增强
+
+Permission 事件改为高可见度卡片样式：
+
+```
+┌ ⚠ Permission Required ─────────────────────┐
+│ shell: ls -la                               │
+│ Risk: Medium — command not in allow list     │
+│                                             │
+│ [y] allow once  [a] allow all  [n] deny     │
+└─────────────────────────────────────────────┘
+```
+
+实现路径：
+- 短期（当前 stdin 阻塞模式）：在 `style_session_log_line` 渲染为多行高亮块，附带操作提示文案。
+- 长期（P1-UX-4 延期项）：async channel 重构后，权限确认走 TUI 事件循环，支持真正的 y/n/a 按键。
+
+#### P1-UX-6f 轮次分组与视觉分隔
+
+- 在 round 切换时插入轻量分隔线：`── Round 2 ──`（仅 Normal/Verbose 模式）。
+- 同一 round 内事件统一缩进 2 格，形成视觉层次。
+- Thinking 内容与工具调用在视觉上归属为子层级。
+
+#### P1-UX-6 执行优先级
+
+| 优先级 | 子任务 | 依赖 | 复杂度 |
+|--------|--------|------|--------|
+| 1 | P1-UX-6b 阶段去重 | 无 | 低 |
+| 2 | P1-UX-6d Token 格式化 | 无 | 低 |
+| 3 | P1-UX-6c 工具单行概要 | 无 | 中 |
+| 4 | P1-UX-6e 权限增强 | 无 | 中 |
+| 5 | P1-UX-6a 三级详细度 | 6b/6c/6d | 中 |
+| 6 | P1-UX-6f 轮次分组 | 6a | 中 |
 
 ### P1 其他执行清单（P0-D 完成后推进）
 

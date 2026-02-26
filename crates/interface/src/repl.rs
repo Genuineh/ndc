@@ -26,7 +26,7 @@ use crossterm::event::{
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use crossterm::{execute, style::Stylize};
+use crossterm::execute;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
@@ -131,6 +131,8 @@ struct ReplVisualizationState {
     expand_tool_cards: bool,
     live_events_enabled: bool,
     show_usage_metrics: bool,
+    verbosity: DisplayVerbosity,
+    last_emitted_round: usize,
     timeline_limit: usize,
     timeline_cache: Vec<ndc_core::AgentExecutionEvent>,
     redaction_mode: RedactionMode,
@@ -142,6 +144,127 @@ struct ReplVisualizationState {
     session_token_total: u64,
     latest_round_token_total: u64,
     permission_blocked: bool,
+    permission_pending_message: Option<String>,
+}
+
+// ===== Theme System =====
+
+#[derive(Debug, Clone, Copy)]
+struct TuiTheme {
+    text_strong: Color,
+    text_base: Color,
+    text_muted: Color,
+    text_dim: Color,
+    primary: Color,
+    success: Color,
+    warning: Color,
+    danger: Color,
+    info: Color,
+    user_accent: Color,
+    assistant_accent: Color,
+    tool_accent: Color,
+    thinking_accent: Color,
+    border_normal: Color,
+    border_active: Color,
+    border_dim: Color,
+    progress_done: Color,
+    progress_active: Color,
+    progress_pending: Color,
+}
+
+impl TuiTheme {
+    fn default_dark() -> Self {
+        Self {
+            text_strong: Color::White,
+            text_base: Color::Gray,
+            text_muted: Color::DarkGray,
+            text_dim: Color::Rgb(100, 100, 100),
+            primary: Color::Cyan,
+            success: Color::Green,
+            warning: Color::Yellow,
+            danger: Color::Red,
+            info: Color::Blue,
+            user_accent: Color::Blue,
+            assistant_accent: Color::Cyan,
+            tool_accent: Color::Gray,
+            thinking_accent: Color::Magenta,
+            border_normal: Color::DarkGray,
+            border_active: Color::Cyan,
+            border_dim: Color::Rgb(60, 60, 60),
+            progress_done: Color::Green,
+            progress_active: Color::Cyan,
+            progress_pending: Color::DarkGray,
+        }
+    }
+}
+
+// ===== Input History =====
+
+#[derive(Debug, Clone)]
+struct InputHistory {
+    entries: Vec<String>,
+    cursor: Option<usize>,
+    draft: String,
+    max_entries: usize,
+}
+
+impl InputHistory {
+    fn new(max_entries: usize) -> Self {
+        Self {
+            entries: Vec::new(),
+            cursor: None,
+            draft: String::new(),
+            max_entries,
+        }
+    }
+
+    fn push(&mut self, entry: String) {
+        if entry.trim().is_empty() {
+            return;
+        }
+        self.entries.retain(|e| e != &entry);
+        self.entries.push(entry);
+        if self.entries.len() > self.max_entries {
+            self.entries.remove(0);
+        }
+        self.cursor = None;
+    }
+
+    fn up(&mut self, current_input: &str) -> Option<&str> {
+        if self.entries.is_empty() {
+            return None;
+        }
+        match self.cursor {
+            None => {
+                self.draft = current_input.to_string();
+                self.cursor = Some(self.entries.len() - 1);
+            }
+            Some(0) => return Some(&self.entries[0]),
+            Some(i) => {
+                self.cursor = Some(i - 1);
+            }
+        }
+        self.cursor.map(|i| self.entries[i].as_str())
+    }
+
+    fn down(&mut self) -> Option<&str> {
+        match self.cursor {
+            None => None,
+            Some(i) if i + 1 >= self.entries.len() => {
+                self.cursor = None;
+                Some(self.draft.as_str())
+            }
+            Some(i) => {
+                self.cursor = Some(i + 1);
+                Some(self.entries[i + 1].as_str())
+            }
+        }
+    }
+
+    fn reset(&mut self) {
+        self.cursor = None;
+        self.draft.clear();
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -162,6 +285,44 @@ enum TuiShortcutAction {
     ShowRecentThinking,
     ShowTimeline,
     ClearPanel,
+}
+
+/// Controls how much detail is shown for process events in the conversation panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DisplayVerbosity {
+    /// Minimal output: single-line stage, hide steps/tokens, tool one-liner
+    Compact,
+    /// Moderate output: stage + detail, formatted tokens, tool with params
+    Normal,
+    /// Full debug output: all raw messages, JSON args, meta fields
+    Verbose,
+}
+
+impl DisplayVerbosity {
+    fn next(self) -> Self {
+        match self {
+            Self::Compact => Self::Normal,
+            Self::Normal => Self::Verbose,
+            Self::Verbose => Self::Compact,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Compact => "compact",
+            Self::Normal => "normal",
+            Self::Verbose => "verbose",
+        }
+    }
+
+    fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "compact" | "c" => Some(Self::Compact),
+            "normal" | "n" => Some(Self::Normal),
+            "verbose" | "v" | "debug" => Some(Self::Verbose),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -257,6 +418,10 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         summary: "toggle tool cards",
     },
     SlashCommandSpec {
+        command: "/verbosity",
+        summary: "compact/normal/verbose",
+    },
+    SlashCommandSpec {
         command: "/stream",
         summary: "stream on/off/status",
     },
@@ -339,12 +504,18 @@ impl ReplVisualizationState {
         let live_events_enabled = env_bool("NDC_REPL_LIVE_EVENTS").unwrap_or(true);
         let show_usage_metrics = env_bool("NDC_REPL_SHOW_USAGE").unwrap_or(true);
         let timeline_limit = env_usize("NDC_TIMELINE_LIMIT").unwrap_or(40).max(1);
+        let verbosity = std::env::var("NDC_DISPLAY_VERBOSITY")
+            .ok()
+            .and_then(|v| DisplayVerbosity::parse(&v))
+            .unwrap_or(DisplayVerbosity::Compact);
         Self {
             show_thinking,
             show_tool_details,
             expand_tool_cards,
             live_events_enabled,
             show_usage_metrics,
+            verbosity,
+            last_emitted_round: 0,
             timeline_limit,
             timeline_cache: Vec::new(),
             redaction_mode: RedactionMode::from_env(),
@@ -356,6 +527,7 @@ impl ReplVisualizationState {
             session_token_total: 0,
             latest_round_token_total: 0,
             permission_blocked: false,
+            permission_pending_message: None,
         }
     }
 }
@@ -425,6 +597,7 @@ fn canonical_slash_command(command: &str) -> &str {
         "/status" | "/st" => "/status",
         "/help" | "/h" => "/help",
         "/cards" | "/toolcards" => "/cards",
+        "/verbosity" | "/v" => "/verbosity",
         "/clear" | "/cls" => "/clear",
         "/resume" | "/r" => "/resume",
         _ => command,
@@ -438,6 +611,7 @@ fn slash_argument_options(command: &str) -> Option<&'static [&'static str]> {
         "/workflow" => Some(&["compact", "verbose"]),
         "/thinking" => Some(&["show", "now"]),
         "/tokens" => Some(&["show", "hide", "reset", "status"]),
+        "/verbosity" => Some(&["compact", "normal", "verbose"]),
         _ => None,
     }
 }
@@ -491,6 +665,7 @@ fn completion_suggestions_for_input(input: &str) -> Vec<String> {
         .collect()
 }
 
+#[cfg(test)]
 fn build_input_hint_lines(
     input: &str,
     completion: Option<&ReplCommandCompletionState>,
@@ -752,6 +927,7 @@ fn workflow_progress_descriptor(
     format!("{}%({}/{})", percent, index, total)
 }
 
+#[cfg(test)]
 fn build_status_line(
     status: &crate::agent_mode::AgentModeStatus,
     viz_state: &ReplVisualizationState,
@@ -816,6 +992,348 @@ fn build_status_line(
         },
         if is_processing { "processing" } else { "idle" }
     )
+}
+
+// ===== New Layout Rendering Functions =====
+
+fn tool_status_narrative(tool_name: Option<&str>) -> &'static str {
+    match tool_name {
+        Some("read" | "read_file") => "Reading file...",
+        Some("grep" | "glob" | "list" | "list_dir") => "Searching codebase...",
+        Some("write" | "write_file" | "edit" | "edit_file") => "Making edits...",
+        Some("shell" | "bash") => "Running command...",
+        Some("ndc_task_create" | "ndc_task_list" | "ndc_task_update" | "ndc_task_verify") => {
+            "Managing tasks..."
+        }
+        Some("webfetch" | "websearch") => "Searching web...",
+        _ => "Working...",
+    }
+}
+
+fn build_title_bar<'a>(
+    status: &crate::agent_mode::AgentModeStatus,
+    is_processing: bool,
+    active_tool: Option<&str>,
+    theme: &TuiTheme,
+) -> Line<'a> {
+    let project_name = status
+        .project_root
+        .as_deref()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("-");
+
+    let state_text = if is_processing {
+        tool_status_narrative(active_tool)
+    } else {
+        "idle"
+    };
+    let state_color = if is_processing {
+        theme.warning
+    } else {
+        theme.text_muted
+    };
+
+    Line::from(vec![
+        Span::styled(
+            " NDC ",
+            Style::default()
+                .fg(theme.primary)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" ", Style::default()),
+        Span::styled(
+            format!("{}", project_name),
+            Style::default().fg(theme.primary),
+        ),
+        Span::styled(
+            format!("  {}  ", short_session_id(status.session_id.as_deref())),
+            Style::default().fg(theme.text_dim),
+        ),
+        Span::styled(
+            format!("{}  ", status.model),
+            Style::default().fg(theme.success),
+        ),
+        Span::styled(
+            state_text.to_string(),
+            Style::default().fg(state_color),
+        ),
+    ])
+}
+
+fn build_workflow_progress_bar<'a>(
+    viz_state: &ReplVisualizationState,
+    theme: &TuiTheme,
+) -> Line<'a> {
+    let current = viz_state.current_workflow_stage.as_deref();
+    let current_idx = current.and_then(|s| WORKFLOW_STAGE_ORDER.iter().position(|w| *w == s));
+
+    let mut spans: Vec<Span<'a>> = vec![Span::raw(" ")];
+    for (i, stage) in WORKFLOW_STAGE_ORDER.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(
+                " ── ",
+                Style::default().fg(theme.border_dim),
+            ));
+        }
+        let (text, style) = match current_idx {
+            Some(ci) if i < ci => (
+                stage.to_string(),
+                Style::default().fg(theme.progress_done),
+            ),
+            Some(ci) if i == ci => (
+                format!("[{}]", stage),
+                Style::default()
+                    .fg(theme.progress_active)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            _ => (
+                stage.to_string(),
+                Style::default().fg(theme.progress_pending),
+            ),
+        };
+        spans.push(Span::styled(text, style));
+    }
+    Line::from(spans)
+}
+
+fn build_permission_bar<'a>(
+    viz_state: &ReplVisualizationState,
+    theme: &TuiTheme,
+) -> Vec<Line<'a>> {
+    let msg = match &viz_state.permission_pending_message {
+        Some(m) => m.clone(),
+        None => "Awaiting confirmation...".to_string(),
+    };
+    vec![
+        Line::from(vec![
+            Span::styled(
+                " ⚠ Permission Required ",
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(theme.warning)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!("  {}", msg), Style::default().fg(theme.warning)),
+        ]),
+        Line::from(vec![Span::styled(
+            "   [y] Allow  [n] Deny  [a] Always allow",
+            Style::default().fg(theme.text_muted),
+        )]),
+    ]
+}
+
+fn build_status_hint_bar<'a>(
+    input: &str,
+    completion: Option<&ReplCommandCompletionState>,
+    viz_state: &ReplVisualizationState,
+    stream_state: &str,
+    theme: &TuiTheme,
+) -> Line<'a> {
+    // If typing a slash command and no completion yet, show matching commands
+    if let Some((_raw, norm, args, trailing_space)) = parse_slash_tokens(input) {
+        if completion.is_none() {
+            if args.is_empty() && !trailing_space {
+                let matches = matching_slash_commands(&norm);
+                let cmds: String = matches
+                    .iter()
+                    .map(|s| s.command)
+                    .collect::<Vec<_>>()
+                    .join("  ");
+                return Line::from(vec![
+                    Span::styled(" ", Style::default()),
+                    Span::styled(cmds, Style::default().fg(theme.text_muted)),
+                    Span::styled("  Tab: complete", Style::default().fg(theme.text_dim)),
+                ]);
+            }
+            if let Some(opts) = slash_argument_options(&norm) {
+                let opts_str = opts.join("  ");
+                return Line::from(vec![
+                    Span::styled(
+                        format!(" {}: ", canonical_slash_command(&norm)),
+                        Style::default().fg(theme.primary),
+                    ),
+                    Span::styled(opts_str, Style::default().fg(theme.text_muted)),
+                ]);
+            }
+        }
+    }
+
+    // Show active completion
+    if let Some(comp) = completion {
+        let label = format!(
+            " [{}/{}] {} ",
+            comp.selected_index + 1,
+            comp.suggestions.len(),
+            comp.suggestions
+                .get(comp.selected_index)
+                .map(String::as_str)
+                .unwrap_or(""),
+        );
+        return Line::from(vec![
+            Span::styled(label, Style::default().fg(theme.primary)),
+            Span::styled(
+                "  Tab/Shift+Tab: cycle",
+                Style::default().fg(theme.text_dim),
+            ),
+        ]);
+    }
+
+    // Default: compact status bar
+    let sep = Span::styled(" │ ", Style::default().fg(theme.border_dim));
+    let mut spans = vec![
+        Span::styled(" /help", Style::default().fg(theme.text_muted)),
+        sep.clone(),
+    ];
+
+    if viz_state.show_usage_metrics && viz_state.session_token_total > 0 {
+        let round = viz_state.latest_round_token_total;
+        let session = viz_state.session_token_total;
+        // Visual token bar (8 chars wide)
+        let bar = token_progress_bar(session, 128_000);
+        spans.push(Span::styled(
+            format!("tok {}/{} {}", format_token_count(round), format_token_count(session), bar),
+            Style::default().fg(theme.text_dim),
+        ));
+        spans.push(sep.clone());
+    }
+
+    spans.push(Span::styled(
+        format!("stream:{}", stream_state),
+        Style::default().fg(theme.text_dim),
+    ));
+    spans.push(sep.clone());
+    spans.push(Span::styled(
+        "Shift+Enter newline  ↑↓ history  PgUp/Dn scroll  Esc exit",
+        Style::default().fg(theme.text_dim),
+    ));
+
+    Line::from(spans)
+}
+
+fn format_token_count(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}k", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
+}
+
+fn token_progress_bar(current: u64, capacity: u64) -> String {
+    let ratio = if capacity == 0 {
+        0.0
+    } else {
+        (current as f64 / capacity as f64).clamp(0.0, 1.0)
+    };
+    let filled = (ratio * 8.0).round() as usize;
+    let empty = 8 - filled;
+    format!("[{}{}]", "█".repeat(filled), "░".repeat(empty))
+}
+
+/// Truncate output text to `max_chars`, returning (display_text, was_truncated).
+fn truncate_output(text: &str, max_chars: usize) -> (String, bool) {
+    if text.len() <= max_chars {
+        (text.to_string(), false)
+    } else {
+        let mut end = max_chars;
+        while !text.is_char_boundary(end) && end > 0 {
+            end -= 1;
+        }
+        (text[..end].to_string(), true)
+    }
+}
+
+/// Capitalize a workflow stage name: "planning" → "Planning"
+fn capitalize_stage(stage: &str) -> String {
+    let mut chars = stage.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(c) => c.to_uppercase().to_string() + chars.as_str(),
+    }
+}
+
+/// Extract a human-readable one-line summary from tool name + JSON args string.
+/// e.g. shell → `ls -la`, read → `src/main.rs`, write → `output.txt`
+fn extract_tool_summary(tool_name: &str, args_json: &str) -> String {
+    // Try to extract the key field from JSON-ish text
+    let extract_field = |field: &str| -> Option<String> {
+        let key = format!("\"{}\":", field);
+        let idx = args_json.find(&key)?;
+        let rest = &args_json[idx + key.len()..];
+        let rest = rest.trim_start();
+        if rest.starts_with('"') {
+            let inner = &rest[1..];
+            let end = inner.find('"')?;
+            Some(inner[..end].to_string())
+        } else {
+            let end = rest.find(&[',', '}', '\n'] as &[char]).unwrap_or(rest.len());
+            Some(rest[..end].trim().to_string())
+        }
+    };
+
+    match tool_name {
+        "shell" | "bash" => extract_field("command").unwrap_or_default(),
+        "read" | "read_file" => extract_field("path")
+            .or_else(|| extract_field("file_path"))
+            .unwrap_or_default(),
+        "write" | "write_file" | "edit" | "edit_file" => extract_field("path")
+            .or_else(|| extract_field("file_path"))
+            .unwrap_or_default(),
+        "grep" | "glob" => extract_field("pattern")
+            .or_else(|| extract_field("query"))
+            .unwrap_or_default(),
+        "list" | "list_dir" => extract_field("path").unwrap_or_else(|| ".".to_string()),
+        "webfetch" | "websearch" => extract_field("url")
+            .or_else(|| extract_field("query"))
+            .unwrap_or_default(),
+        _ => {
+            // Fallback: show first string value found
+            if let Some(val) = extract_field("path")
+                .or_else(|| extract_field("command"))
+                .or_else(|| extract_field("query"))
+            {
+                val
+            } else {
+                // Ultra-fallback: truncated raw
+                let clean = args_json.trim_start_matches('{').trim_end_matches('}').trim();
+                let (t, _) = truncate_output(clean, 60);
+                t
+            }
+        }
+    }
+}
+
+/// Format a duration_ms as a human-readable string
+fn format_duration_ms(ms: u64) -> String {
+    if ms >= 60_000 {
+        format!("{:.1}m", ms as f64 / 60_000.0)
+    } else if ms >= 1_000 {
+        format!("{:.1}s", ms as f64 / 1_000.0)
+    } else {
+        format!("{}ms", ms)
+    }
+}
+
+fn input_line_count(input: &str) -> u16 {
+    let lines = input.chars().filter(|c| *c == '\n').count() as u16 + 1;
+    lines.clamp(1, 4)
+}
+
+fn tui_layout_constraints(has_permission: bool, input_lines: u16) -> Vec<Constraint> {
+    let input_height = input_lines + 2; // +2 for border
+    let mut c = vec![
+        Constraint::Length(1), // title bar
+        Constraint::Length(1), // workflow progress
+        Constraint::Min(5),    // conversation area
+    ];
+    if has_permission {
+        c.push(Constraint::Length(2)); // permission bar
+    }
+    c.push(Constraint::Length(1)); // status hint bar
+    c.push(Constraint::Length(input_height)); // input area
+    c
 }
 
 fn resolve_stream_state(
@@ -904,14 +1422,7 @@ fn apply_tokens_command(
     ))
 }
 
-fn tui_layout_constraints() -> [Constraint; 4] {
-    [
-        Constraint::Length(1),
-        Constraint::Min(1),
-        Constraint::Length(4),
-        Constraint::Length(4),
-    ]
-}
+// Old 4-zone layout removed — replaced by dynamic tui_layout_constraints(has_permission)
 
 #[cfg(test)]
 fn calc_log_scroll(log_count: usize, body_height: usize) -> u16 {
@@ -946,11 +1457,11 @@ fn handle_session_scroll_key(
 ) -> bool {
     let page = (session_view.body_height / 2).max(1) as isize;
     match key.code {
-        KeyCode::Up => {
+        KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
             move_session_scroll(session_view, log_count, -1);
             true
         }
-        KeyCode::Down => {
+        KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
             move_session_scroll(session_view, log_count, 1);
             true
         }
@@ -995,110 +1506,224 @@ fn handle_session_scroll_mouse(
 }
 
 fn style_session_log_lines(logs: &[String]) -> Vec<Line<'static>> {
+    let theme = TuiTheme::default_dark();
     logs.iter()
-        .map(|line| style_session_log_line(line))
+        .map(|line| style_session_log_line(line, &theme))
         .collect()
 }
 
-fn style_session_log_line(line: &str) -> Line<'static> {
+fn style_session_log_line(line: &str, theme: &TuiTheme) -> Line<'static> {
     let plain = || Line::from(Span::raw(line.to_string()));
-    let muted = Style::default().fg(Color::DarkGray);
-    let subtle = Style::default().fg(Color::Gray);
+    let muted = Style::default().fg(theme.text_muted);
+    let subtle = Style::default().fg(theme.text_base);
     let title = Style::default()
-        .fg(Color::Cyan)
+        .fg(theme.assistant_accent)
         .add_modifier(Modifier::BOLD);
     let success = Style::default()
-        .fg(Color::Green)
+        .fg(theme.success)
         .add_modifier(Modifier::BOLD);
     let warning = Style::default()
-        .fg(Color::Yellow)
+        .fg(theme.warning)
         .add_modifier(Modifier::BOLD);
-    let danger = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
+    let danger = Style::default()
+        .fg(theme.danger)
+        .add_modifier(Modifier::BOLD);
 
     if line == "You:" {
-        return Line::from(Span::styled(
-            "You:",
-            Style::default()
-                .fg(Color::Blue)
-                .add_modifier(Modifier::BOLD),
-        ));
+        return Line::from(vec![
+            Span::styled(
+                "▌ ",
+                Style::default().fg(theme.user_accent),
+            ),
+            Span::styled(
+                "You",
+                Style::default()
+                    .fg(theme.user_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]);
     }
     if line == "Assistant:" {
-        return Line::from(Span::styled("Assistant:", title));
+        return Line::from(vec![
+            Span::styled(
+                "▌ ",
+                Style::default().fg(theme.assistant_accent),
+            ),
+            Span::styled("Assistant", title),
+        ]);
     }
     if let Some(text) = line.strip_prefix("You: ") {
         return Line::from(vec![
             Span::styled(
-                "You:",
+                "▌ ",
+                Style::default().fg(theme.user_accent),
+            ),
+            Span::styled(
+                "You  ",
                 Style::default()
-                    .fg(Color::Blue)
+                    .fg(theme.user_accent)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(" "),
-            Span::raw(text.to_string()),
+            Span::styled(text.to_string(), Style::default().fg(theme.text_strong)),
         ]);
     }
     if line.starts_with("[Agent] processing") {
-        return Line::from(Span::styled(line.to_string(), warning));
+        return Line::from(vec![
+            Span::styled("  ◆ ", Style::default().fg(theme.warning)),
+            Span::styled(
+                line.strip_prefix("[Agent] ").unwrap_or(line).to_string(),
+                Style::default().fg(theme.warning),
+            ),
+        ]);
     }
     if line.starts_with("[Error]") || line.starts_with("[Error][") {
-        return Line::from(Span::styled(line.to_string(), danger));
+        return Line::from(vec![
+            Span::styled("  ✗ ", danger),
+            Span::styled(
+                line.strip_prefix("[Error] ").unwrap_or(line).to_string(),
+                Style::default().fg(theme.danger),
+            ),
+        ]);
     }
     if line.starts_with("[Permission]") {
-        return Line::from(Span::styled(line.to_string(), warning));
+        return Line::from(vec![
+            Span::styled("  ⚠ ", warning),
+            Span::styled(
+                line.strip_prefix("[Permission] ").unwrap_or(line).to_string(),
+                Style::default().fg(theme.warning),
+            ),
+        ]);
+    }
+    // ── New verbosity-aware line formats ──
+    if let Some(rest) = line.strip_prefix("[RoundSep] ") {
+        return Line::from(Span::styled(
+            format!("  {}", rest),
+            Style::default()
+                .fg(theme.text_dim)
+                .add_modifier(Modifier::DIM),
+        ));
+    }
+    if let Some(rest) = line.strip_prefix("[Stage] ") {
+        return Line::from(vec![
+            Span::styled("  ◆ ", Style::default().fg(theme.primary)),
+            Span::styled(
+                rest.to_string(),
+                Style::default()
+                    .fg(theme.primary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]);
+    }
+    if let Some(rest) = line.strip_prefix("[ToolRun] ") {
+        return Line::from(vec![
+            Span::styled("  ▸ ", Style::default().fg(theme.tool_accent)),
+            Span::styled(rest.to_string(), Style::default().fg(theme.tool_accent)),
+        ]);
+    }
+    if let Some(rest) = line.strip_prefix("[ToolEnd] ") {
+        let (icon, style) = if rest.starts_with('✗') {
+            ("  ✗ ", danger)
+        } else {
+            ("  ✓ ", success)
+        };
+        // Skip the icon character + space from the rest
+        let body = if rest.len() > 2 { &rest[4..] } else { rest };
+        return Line::from(vec![
+            Span::styled(icon, style),
+            Span::styled(body.to_string(), style),
+        ]);
+    }
+    if let Some(rest) = line.strip_prefix("[PermBlock] ") {
+        return Line::from(vec![
+            Span::styled("  ⚠ ", warning),
+            Span::styled(rest.to_string(), Style::default().fg(theme.warning)),
+        ]);
+    }
+    if let Some(rest) = line.strip_prefix("[PermHint] ") {
+        return Line::from(Span::styled(
+            format!("    {}", rest),
+            Style::default().fg(theme.text_muted),
+        ));
     }
     if line.starts_with("[Tool]") {
-        let style = if line.contains(" failed ") {
-            danger
+        let (icon, style) = if line.contains(" failed ") {
+            ("  ✗ ", danger)
         } else if line.contains(" done ") {
-            success
+            ("  ✓ ", success)
         } else {
-            title
+            ("  ▸ ", Style::default().fg(theme.tool_accent))
         };
-        return Line::from(Span::styled(line.to_string(), style));
+        return Line::from(vec![
+            Span::styled(icon, style),
+            Span::styled(
+                line.strip_prefix("[Tool]").unwrap_or(line).to_string(),
+                style,
+            ),
+        ]);
     }
     if line.starts_with("[Workflow]") {
-        return Line::from(Span::styled(
-            line.to_string(),
-            Style::default()
-                .fg(Color::LightCyan)
-                .add_modifier(Modifier::BOLD),
-        ));
+        return Line::from(vec![
+            Span::styled("  ◇ ", Style::default().fg(theme.primary)),
+            Span::styled(
+                line.strip_prefix("[Workflow] ").unwrap_or(line).to_string(),
+                Style::default()
+                    .fg(theme.primary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]);
     }
     if line.starts_with("[Usage]") {
-        return Line::from(Span::styled(
-            line.to_string(),
-            Style::default().fg(Color::LightGreen),
-        ));
+        return Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled(
+                line.strip_prefix("[Usage] ").unwrap_or(line).to_string(),
+                Style::default().fg(theme.success),
+            ),
+        ]);
     }
     if line.starts_with("[Thinking]") {
-        return Line::from(Span::styled(
-            line.to_string(),
-            Style::default().fg(Color::Magenta),
-        ));
+        return Line::from(vec![
+            Span::styled("  ◌ ", Style::default().fg(theme.thinking_accent)),
+            Span::styled(
+                line.strip_prefix("[Thinking] ").unwrap_or(line).to_string(),
+                Style::default().fg(theme.thinking_accent),
+            ),
+        ]);
     }
     if line.starts_with("[Step]") {
-        return Line::from(Span::styled(
-            line.to_string(),
-            Style::default().fg(Color::Cyan),
-        ));
+        return Line::from(vec![
+            Span::styled("  → ", Style::default().fg(theme.primary)),
+            Span::styled(
+                line.strip_prefix("[Step] ").unwrap_or(line).to_string(),
+                Style::default().fg(theme.primary),
+            ),
+        ]);
     }
     if line.trim_start().starts_with("[stage:") {
-        return Line::from(Span::styled(
-            line.to_string(),
-            Style::default()
-                .fg(Color::LightCyan)
-                .add_modifier(Modifier::BOLD),
-        ));
+        return Line::from(vec![
+            Span::styled("  ◆ ", Style::default().fg(theme.primary)),
+            Span::styled(
+                line.to_string(),
+                Style::default()
+                    .fg(theme.primary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]);
     }
     if line.starts_with("[Agent][") {
         return Line::from(Span::styled(
             line.to_string(),
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(theme.warning),
         ));
     }
     if line.starts_with("[OK]") {
-        return Line::from(Span::styled(line.to_string(), success));
+        return Line::from(vec![
+            Span::styled("  ✓ ", success),
+            Span::styled(
+                line.strip_prefix("[OK] ").unwrap_or(line).to_string(),
+                Style::default().fg(theme.success),
+            ),
+        ]);
     }
     if line.starts_with("[Tip]") || line.starts_with("[Warning]") {
         return Line::from(Span::styled(line.to_string(), warning));
@@ -1118,7 +1743,7 @@ fn style_session_log_line(line: &str) -> Line<'static> {
             Span::styled(
                 "input",
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme.primary)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(" : ", subtle),
@@ -1126,24 +1751,32 @@ fn style_session_log_line(line: &str) -> Line<'static> {
         ]);
     }
     if let Some(value) = line.strip_prefix("  ├─ output: ") {
-        return Line::from(vec![
+        let (display, truncated) = truncate_output(value, 200);
+        let mut spans = vec![
             Span::styled("  ├─ ", subtle),
             Span::styled(
                 "output",
                 Style::default()
-                    .fg(Color::Green)
+                    .fg(theme.success)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(": ", subtle),
-            Span::raw(value.to_string()),
-        ]);
+            Span::raw(display),
+        ];
+        if truncated {
+            spans.push(Span::styled(
+                " … (truncated)",
+                Style::default().fg(theme.text_dim),
+            ));
+        }
+        return Line::from(spans);
     }
     if let Some(value) = line.strip_prefix("  ├─ error : ") {
         return Line::from(vec![
             Span::styled("  ├─ ", subtle),
             Span::styled(
                 "error",
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                Style::default().fg(theme.danger).add_modifier(Modifier::BOLD),
             ),
             Span::styled(" : ", subtle),
             Span::raw(value.to_string()),
@@ -1155,7 +1788,7 @@ fn style_session_log_line(line: &str) -> Line<'static> {
             Span::styled(
                 "meta",
                 Style::default()
-                    .fg(Color::LightMagenta)
+                    .fg(theme.thinking_accent)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled("  : ", subtle),
@@ -1168,7 +1801,174 @@ fn style_session_log_line(line: &str) -> Line<'static> {
     if line.starts_with("Shortcuts:") {
         return Line::from(Span::styled(line.to_string(), muted));
     }
+    // Simple Markdown rendering for assistant output (indented lines)
+    if line.starts_with("  ") && !line.starts_with("  ├") && !line.starts_with("  └") && !line.starts_with("  (") && !line.starts_with("  - r") {
+        return render_inline_markdown(line, theme);
+    }
     plain()
+}
+
+/// Render simple inline Markdown: `code`, **bold**, *italic*, # headers, - bullets
+fn render_inline_markdown<'a>(line: &str, theme: &TuiTheme) -> Line<'a> {
+    let trimmed = line.trim_start();
+    let indent = &line[..line.len() - trimmed.len()];
+
+    // Code fence lines (``` language)
+    if trimmed.starts_with("```") {
+        return Line::from(vec![
+            Span::raw(indent.to_string()),
+            Span::styled(
+                trimmed.to_string(),
+                Style::default().fg(theme.text_muted),
+            ),
+        ]);
+    }
+
+    // Headers (# ## ###)
+    if let Some(rest) = trimmed.strip_prefix("### ") {
+        return Line::from(vec![
+            Span::raw(indent.to_string()),
+            Span::styled(
+                format!("   {}", rest),
+                Style::default()
+                    .fg(theme.primary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]);
+    }
+    if let Some(rest) = trimmed.strip_prefix("## ") {
+        return Line::from(vec![
+            Span::raw(indent.to_string()),
+            Span::styled(
+                format!("  {}", rest),
+                Style::default()
+                    .fg(theme.primary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]);
+    }
+    if let Some(rest) = trimmed.strip_prefix("# ") {
+        return Line::from(vec![
+            Span::raw(indent.to_string()),
+            Span::styled(
+                rest.to_string(),
+                Style::default()
+                    .fg(theme.text_strong)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]);
+    }
+
+    // Bullet lists
+    if let Some(rest) = trimmed.strip_prefix("- ") {
+        let mut spans = vec![
+            Span::raw(indent.to_string()),
+            Span::styled("  • ", Style::default().fg(theme.text_muted)),
+        ];
+        spans.extend(parse_inline_spans(rest, theme));
+        return Line::from(spans);
+    }
+    if let Some(rest) = trimmed.strip_prefix("* ") {
+        let mut spans = vec![
+            Span::raw(indent.to_string()),
+            Span::styled("  • ", Style::default().fg(theme.text_muted)),
+        ];
+        spans.extend(parse_inline_spans(rest, theme));
+        return Line::from(spans);
+    }
+
+    // Regular line with inline formatting
+    let mut spans = vec![Span::raw(indent.to_string())];
+    spans.extend(parse_inline_spans(trimmed, theme));
+    Line::from(spans)
+}
+
+/// Parse inline Markdown spans: `code`, **bold**, *italic*
+fn parse_inline_spans<'a>(text: &str, theme: &TuiTheme) -> Vec<Span<'a>> {
+    let mut spans = Vec::new();
+    let mut remaining = text;
+
+    while !remaining.is_empty() {
+        // Find the next special marker
+        let next_backtick = remaining.find('`');
+        let next_double_star = remaining.find("**");
+        let next_star = remaining.find('*');
+
+        // Find the earliest marker
+        let earliest = [
+            next_backtick.map(|p| (p, '`')),
+            next_double_star.map(|p| (p, 'B')), // B = bold **
+            next_star.filter(|&p| next_double_star != Some(p)).map(|p| (p, '*')),
+        ]
+        .into_iter()
+        .flatten()
+        .min_by_key(|(pos, _)| *pos);
+
+        match earliest {
+            None => {
+                // No more markers, push the rest
+                spans.push(Span::raw(remaining.to_string()));
+                break;
+            }
+            Some((pos, '`')) => {
+                if pos > 0 {
+                    spans.push(Span::raw(remaining[..pos].to_string()));
+                }
+                let after = &remaining[pos + 1..];
+                if let Some(end) = after.find('`') {
+                    spans.push(Span::styled(
+                        after[..end].to_string(),
+                        Style::default()
+                            .fg(theme.primary)
+                            .bg(Color::Rgb(40, 40, 40)),
+                    ));
+                    remaining = &after[end + 1..];
+                } else {
+                    spans.push(Span::raw(remaining[pos..].to_string()));
+                    break;
+                }
+            }
+            Some((pos, 'B')) => {
+                if pos > 0 {
+                    spans.push(Span::raw(remaining[..pos].to_string()));
+                }
+                let after = &remaining[pos + 2..];
+                if let Some(end) = after.find("**") {
+                    spans.push(Span::styled(
+                        after[..end].to_string(),
+                        Style::default()
+                            .fg(theme.text_strong)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                    remaining = &after[end + 2..];
+                } else {
+                    spans.push(Span::raw(remaining[pos..].to_string()));
+                    break;
+                }
+            }
+            Some((pos, '*')) => {
+                if pos > 0 {
+                    spans.push(Span::raw(remaining[..pos].to_string()));
+                }
+                let after = &remaining[pos + 1..];
+                if let Some(end) = after.find('*') {
+                    spans.push(Span::styled(
+                        after[..end].to_string(),
+                        Style::default().add_modifier(Modifier::ITALIC),
+                    ));
+                    remaining = &after[end + 1..];
+                } else {
+                    spans.push(Span::raw(remaining[pos..].to_string()));
+                    break;
+                }
+            }
+            _ => {
+                spans.push(Span::raw(remaining.to_string()));
+                break;
+            }
+        }
+    }
+    spans
 }
 
 async fn run_repl_tui(
@@ -1184,13 +1984,12 @@ async fn run_repl_tui(
     terminal.clear()?;
 
     let mut logs: Vec<String> = vec![
-        "NDC - Neo Development Companion".to_string(),
-        "Type natural language and press Enter. /help for commands.".to_string(),
+        "NDC — describe what you want, press Enter.  /help for commands".to_string(),
     ];
     let keymap = ReplTuiKeymap::from_env();
-    logs.push(format!("Shortcuts: {}", keymap.hint()));
 
     let mut input = String::new();
+    let mut input_history = InputHistory::new(100);
     let mut completion_state: Option<ReplCommandCompletionState> = None;
     let mut processing_handle: Option<
         tokio::task::JoinHandle<Result<ndc_core::AgentResponse, ndc_core::AgentError>>,
@@ -1224,60 +2023,103 @@ async fn run_repl_tui(
             viz_state.live_events_enabled,
             live_events.is_some(),
         );
-        let status_line = build_status_line(
-            &status,
-            viz_state,
-            is_processing,
-            &session_view,
-            stream_state,
-        );
-        let hint_lines = build_input_hint_lines(input.as_str(), completion_state.as_ref());
 
         terminal.draw(|f| {
+            let theme = TuiTheme::default_dark();
+            let has_permission = viz_state.permission_blocked;
+            let il = input_line_count(&input);
+            let constraints = tui_layout_constraints(has_permission, il);
             let areas = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints(tui_layout_constraints())
+                .constraints(constraints)
                 .split(f.area());
 
-            let status_widget = Paragraph::new(Line::from(status_line.clone().cyan().to_string()));
-            f.render_widget(status_widget, areas[0]);
+            let n = areas.len();
+            let body_idx = 2;
+            let hint_idx = n - 2;
+            let input_idx = n - 1;
 
-            let body_block = Block::default().title("Session").borders(Borders::ALL);
-            let inner = body_block.inner(areas[1]);
+            // [0] Title bar
+            let title_bar = build_title_bar(&status, is_processing, None, &theme);
+            f.render_widget(
+                Paragraph::new(title_bar)
+                    .style(Style::default().bg(Color::Rgb(30, 30, 30))),
+                areas[0],
+            );
+
+            // [1] Workflow progress bar
+            let progress = build_workflow_progress_bar(&viz_state, &theme);
+            f.render_widget(Paragraph::new(progress), areas[1]);
+
+            // [2] Conversation body
+            let body_block = Block::default()
+                .title(Span::styled(
+                    " Conversation ",
+                    Style::default().fg(theme.primary),
+                ))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.border_normal));
+            let inner = body_block.inner(areas[body_idx]);
             session_view.body_height = (inner.height as usize).max(1);
             let scroll = effective_log_scroll(logs.len(), &session_view) as u16;
             let body = Paragraph::new(Text::from(style_session_log_lines(logs.as_slice())))
                 .block(body_block)
                 .wrap(Wrap { trim: false })
                 .scroll((scroll, 0));
-            f.render_widget(body, areas[1]);
+            f.render_widget(body, areas[body_idx]);
             if logs.len() > session_view.body_height {
                 let mut scrollbar_state = ScrollbarState::new(logs.len())
                     .position(effective_log_scroll(logs.len(), &session_view));
                 let scrollbar = Scrollbar::default()
                     .orientation(ScrollbarOrientation::VerticalRight)
-                    .thumb_style(Style::default().fg(Color::Gray));
-                f.render_stateful_widget(scrollbar, areas[1], &mut scrollbar_state);
+                    .thumb_style(Style::default().fg(theme.text_muted));
+                f.render_stateful_widget(scrollbar, areas[body_idx], &mut scrollbar_state);
             }
 
-            let hints_widget = Paragraph::new(Text::from(
-                hint_lines
-                    .iter()
-                    .cloned()
-                    .map(Line::from)
-                    .collect::<Vec<_>>(),
-            ))
-            .block(Block::default().title("Hints").borders(Borders::ALL))
-            .wrap(Wrap { trim: false });
-            f.render_widget(hints_widget, areas[2]);
+            // [3] Permission bar (conditional)
+            if has_permission {
+                let perm_lines = build_permission_bar(&viz_state, &theme);
+                f.render_widget(Paragraph::new(Text::from(perm_lines)), areas[3]);
+            }
 
-            let input_title =
-                "Input (/workflow /tokens /metrics /t /d /cards /stream /timeline /clear, Enter send, Esc exit, ↑↓/PgUp/PgDn scroll, Ctrl+<keys>)";
-            let input_widget = Paragraph::new(Line::from(format!("> {}", input)))
-                .block(Block::default().title(input_title).borders(Borders::ALL));
-            f.render_widget(input_widget, areas[3]);
-            let x = areas[3].x + 2 + input.len() as u16;
-            let y = areas[3].y + 1;
+            // [n-2] Status / hint bar
+            let hint_line = build_status_hint_bar(
+                input.as_str(),
+                completion_state.as_ref(),
+                &viz_state,
+                stream_state,
+                &theme,
+            );
+            f.render_widget(
+                Paragraph::new(hint_line)
+                    .style(Style::default().bg(Color::Rgb(25, 25, 25))),
+                areas[hint_idx],
+            );
+
+            // [n-1] Input area (multiline)
+            let multiline_hint = if input.contains('\n') { " (multiline) " } else { "" };
+            let input_title_text = format!(" > {}", multiline_hint);
+            let input_block = Block::default()
+                .title(Span::styled(
+                    input_title_text,
+                    Style::default()
+                        .fg(theme.primary)
+                        .add_modifier(Modifier::BOLD),
+                ))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.border_active));
+            let input_lines: Vec<Line<'_>> = input
+                .split('\n')
+                .map(|l| Line::from(l.to_string()))
+                .collect();
+            let input_widget =
+                Paragraph::new(Text::from(input_lines)).block(input_block);
+            f.render_widget(input_widget, areas[input_idx]);
+            // Cursor at end of last line
+            let last_line = input.rsplit('\n').next().unwrap_or(&input);
+            let cursor_line_offset = input.chars().filter(|c| *c == '\n').count() as u16;
+            let x = areas[input_idx].x + 1 + last_line.len() as u16;
+            let y = areas[input_idx].y + 1 + cursor_line_offset;
             f.set_cursor_position((x, y));
         })?;
 
@@ -1377,10 +2219,31 @@ async fn run_repl_tui(
                                 continue;
                             }
                         }
+                        KeyCode::Up => {
+                            if let Some(prev) = input_history.up(&input) {
+                                input = prev.to_string();
+                            }
+                            continue;
+                        }
+                        KeyCode::Down => {
+                            if let Some(next) = input_history.down() {
+                                input = next.to_string();
+                            }
+                            continue;
+                        }
+                        KeyCode::Enter
+                            if key.modifiers.contains(KeyModifiers::SHIFT)
+                                || key.modifiers.contains(KeyModifiers::ALT) =>
+                        {
+                            input.push('\n');
+                            continue;
+                        }
                         KeyCode::Enter => {
                             let cmd = input.trim().to_string();
                             input.clear();
                             completion_state = None;
+                            input_history.push(cmd.clone());
+                            input_history.reset();
                             if cmd.is_empty() {
                                 continue;
                             }
@@ -1596,6 +2459,19 @@ async fn handle_command(
                     "COLLAPSED"
                 }
             );
+        }
+        "/verbosity" | "/v" => {
+            if parts.len() > 1 {
+                if let Some(v) = DisplayVerbosity::parse(parts[1]) {
+                    viz_state.verbosity = v;
+                    println!("[OK] Verbosity: {}", v.label());
+                } else {
+                    println!("[Error] Unknown verbosity level '{}'. Use: compact, normal, verbose", parts[1]);
+                }
+            } else {
+                viz_state.verbosity = viz_state.verbosity.next();
+                println!("[OK] Verbosity: {}", viz_state.verbosity.label());
+            }
         }
         "/timeline" => {
             if parts.len() > 1 {
@@ -1886,6 +2762,7 @@ Available Commands:
   /thinking show  Show recent thinking immediately
   /details, /d    Toggle tool step/details display
   /cards          Toggle tool cards expanded/collapsed
+  /verbosity, /v  Cycle display verbosity (compact/normal/verbose)
   /stream [mode]  Toggle realtime event stream (on/off/status)
   /workflow [mode] Show workflow overview (compact|verbose; default verbose)
   /tokens [mode]  Token metrics: show/hide/reset/status
@@ -1896,7 +2773,7 @@ Available Commands:
 
 TUI Shortcuts:
   Ctrl+T          Toggle thinking
-  Ctrl+D          Toggle tool details
+  Ctrl+D          Cycle verbosity (compact→normal→verbose)
   Ctrl+E          Toggle tool cards
   Ctrl+Y          Show recent thinking
   Ctrl+I          Show recent timeline
@@ -2021,7 +2898,22 @@ fn event_to_lines(
             | ndc_core::AgentExecutionEventKind::Reasoning
     ) {
         viz_state.permission_blocked = false;
+        viz_state.permission_pending_message = None;
     }
+    let v = viz_state.verbosity;
+
+    // Round separator (Normal/Verbose only)
+    let mut lines = Vec::new();
+    if matches!(v, DisplayVerbosity::Normal | DisplayVerbosity::Verbose)
+        && event.round > viz_state.last_emitted_round
+        && event.round > 0
+    {
+        lines.push(format!("[RoundSep] ── Round {} ──", event.round));
+    }
+    if event.round > 0 {
+        viz_state.last_emitted_round = event.round;
+    }
+
     match event.kind {
         ndc_core::AgentExecutionEventKind::WorkflowStage => {
             if let Some(stage_info) = event.workflow_stage_info() {
@@ -2030,138 +2922,289 @@ fn event_to_lines(
                 viz_state.current_workflow_stage_index = Some(stage_info.index);
                 viz_state.current_workflow_stage_total = Some(stage_info.total);
                 viz_state.current_workflow_stage_started_at = Some(event.timestamp);
-                return vec![
-                    format!("[stage:{}]", stage),
-                    format!(
-                        "[Workflow][r{}] {}",
-                        event.round,
-                        sanitize_text(&event.message, viz_state.redaction_mode)
-                    ),
-                ];
+                match v {
+                    DisplayVerbosity::Compact => {
+                        // Single line: ◆ Planning...
+                        lines.push(format!("[Stage] {}...", capitalize_stage(stage.as_str())));
+                    }
+                    DisplayVerbosity::Normal => {
+                        // Stage + detail
+                        let detail = if stage_info.detail.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" — {}", stage_info.detail)
+                        };
+                        lines.push(format!("[Stage] {}{}", capitalize_stage(stage.as_str()), detail));
+                    }
+                    DisplayVerbosity::Verbose => {
+                        // Original two-line format
+                        lines.push(format!("[stage:{}]", stage));
+                        lines.push(format!(
+                            "[Workflow][r{}] {}",
+                            event.round,
+                            sanitize_text(&event.message, viz_state.redaction_mode)
+                        ));
+                    }
+                }
+            } else {
+                lines.push(format!(
+                    "[Workflow][r{}] {}",
+                    event.round,
+                    sanitize_text(&event.message, viz_state.redaction_mode)
+                ));
             }
-            vec![format!(
-                "[Workflow][r{}] {}",
-                event.round,
-                sanitize_text(&event.message, viz_state.redaction_mode)
-            )]
         }
         ndc_core::AgentExecutionEventKind::Reasoning => {
             if viz_state.show_thinking {
-                vec![
-                    format!("[Thinking][r{}]", event.round),
-                    format!(
-                        "  └─ {}",
-                        sanitize_text(&event.message, viz_state.redaction_mode)
-                    ),
-                ]
+                lines.push(format!("[Thinking][r{}]", event.round));
+                lines.push(format!(
+                    "  └─ {}",
+                    sanitize_text(&event.message, viz_state.redaction_mode)
+                ));
             } else if !viz_state.hidden_thinking_round_hints.contains(&event.round) {
                 viz_state.hidden_thinking_round_hints.insert(event.round);
-                vec![format!(
+                lines.push(format!(
                     "[Thinking][r{}] (collapsed, use /t or /thinking show)",
                     event.round
-                )]
-            } else {
-                Vec::new()
+                ));
             }
         }
         ndc_core::AgentExecutionEventKind::ToolCallStart => {
-            let mut lines = vec![format!(
-                "[Tool][r{}] start {}",
-                event.round,
-                event.tool_name.as_deref().unwrap_or("unknown")
-            )];
-            if viz_state.expand_tool_cards
-                && let Some(args) = extract_tool_args_preview(&event.message) {
-                    lines.push(format!(
-                        "  └─ input : {}",
-                        sanitize_text(args, viz_state.redaction_mode)
-                    ));
+            let tool = event.tool_name.as_deref().unwrap_or("unknown");
+            match v {
+                DisplayVerbosity::Compact => {
+                    // Single line with human-readable summary
+                    if let Some(args) = extract_tool_args_preview(&event.message) {
+                        let summary = extract_tool_summary(tool, args);
+                        if summary.is_empty() {
+                            lines.push(format!("[ToolRun] {}", tool));
+                        } else {
+                            let (s, _) = truncate_output(&summary, 80);
+                            lines.push(format!("[ToolRun] {} {}", tool, s));
+                        }
+                    } else {
+                        lines.push(format!("[ToolRun] {}", tool));
+                    }
                 }
-            lines
+                DisplayVerbosity::Normal => {
+                    lines.push(format!("[ToolRun] {}", tool));
+                    if let Some(args) = extract_tool_args_preview(&event.message) {
+                        let summary = extract_tool_summary(tool, args);
+                        if !summary.is_empty() {
+                            lines.push(format!(
+                                "  └─ {}",
+                                sanitize_text(&summary, viz_state.redaction_mode)
+                            ));
+                        }
+                    }
+                }
+                DisplayVerbosity::Verbose => {
+                    lines.push(format!(
+                        "[Tool][r{}] start {}",
+                        event.round, tool
+                    ));
+                    if let Some(args) = extract_tool_args_preview(&event.message) {
+                        lines.push(format!(
+                            "  └─ input : {}",
+                            sanitize_text(args, viz_state.redaction_mode)
+                        ));
+                    }
+                }
+            }
         }
         ndc_core::AgentExecutionEventKind::ToolCallEnd => {
-            let mut lines = vec![format!(
-                "[Tool][r{}] {} {}{}",
-                event.round,
-                if event.is_error { "failed" } else { "done" },
-                event.tool_name.as_deref().unwrap_or("unknown"),
-                event
-                    .duration_ms
-                    .map(|d| format!(" ({}ms)", d))
-                    .unwrap_or_default()
-            )];
-            if let Some(preview) = extract_tool_result_preview(&event.message) {
-                lines.push(format!(
-                    "  ├─ {}: {}",
-                    if event.is_error { "error " } else { "output" },
-                    sanitize_text(preview, viz_state.redaction_mode)
-                ));
-            }
-            if viz_state.expand_tool_cards {
-                if let Some(args) = extract_tool_args_preview(&event.message) {
-                    lines.push(format!(
-                        "  ├─ input : {}",
-                        sanitize_text(args, viz_state.redaction_mode)
-                    ));
+            let tool = event.tool_name.as_deref().unwrap_or("unknown");
+            let duration = event.duration_ms.map(|d| format_duration_ms(d));
+            let status_icon = if event.is_error { "✗" } else { "✓" };
+
+            match v {
+                DisplayVerbosity::Compact => {
+                    // Single line: ✓ shell (1.2s) or ✗ shell — error message
+                    let dur = duration.map(|d| format!(" ({})", d)).unwrap_or_default();
+                    if event.is_error {
+                        if let Some(preview) = extract_tool_result_preview(&event.message) {
+                            let (msg, _) = truncate_output(
+                                &sanitize_text(preview, viz_state.redaction_mode),
+                                100,
+                            );
+                            lines.push(format!("[ToolEnd] {} {}{} — {}", status_icon, tool, dur, msg));
+                        } else {
+                            lines.push(format!("[ToolEnd] {} {}{}", status_icon, tool, dur));
+                        }
+                    } else {
+                        if let Some(preview) = extract_tool_result_preview(&event.message) {
+                            let (msg, truncated) = truncate_output(
+                                &sanitize_text(preview, viz_state.redaction_mode),
+                                100,
+                            );
+                            lines.push(format!("[ToolEnd] {} {}{}", status_icon, tool, dur));
+                            let suffix = if truncated { " …" } else { "" };
+                            lines.push(format!("  └─ {}{}", msg, suffix));
+                        } else {
+                            lines.push(format!("[ToolEnd] {} {}{}", status_icon, tool, dur));
+                        }
+                    }
                 }
-                lines.push(format!(
-                    "  └─ meta  : call_id={} status={}",
-                    event.tool_call_id.as_deref().unwrap_or("-"),
-                    if event.is_error { "error" } else { "ok" }
-                ));
-            } else if viz_state.show_tool_details {
-                lines.push("  └─ (collapsed card, use /cards or Ctrl+E)".to_string());
+                DisplayVerbosity::Normal => {
+                    let dur = duration.map(|d| format!(" ({})", d)).unwrap_or_default();
+                    lines.push(format!(
+                        "[ToolEnd] {} {}{}",
+                        status_icon, tool, dur
+                    ));
+                    if let Some(preview) = extract_tool_result_preview(&event.message) {
+                        lines.push(format!(
+                            "  ├─ {}: {}",
+                            if event.is_error { "error " } else { "output" },
+                            sanitize_text(preview, viz_state.redaction_mode)
+                        ));
+                    }
+                    if viz_state.expand_tool_cards {
+                        if let Some(args) = extract_tool_args_preview(&event.message) {
+                            lines.push(format!(
+                                "  └─ input : {}",
+                                sanitize_text(args, viz_state.redaction_mode)
+                            ));
+                        }
+                    }
+                }
+                DisplayVerbosity::Verbose => {
+                    // Original full format
+                    lines.push(format!(
+                        "[Tool][r{}] {} {}{}",
+                        event.round,
+                        if event.is_error { "failed" } else { "done" },
+                        tool,
+                        event
+                            .duration_ms
+                            .map(|d| format!(" ({}ms)", d))
+                            .unwrap_or_default()
+                    ));
+                    if let Some(preview) = extract_tool_result_preview(&event.message) {
+                        lines.push(format!(
+                            "  ├─ {}: {}",
+                            if event.is_error { "error " } else { "output" },
+                            sanitize_text(preview, viz_state.redaction_mode)
+                        ));
+                    }
+                    if viz_state.expand_tool_cards {
+                        if let Some(args) = extract_tool_args_preview(&event.message) {
+                            lines.push(format!(
+                                "  ├─ input : {}",
+                                sanitize_text(args, viz_state.redaction_mode)
+                            ));
+                        }
+                        lines.push(format!(
+                            "  └─ meta  : call_id={} status={}",
+                            event.tool_call_id.as_deref().unwrap_or("-"),
+                            if event.is_error { "error" } else { "ok" }
+                        ));
+                    } else if viz_state.show_tool_details {
+                        lines.push("  └─ (collapsed card, use /cards or Ctrl+E)".to_string());
+                    }
+                }
             }
-            lines
         }
         ndc_core::AgentExecutionEventKind::TokenUsage => {
             if let Some(usage) = event.token_usage_info() {
                 viz_state.latest_round_token_total = usage.total_tokens;
                 viz_state.session_token_total = usage.session_total;
             }
-            vec![format!(
-                "[Usage][r{}] {}",
-                event.round,
-                sanitize_text(&event.message, viz_state.redaction_mode)
-            )]
+            match v {
+                DisplayVerbosity::Compact => {
+                    // Hidden — already shown in status bar
+                }
+                DisplayVerbosity::Normal => {
+                    if let Some(usage) = event.token_usage_info() {
+                        lines.push(format!(
+                            "[Usage] tok +{} ({} total)",
+                            format_token_count(usage.total_tokens),
+                            format_token_count(usage.session_total),
+                        ));
+                    }
+                }
+                DisplayVerbosity::Verbose => {
+                    lines.push(format!(
+                        "[Usage][r{}] {}",
+                        event.round,
+                        sanitize_text(&event.message, viz_state.redaction_mode)
+                    ));
+                }
+            }
         }
         ndc_core::AgentExecutionEventKind::PermissionAsked => {
             viz_state.permission_blocked = true;
-            vec![format!(
-                "[Permission][r{}] {}",
-                event.round,
-                sanitize_text(&event.message, viz_state.redaction_mode)
-            )]
+            viz_state.permission_pending_message = Some(
+                sanitize_text(&event.message, viz_state.redaction_mode),
+            );
+            match v {
+                DisplayVerbosity::Compact | DisplayVerbosity::Normal => {
+                    // Extract tool name from message if possible
+                    let msg = sanitize_text(&event.message, viz_state.redaction_mode);
+                    lines.push(format!("[PermBlock] {}", msg));
+                    lines.push("[PermHint] ⓘ Reply in terminal to approve, or set /allow".to_string());
+                }
+                DisplayVerbosity::Verbose => {
+                    lines.push(format!(
+                        "[Permission][r{}] {}",
+                        event.round,
+                        sanitize_text(&event.message, viz_state.redaction_mode)
+                    ));
+                }
+            }
         }
         ndc_core::AgentExecutionEventKind::StepStart
         | ndc_core::AgentExecutionEventKind::StepFinish
         | ndc_core::AgentExecutionEventKind::Verification => {
-            if !viz_state.show_tool_details
-                && matches!(event.kind, ndc_core::AgentExecutionEventKind::StepStart)
-            {
-                return vec![format!("[Agent][r{}] thinking...", event.round)];
+            match v {
+                DisplayVerbosity::Compact => {
+                    // Hide steps entirely in compact mode
+                }
+                DisplayVerbosity::Normal => {
+                    // Only show finish with duration
+                    if matches!(event.kind, ndc_core::AgentExecutionEventKind::StepFinish)
+                        && event.duration_ms.is_some()
+                    {
+                        lines.push(format!(
+                            "[Step][r{}] {}{}",
+                            event.round,
+                            sanitize_text(&event.message, viz_state.redaction_mode),
+                            event
+                                .duration_ms
+                                .map(|d| format!(" ({})", format_duration_ms(d)))
+                                .unwrap_or_default()
+                        ));
+                    }
+                }
+                DisplayVerbosity::Verbose => {
+                    if !viz_state.show_tool_details
+                        && matches!(event.kind, ndc_core::AgentExecutionEventKind::StepStart)
+                    {
+                        lines.push(format!("[Agent][r{}] thinking...", event.round));
+                    } else if viz_state.show_tool_details {
+                        lines.push(format!(
+                            "[Step][r{}] {}{}",
+                            event.round,
+                            sanitize_text(&event.message, viz_state.redaction_mode),
+                            event
+                                .duration_ms
+                                .map(|d| format!(" ({}ms)", d))
+                                .unwrap_or_default()
+                        ));
+                    }
+                }
             }
-            if viz_state.show_tool_details {
-                return vec![format!(
-                    "[Step][r{}] {}{}",
-                    event.round,
-                    sanitize_text(&event.message, viz_state.redaction_mode),
-                    event
-                        .duration_ms
-                        .map(|d| format!(" ({}ms)", d))
-                        .unwrap_or_default()
-                )];
-            }
-            Vec::new()
         }
-        ndc_core::AgentExecutionEventKind::Error => vec![format!(
-            "[Error][r{}] {}",
-            event.round,
-            sanitize_text(&event.message, viz_state.redaction_mode)
-        )],
+        ndc_core::AgentExecutionEventKind::Error => {
+            lines.push(format!(
+                "[Error][r{}] {}",
+                event.round,
+                sanitize_text(&event.message, viz_state.redaction_mode)
+            ));
+        }
         ndc_core::AgentExecutionEventKind::SessionStatus
-        | ndc_core::AgentExecutionEventKind::Text => Vec::new(),
+        | ndc_core::AgentExecutionEventKind::Text => {}
     }
+    lines
 }
 
 fn append_recent_thinking_to_logs(logs: &mut Vec<String>, viz_state: &ReplVisualizationState) {
@@ -2550,16 +3593,12 @@ fn apply_tui_shortcut_action(
             );
         }
         TuiShortcutAction::ToggleDetails => {
-            viz_state.show_tool_details = !viz_state.show_tool_details;
+            viz_state.verbosity = viz_state.verbosity.next();
             push_log_line(
                 logs,
                 &format!(
-                    "[OK] Details: {}",
-                    if viz_state.show_tool_details {
-                        "ON"
-                    } else {
-                        "OFF"
-                    }
+                    "[OK] Verbosity: {}",
+                    viz_state.verbosity.label()
                 ),
             );
         }
@@ -2638,7 +3677,7 @@ async fn handle_tui_command(
         "/help" | "/h" => {
             push_log_line(
                 logs,
-                "Commands: /help /provider /model /status /workflow /tokens /metrics /t /d /cards /stream /thinking /timeline [N] /copy /resume [id] [--cross] /new /session [N] /project [dir] /clear /exit",
+                "Commands: /help /provider /model /status /workflow /tokens /metrics /t /d /cards /v /stream /thinking /timeline [N] /copy /resume [id] [--cross] /new /session [N] /project [dir] /clear /exit",
             );
             push_log_line(
                 logs,
@@ -2697,6 +3736,19 @@ async fn handle_tui_command(
                     }
                 ),
             );
+        }
+        "/verbosity" | "/v" => {
+            if parts.len() > 1 {
+                if let Some(v) = DisplayVerbosity::parse(parts[1]) {
+                    viz_state.verbosity = v;
+                    push_log_line(logs, &format!("[OK] Verbosity: {}", v.label()));
+                } else {
+                    push_log_line(logs, &format!("[Error] Unknown verbosity '{}'. Use: compact, normal, verbose", parts[1]));
+                }
+            } else {
+                viz_state.verbosity = viz_state.verbosity.next();
+                push_log_line(logs, &format!("[OK] Verbosity: {}", viz_state.verbosity.label()));
+            }
         }
         "/stream" => match apply_stream_command(viz_state, parts.get(1).copied()) {
             Ok(message) => push_log_line(logs, &format!("[OK] {}", message)),
@@ -3346,6 +4398,7 @@ mod tests {
                 ("NDC_TOOL_CARDS_EXPANDED", None),
                 ("NDC_REPL_LIVE_EVENTS", None),
                 ("NDC_TIMELINE_LIMIT", None),
+                ("NDC_DISPLAY_VERBOSITY", None),
             ],
             || {
                 let state = ReplVisualizationState::new(false);
@@ -3360,6 +4413,8 @@ mod tests {
                 assert!(state.current_workflow_stage_total.is_none());
                 assert!(state.current_workflow_stage_started_at.is_none());
                 assert!(!state.permission_blocked);
+                assert!(matches!(state.verbosity, DisplayVerbosity::Compact));
+                assert_eq!(state.last_emitted_round, 0);
             },
         );
     }
@@ -3373,6 +4428,7 @@ mod tests {
                 ("NDC_TOOL_CARDS_EXPANDED", Some("true")),
                 ("NDC_REPL_LIVE_EVENTS", Some("false")),
                 ("NDC_TIMELINE_LIMIT", Some("88")),
+                ("NDC_DISPLAY_VERBOSITY", Some("verbose")),
             ],
             || {
                 let state = ReplVisualizationState::new(false);
@@ -3381,6 +4437,7 @@ mod tests {
                 assert!(state.expand_tool_cards);
                 assert!(!state.live_events_enabled);
                 assert_eq!(state.timeline_limit, 88);
+                assert!(matches!(state.verbosity, DisplayVerbosity::Verbose));
             },
         );
     }
@@ -3468,13 +4525,14 @@ mod tests {
     #[test]
     fn test_drain_live_execution_events_renders_matching_session() {
         let (tx, rx) = tokio::sync::broadcast::channel(8);
+        // Use ToolCallStart which produces output in all verbosity modes
         let event = ndc_core::AgentExecutionEvent {
-            kind: ndc_core::AgentExecutionEventKind::StepStart,
+            kind: ndc_core::AgentExecutionEventKind::ToolCallStart,
             timestamp: chrono::Utc::now(),
-            message: "llm_round_1_start".to_string(),
+            message: "tool_call_start: read | args_preview: {\"path\":\".\"}".to_string(),
             round: 1,
-            tool_name: None,
-            tool_call_id: None,
+            tool_name: Some("read".to_string()),
+            tool_call_id: Some("call-1".to_string()),
             duration_ms: None,
             is_error: false,
             workflow_stage: None,
@@ -3496,7 +4554,7 @@ mod tests {
         assert!(rendered);
         assert_eq!(viz.timeline_cache.len(), 1);
         assert_eq!(viz.timeline_cache[0].message, event.message);
-        assert!(logs.iter().any(|l| l.contains("[Agent][r1] thinking...")));
+        assert!(logs.iter().any(|l| l.contains("[ToolRun]") && l.contains("read")));
     }
 
     #[test]
@@ -3647,7 +4705,9 @@ mod tests {
         );
         assert!(viz.current_workflow_stage_started_at.is_some());
         assert!(!viz.permission_blocked);
-        assert!(lines.iter().any(|line| line.contains("[Workflow][r2]")));
+        // Compact mode: single [Stage] line
+        assert!(lines.iter().any(|line| line.contains("[Stage]")));
+        assert!(lines.iter().any(|line| line.contains("Discovery")));
     }
 
     #[test]
@@ -3674,7 +4734,7 @@ mod tests {
             viz.current_workflow_stage_total,
             Some(ndc_core::AgentWorkflowStage::TOTAL_STAGES)
         );
-        assert!(lines.iter().any(|line| line.contains("[stage:verifying]")));
+        assert!(lines.iter().any(|line| line.contains("[Stage]") && line.contains("Verifying")));
     }
 
     #[test]
@@ -3786,7 +4846,8 @@ mod tests {
         let lines = event_to_lines(&event, &mut viz);
         assert_eq!(viz.latest_round_token_total, 15);
         assert_eq!(viz.session_token_total, 33);
-        assert!(lines.iter().any(|line| line.contains("[Usage][r3]")));
+        // Compact mode: tokens hidden (shown in status bar)
+        assert!(lines.is_empty());
     }
 
     #[test]
@@ -3976,14 +5037,31 @@ mod tests {
 
     #[test]
     fn test_tui_layout_constraints_fixed_input_panel() {
-        let constraints = tui_layout_constraints();
+        let constraints = tui_layout_constraints(false, 1);
         assert_eq!(
             constraints,
-            [
-                Constraint::Length(1),
-                Constraint::Min(1),
-                Constraint::Length(4),
-                Constraint::Length(4)
+            vec![
+                Constraint::Length(1), // title bar
+                Constraint::Length(1), // workflow progress
+                Constraint::Min(5),    // conversation
+                Constraint::Length(1), // status hint
+                Constraint::Length(3), // input (1 line + 2 border)
+            ]
+        );
+    }
+
+    #[test]
+    fn test_tui_layout_constraints_with_permission() {
+        let constraints = tui_layout_constraints(true, 1);
+        assert_eq!(
+            constraints,
+            vec![
+                Constraint::Length(1), // title bar
+                Constraint::Length(1), // workflow progress
+                Constraint::Min(5),    // conversation
+                Constraint::Length(2), // permission bar
+                Constraint::Length(1), // status hint
+                Constraint::Length(3), // input (1 line + 2 border)
             ]
         );
     }
@@ -4241,16 +5319,21 @@ mod tests {
 
     #[test]
     fn test_style_session_log_line_tool_and_partitions() {
-        let tool = style_session_log_line("[Tool][r1] failed read (3ms)");
-        assert_eq!(line_plain(&tool), "[Tool][r1] failed read (3ms)");
+        let theme = TuiTheme::default_dark();
+        let tool = style_session_log_line("[Tool][r1] failed read (3ms)", &theme);
+        assert_eq!(tool.spans[0].content.as_ref(), "  ✗ ");
         assert_eq!(tool.spans[0].style.fg, Some(Color::Red));
 
-        let input = style_session_log_line("  ├─ input : {\"path\":\"README.md\"}");
-        assert_eq!(line_plain(&input), "  ├─ input : {\"path\":\"README.md\"}");
+        let input =
+            style_session_log_line("  ├─ input : {\"path\":\"README.md\"}", &theme);
+        assert_eq!(
+            line_plain(&input),
+            "  ├─ input : {\"path\":\"README.md\"}"
+        );
         assert_eq!(input.spans[1].content.as_ref(), "input");
         assert_eq!(input.spans[1].style.fg, Some(Color::Cyan));
 
-        let output = style_session_log_line("  ├─ output: ok");
+        let output = style_session_log_line("  ├─ output: ok", &theme);
         assert_eq!(line_plain(&output), "  ├─ output: ok");
         assert_eq!(output.spans[1].content.as_ref(), "output");
         assert_eq!(output.spans[1].style.fg, Some(Color::Green));
@@ -4325,6 +5408,7 @@ mod tests {
                 ("NDC_DISPLAY_THINKING", None),
                 ("NDC_TOOL_DETAILS", None),
                 ("NDC_TOOL_CARDS_EXPANDED", None),
+                ("NDC_DISPLAY_VERBOSITY", None),
             ],
             || {
                 let mut viz = ReplVisualizationState::new(false);
@@ -4334,9 +5418,10 @@ mod tests {
                 assert!(viz.show_thinking);
                 assert!(logs.iter().any(|l| l.contains("[OK] Thinking")));
 
+                // ToggleDetails now cycles verbosity: Compact → Normal
                 apply_tui_shortcut_action(TuiShortcutAction::ToggleDetails, &mut viz, &mut logs);
-                assert!(viz.show_tool_details);
-                assert!(logs.iter().any(|l| l.contains("[OK] Details")));
+                assert!(matches!(viz.verbosity, DisplayVerbosity::Normal));
+                assert!(logs.iter().any(|l| l.contains("[OK] Verbosity")));
 
                 apply_tui_shortcut_action(TuiShortcutAction::ToggleToolCards, &mut viz, &mut logs);
                 assert!(viz.expand_tool_cards);
@@ -4372,7 +5457,7 @@ mod tests {
     #[test]
     fn test_runtime_shortcut_pipeline_ctrl_t_and_scroll_reset() {
         use crossterm::event::KeyEvent;
-        with_env_overrides(&[("NDC_DISPLAY_THINKING", None)], || {
+        with_env_overrides(&[("NDC_DISPLAY_THINKING", None), ("NDC_DISPLAY_VERBOSITY", None)], || {
             let map = ReplTuiKeymap {
                 toggle_thinking: 't',
                 toggle_details: 'd',
@@ -4424,6 +5509,8 @@ mod tests {
     fn test_event_to_lines_tool_start_with_input_details() {
         let mut viz = ReplVisualizationState::new(false);
         viz.expand_tool_cards = true;
+        // Verbose mode shows full detail like the old format
+        viz.verbosity = DisplayVerbosity::Verbose;
         let event = ndc_core::AgentExecutionEvent {
             kind: ndc_core::AgentExecutionEventKind::ToolCallStart,
             timestamp: chrono::Utc::now(),
@@ -4449,6 +5536,8 @@ mod tests {
         let mut viz = ReplVisualizationState::new(false);
         viz.show_tool_details = true;
         viz.expand_tool_cards = false;
+        // Verbose mode shows the collapsed card hint
+        viz.verbosity = DisplayVerbosity::Verbose;
         let event = ndc_core::AgentExecutionEvent {
             kind: ndc_core::AgentExecutionEventKind::ToolCallEnd,
             timestamp: chrono::Utc::now(),
@@ -4489,7 +5578,8 @@ mod tests {
         workflow_stage_total: None,
         };
         let lines = event_to_lines(&event, &mut viz);
-        assert!(lines.iter().any(|l| l.contains("error")));
+        // Compact error: [ToolEnd] ✗ write (5ms) — Error: denied
+        assert!(lines.iter().any(|l| l.contains("✗")));
         assert!(lines.iter().any(|l| l.contains("denied")));
     }
 
@@ -4498,6 +5588,7 @@ mod tests {
         let mut viz = ReplVisualizationState::new(false);
         viz.show_tool_details = false;
         viz.expand_tool_cards = false;
+        // Default is Compact
         let events = vec![
             mk_event(
                 ndc_core::AgentExecutionEventKind::Reasoning,
@@ -4530,9 +5621,9 @@ mod tests {
         let actual = render_event_snapshot(&events, &mut viz);
         let expected = vec![
             "[Thinking][r1] (collapsed, use /t or /thinking show)".to_string(),
-            "[Tool][r1] start list".to_string(),
-            "[Tool][r1] done list (2ms)".to_string(),
-            "  ├─ output: Cargo.toml".to_string(),
+            "[ToolRun] list .".to_string(),
+            "[ToolEnd] ✓ list (2ms)".to_string(),
+            "  └─ Cargo.toml".to_string(),
         ];
         assert_eq!(actual, expected);
     }
@@ -4542,6 +5633,7 @@ mod tests {
         let mut viz = ReplVisualizationState::new(true);
         viz.show_tool_details = true;
         viz.expand_tool_cards = true;
+        viz.verbosity = DisplayVerbosity::Verbose;
         let events = vec![
             mk_event(
                 ndc_core::AgentExecutionEventKind::Reasoning,
@@ -4573,6 +5665,7 @@ mod tests {
         ];
         let actual = render_event_snapshot(&events, &mut viz);
         let expected = vec![
+            "[RoundSep] ── Round 2 ──".to_string(),
             "[Thinking][r2]".to_string(),
             "  └─ read file then summarize".to_string(),
             "[Tool][r2] start read".to_string(),
@@ -4616,23 +5709,26 @@ mod tests {
         );
         let events = vec![reasoning, step_start, tool_end];
 
+        // Compact mode (default): steps hidden, tool lines compact
         let mut collapsed = ReplVisualizationState::new(false);
         collapsed.show_tool_details = false;
         collapsed.expand_tool_cards = false;
         let collapsed_lines = render_event_snapshot(&events, &mut collapsed);
         let collapsed_expected = vec![
             "[Thinking][r1] (collapsed, use /t or /thinking show)".to_string(),
-            "[Agent][r1] thinking...".to_string(),
-            "[Tool][r1] done list (4ms)".to_string(),
-            "  ├─ output: Cargo.toml".to_string(),
+            "[ToolEnd] ✓ list (4ms)".to_string(),
+            "  └─ Cargo.toml".to_string(),
         ];
         assert_eq!(collapsed_lines, collapsed_expected);
 
+        // Verbose + details_only: steps shown, collapsed card hint
         let mut details_only = ReplVisualizationState::new(true);
         details_only.show_tool_details = true;
         details_only.expand_tool_cards = false;
+        details_only.verbosity = DisplayVerbosity::Verbose;
         let details_lines = render_event_snapshot(&events, &mut details_only);
         let details_expected = vec![
+            "[RoundSep] ── Round 1 ──".to_string(),
             "[Thinking][r1]".to_string(),
             "  └─ analyze project structure".to_string(),
             "[Step][r1] llm_round_1_start".to_string(),
@@ -4642,11 +5738,14 @@ mod tests {
         ];
         assert_eq!(details_lines, details_expected);
 
+        // Verbose + expanded: full detail with meta
         let mut expanded = ReplVisualizationState::new(true);
         expanded.show_tool_details = true;
         expanded.expand_tool_cards = true;
+        expanded.verbosity = DisplayVerbosity::Verbose;
         let expanded_lines = render_event_snapshot(&events, &mut expanded);
         let expanded_expected = vec![
+            "[RoundSep] ── Round 1 ──".to_string(),
             "[Thinking][r1]".to_string(),
             "  └─ analyze project structure".to_string(),
             "[Step][r1] llm_round_1_start".to_string(),
@@ -4671,5 +5770,646 @@ mod tests {
         append_recent_timeline_to_logs(&mut logs, &expanded);
         assert!(logs.iter().any(|l| l.contains("Recent Execution Timeline")));
         assert!(logs.iter().any(|l| l.contains("llm_round_1_finish")));
+    }
+
+    // ===== P1-UX Feature Tests =====
+
+    // --- input_line_count ---
+
+    #[test]
+    fn test_input_line_count_empty() {
+        assert_eq!(input_line_count(""), 1);
+    }
+
+    #[test]
+    fn test_input_line_count_single_line() {
+        assert_eq!(input_line_count("hello world"), 1);
+    }
+
+    #[test]
+    fn test_input_line_count_multiline() {
+        assert_eq!(input_line_count("line1\nline2\nline3"), 3);
+    }
+
+    #[test]
+    fn test_input_line_count_clamps_at_four() {
+        assert_eq!(input_line_count("1\n2\n3\n4\n5\n6"), 4);
+    }
+
+    #[test]
+    fn test_input_line_count_trailing_newline() {
+        assert_eq!(input_line_count("a\n"), 2);
+    }
+
+    // --- tui_layout_constraints with input_lines ---
+
+    #[test]
+    fn test_tui_layout_constraints_multiline_input() {
+        let c = tui_layout_constraints(false, 3);
+        // input_height = 3 + 2 = 5
+        assert_eq!(
+            c,
+            vec![
+                Constraint::Length(1), // title bar
+                Constraint::Length(1), // workflow progress
+                Constraint::Min(5),    // conversation
+                Constraint::Length(1), // status hint
+                Constraint::Length(5), // input (3 lines + 2 border)
+            ]
+        );
+    }
+
+    #[test]
+    fn test_tui_layout_constraints_multiline_with_permission() {
+        let c = tui_layout_constraints(true, 2);
+        assert_eq!(
+            c,
+            vec![
+                Constraint::Length(1), // title bar
+                Constraint::Length(1), // workflow progress
+                Constraint::Min(5),    // conversation
+                Constraint::Length(2), // permission bar
+                Constraint::Length(1), // status hint
+                Constraint::Length(4), // input (2 lines + 2 border)
+            ]
+        );
+    }
+
+    // --- format_token_count ---
+
+    #[test]
+    fn test_format_token_count_small() {
+        assert_eq!(format_token_count(0), "0");
+        assert_eq!(format_token_count(500), "500");
+        assert_eq!(format_token_count(999), "999");
+    }
+
+    #[test]
+    fn test_format_token_count_thousands() {
+        assert_eq!(format_token_count(1000), "1.0k");
+        assert_eq!(format_token_count(1500), "1.5k");
+        assert_eq!(format_token_count(32000), "32.0k");
+        assert_eq!(format_token_count(128000), "128.0k");
+    }
+
+    #[test]
+    fn test_format_token_count_millions() {
+        assert_eq!(format_token_count(1_000_000), "1.0M");
+        assert_eq!(format_token_count(2_500_000), "2.5M");
+    }
+
+    // --- token_progress_bar ---
+
+    #[test]
+    fn test_token_progress_bar_empty() {
+        assert_eq!(token_progress_bar(0, 128_000), "[░░░░░░░░]");
+    }
+
+    #[test]
+    fn test_token_progress_bar_half() {
+        let bar = token_progress_bar(64_000, 128_000);
+        assert_eq!(bar, "[████░░░░]");
+    }
+
+    #[test]
+    fn test_token_progress_bar_full() {
+        assert_eq!(token_progress_bar(128_000, 128_000), "[████████]");
+    }
+
+    #[test]
+    fn test_token_progress_bar_over_capacity() {
+        // Should clamp at 100%
+        assert_eq!(token_progress_bar(200_000, 128_000), "[████████]");
+    }
+
+    #[test]
+    fn test_token_progress_bar_zero_capacity() {
+        assert_eq!(token_progress_bar(100, 0), "[░░░░░░░░]");
+    }
+
+    // --- truncate_output ---
+
+    #[test]
+    fn test_truncate_output_short() {
+        let (text, truncated) = truncate_output("hello", 200);
+        assert_eq!(text, "hello");
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn test_truncate_output_exact() {
+        let input = "a".repeat(200);
+        let (text, truncated) = truncate_output(&input, 200);
+        assert_eq!(text.len(), 200);
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn test_truncate_output_long() {
+        let input = "x".repeat(300);
+        let (text, truncated) = truncate_output(&input, 200);
+        assert_eq!(text.len(), 200);
+        assert!(truncated);
+    }
+
+    #[test]
+    fn test_truncate_output_unicode_boundary() {
+        // '中' is 3 bytes, so 2 chars = 6 bytes
+        let input = "中文测试数据超长";
+        let (text, truncated) = truncate_output(input, 6);
+        assert_eq!(text, "中文");
+        assert!(truncated);
+    }
+
+    // --- parse_inline_spans ---
+
+    #[test]
+    fn test_parse_inline_spans_plain() {
+        let theme = TuiTheme::default_dark();
+        let spans = parse_inline_spans("hello world", &theme);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].content.as_ref(), "hello world");
+    }
+
+    #[test]
+    fn test_parse_inline_spans_backtick_code() {
+        let theme = TuiTheme::default_dark();
+        let spans = parse_inline_spans("use `cargo build` here", &theme);
+        assert_eq!(spans.len(), 3);
+        assert_eq!(spans[0].content.as_ref(), "use ");
+        assert_eq!(spans[1].content.as_ref(), "cargo build");
+        assert_eq!(spans[2].content.as_ref(), " here");
+        // code span should have background color
+        assert!(spans[1].style.bg.is_some());
+    }
+
+    #[test]
+    fn test_parse_inline_spans_bold() {
+        let theme = TuiTheme::default_dark();
+        let spans = parse_inline_spans("this is **bold** text", &theme);
+        assert_eq!(spans.len(), 3);
+        assert_eq!(spans[1].content.as_ref(), "bold");
+        assert!(spans[1]
+            .style
+            .add_modifier
+            .contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn test_parse_inline_spans_italic() {
+        let theme = TuiTheme::default_dark();
+        let spans = parse_inline_spans("this is *italic* text", &theme);
+        assert_eq!(spans.len(), 3);
+        assert_eq!(spans[1].content.as_ref(), "italic");
+        assert!(spans[1]
+            .style
+            .add_modifier
+            .contains(Modifier::ITALIC));
+    }
+
+    #[test]
+    fn test_parse_inline_spans_unclosed_backtick() {
+        let theme = TuiTheme::default_dark();
+        let spans = parse_inline_spans("unclosed `code", &theme);
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].content.as_ref(), "unclosed ");
+        assert_eq!(spans[1].content.as_ref(), "`code");
+    }
+
+    // --- render_inline_markdown ---
+
+    #[test]
+    fn test_render_inline_markdown_header_h2() {
+        let theme = TuiTheme::default_dark();
+        let line = render_inline_markdown("## Section Title", &theme);
+        let text = line_plain(&line);
+        assert!(text.contains("Section Title"));
+    }
+
+    #[test]
+    fn test_render_inline_markdown_bullet_dash() {
+        let theme = TuiTheme::default_dark();
+        let line = render_inline_markdown("- list item", &theme);
+        let text = line_plain(&line);
+        assert!(text.contains("•"));
+        assert!(text.contains("list item"));
+    }
+
+    #[test]
+    fn test_render_inline_markdown_bullet_star() {
+        let theme = TuiTheme::default_dark();
+        let line = render_inline_markdown("* another item", &theme);
+        let text = line_plain(&line);
+        assert!(text.contains("•"));
+        assert!(text.contains("another item"));
+    }
+
+    #[test]
+    fn test_render_inline_markdown_code_fence() {
+        let theme = TuiTheme::default_dark();
+        let line = render_inline_markdown("```rust", &theme);
+        let text = line_plain(&line);
+        assert!(text.contains("```rust"));
+    }
+
+    #[test]
+    fn test_render_inline_markdown_plain_with_inline_code() {
+        let theme = TuiTheme::default_dark();
+        let line = render_inline_markdown("run `cargo test`", &theme);
+        let text = line_plain(&line);
+        assert_eq!(text, "run cargo test");
+    }
+
+    #[test]
+    fn test_render_inline_markdown_preserves_indent() {
+        let theme = TuiTheme::default_dark();
+        let line = render_inline_markdown("    indented text", &theme);
+        let text = line_plain(&line);
+        assert!(text.starts_with("    "));
+    }
+
+    // --- style_session_log_line truncation ---
+
+    #[test]
+    fn test_style_session_log_line_output_truncation() {
+        let long_output = format!("  ├─ output: {}", "x".repeat(300));
+        let theme = TuiTheme::default_dark();
+        let line = style_session_log_line(&long_output, &theme);
+        let text = line_plain(&line);
+        assert!(text.contains("truncated"));
+        assert!(text.len() < 300);
+    }
+
+    #[test]
+    fn test_style_session_log_line_output_no_truncation_short() {
+        let theme = TuiTheme::default_dark();
+        let line = style_session_log_line("  ├─ output: ok", &theme);
+        let text = line_plain(&line);
+        assert!(!text.contains("truncated"));
+        assert!(text.contains("ok"));
+    }
+
+    // --- InputHistory multiline ---
+
+    #[test]
+    fn test_input_history_multiline_entries() {
+        let mut hist = InputHistory::new(10);
+        hist.push("line1\nline2".to_string());
+        hist.push("single".to_string());
+        assert_eq!(hist.entries.len(), 2);
+
+        // Navigate up to get latest
+        let up1 = hist.up("current");
+        assert_eq!(up1, Some("single"));
+        let up2 = hist.up("");
+        assert_eq!(up2, Some("line1\nline2"));
+    }
+
+    #[test]
+    fn test_input_history_down_restores_draft() {
+        let mut hist = InputHistory::new(10);
+        hist.push("old".to_string());
+
+        hist.up("my draft");
+        let down = hist.down();
+        assert_eq!(down, Some("my draft"));
+    }
+
+    // --- Permission message lifecycle ---
+
+    #[test]
+    fn test_permission_message_set_and_cleared() {
+        let mut viz_state = ReplVisualizationState::new(false);
+        assert!(!viz_state.permission_blocked);
+        assert!(viz_state.permission_pending_message.is_none());
+
+        // PermissionAsked should set both
+        let perm_event = mk_event(
+            ndc_core::AgentExecutionEventKind::PermissionAsked,
+            "Allow file write?",
+            1,
+            None,
+            None,
+            None,
+            false,
+        );
+        event_to_lines(&perm_event, &mut viz_state);
+        assert!(viz_state.permission_blocked);
+        assert_eq!(
+            viz_state.permission_pending_message.as_deref(),
+            Some("Allow file write?")
+        );
+
+        // A non-permission event should clear both
+        let step_event = mk_event(
+            ndc_core::AgentExecutionEventKind::StepStart,
+            "step",
+            1,
+            None,
+            None,
+            None,
+            false,
+        );
+        event_to_lines(&step_event, &mut viz_state);
+        assert!(!viz_state.permission_blocked);
+        assert!(viz_state.permission_pending_message.is_none());
+    }
+
+    // ===== P1-UX-6 Tests: Verbosity & Display =====
+
+    #[test]
+    fn test_display_verbosity_parse() {
+        assert!(matches!(DisplayVerbosity::parse("compact"), Some(DisplayVerbosity::Compact)));
+        assert!(matches!(DisplayVerbosity::parse("c"), Some(DisplayVerbosity::Compact)));
+        assert!(matches!(DisplayVerbosity::parse("normal"), Some(DisplayVerbosity::Normal)));
+        assert!(matches!(DisplayVerbosity::parse("n"), Some(DisplayVerbosity::Normal)));
+        assert!(matches!(DisplayVerbosity::parse("verbose"), Some(DisplayVerbosity::Verbose)));
+        assert!(matches!(DisplayVerbosity::parse("v"), Some(DisplayVerbosity::Verbose)));
+        assert!(matches!(DisplayVerbosity::parse("debug"), Some(DisplayVerbosity::Verbose)));
+        assert!(DisplayVerbosity::parse("unknown").is_none());
+    }
+
+    #[test]
+    fn test_display_verbosity_cycle() {
+        assert!(matches!(DisplayVerbosity::Compact.next(), DisplayVerbosity::Normal));
+        assert!(matches!(DisplayVerbosity::Normal.next(), DisplayVerbosity::Verbose));
+        assert!(matches!(DisplayVerbosity::Verbose.next(), DisplayVerbosity::Compact));
+    }
+
+    #[test]
+    fn test_display_verbosity_label() {
+        assert_eq!(DisplayVerbosity::Compact.label(), "compact");
+        assert_eq!(DisplayVerbosity::Normal.label(), "normal");
+        assert_eq!(DisplayVerbosity::Verbose.label(), "verbose");
+    }
+
+    #[test]
+    fn test_capitalize_stage() {
+        assert_eq!(capitalize_stage("planning"), "Planning");
+        assert_eq!(capitalize_stage("discovery"), "Discovery");
+        assert_eq!(capitalize_stage(""), "");
+        assert_eq!(capitalize_stage("a"), "A");
+    }
+
+    #[test]
+    fn test_format_duration_ms() {
+        assert_eq!(format_duration_ms(450), "450ms");
+        assert_eq!(format_duration_ms(1500), "1.5s");
+        assert_eq!(format_duration_ms(60000), "1.0m");
+        assert_eq!(format_duration_ms(90000), "1.5m");
+        assert_eq!(format_duration_ms(0), "0ms");
+    }
+
+    #[test]
+    fn test_extract_tool_summary_shell() {
+        let s = extract_tool_summary("shell", r#"{"command":"ls -la","working_dir":"."}"#);
+        assert_eq!(s, "ls -la");
+    }
+
+    #[test]
+    fn test_extract_tool_summary_read() {
+        let s = extract_tool_summary("read", r#"{"path":"README.md"}"#);
+        assert_eq!(s, "README.md");
+    }
+
+    #[test]
+    fn test_extract_tool_summary_grep() {
+        let s = extract_tool_summary("grep", r#"{"pattern":"fn main"}"#);
+        assert_eq!(s, "fn main");
+    }
+
+    #[test]
+    fn test_extract_tool_summary_unknown_tool() {
+        let s = extract_tool_summary("custom_tool", r#"{"path":"src/lib.rs"}"#);
+        assert_eq!(s, "src/lib.rs");
+    }
+
+    #[test]
+    fn test_extract_tool_summary_no_match() {
+        let s = extract_tool_summary("custom_tool", r#"{"foo":"bar"}"#);
+        // Falls through to raw truncation
+        assert!(!s.is_empty());
+    }
+
+    #[test]
+    fn test_verbosity_compact_hides_steps() {
+        let mut viz = ReplVisualizationState::new(false);
+        viz.verbosity = DisplayVerbosity::Compact;
+        let event = mk_event(
+            ndc_core::AgentExecutionEventKind::StepStart,
+            "llm_round_1_start",
+            1,
+            None,
+            None,
+            None,
+            false,
+        );
+        let lines = event_to_lines(&event, &mut viz);
+        assert!(lines.is_empty(), "Compact mode should hide StepStart");
+    }
+
+    #[test]
+    fn test_verbosity_compact_hides_token_usage() {
+        let mut viz = ReplVisualizationState::new(false);
+        viz.verbosity = DisplayVerbosity::Compact;
+        let event = mk_event(
+            ndc_core::AgentExecutionEventKind::TokenUsage,
+            "token_usage: source=provider prompt=10 completion=5 total=15 | session_prompt_total=22 session_completion_total=11 session_total=33",
+            1,
+            None,
+            None,
+            None,
+            false,
+        );
+        let lines = event_to_lines(&event, &mut viz);
+        assert!(lines.is_empty(), "Compact mode should hide TokenUsage");
+        // But state should still be updated
+        assert_eq!(viz.latest_round_token_total, 15);
+        assert_eq!(viz.session_token_total, 33);
+    }
+
+    #[test]
+    fn test_verbosity_normal_shows_token_usage() {
+        let mut viz = ReplVisualizationState::new(false);
+        viz.verbosity = DisplayVerbosity::Normal;
+        let event = mk_event(
+            ndc_core::AgentExecutionEventKind::TokenUsage,
+            "token_usage: source=provider prompt=10 completion=5 total=15 | session_prompt_total=22 session_completion_total=11 session_total=33",
+            1,
+            None,
+            None,
+            None,
+            false,
+        );
+        let lines = event_to_lines(&event, &mut viz);
+        assert!(lines.iter().any(|l| l.contains("[Usage]")));
+        assert!(lines.iter().any(|l| l.contains("total")));
+    }
+
+    #[test]
+    fn test_verbosity_compact_stage_single_line() {
+        let mut viz = ReplVisualizationState::new(false);
+        viz.verbosity = DisplayVerbosity::Compact;
+        let event = ndc_core::AgentExecutionEvent {
+            kind: ndc_core::AgentExecutionEventKind::WorkflowStage,
+            timestamp: chrono::Utc::now(),
+            message: "stage changed".to_string(),
+            round: 1,
+            tool_name: None,
+            tool_call_id: None,
+            duration_ms: None,
+            is_error: false,
+            workflow_stage: Some(ndc_core::AgentWorkflowStage::Planning),
+            workflow_detail: Some("building context".to_string()),
+            workflow_stage_index: Some(1),
+            workflow_stage_total: Some(ndc_core::AgentWorkflowStage::TOTAL_STAGES),
+        };
+        let lines = event_to_lines(&event, &mut viz);
+        assert_eq!(lines.len(), 1, "Compact should produce exactly 1 line for stage");
+        assert!(lines[0].contains("[Stage]"));
+        assert!(lines[0].contains("Planning"));
+        assert!(lines[0].ends_with("..."));
+    }
+
+    #[test]
+    fn test_verbosity_normal_stage_with_detail() {
+        let mut viz = ReplVisualizationState::new(false);
+        viz.verbosity = DisplayVerbosity::Normal;
+        let event = ndc_core::AgentExecutionEvent {
+            kind: ndc_core::AgentExecutionEventKind::WorkflowStage,
+            timestamp: chrono::Utc::now(),
+            message: "stage changed".to_string(),
+            round: 1,
+            tool_name: None,
+            tool_call_id: None,
+            duration_ms: None,
+            is_error: false,
+            workflow_stage: Some(ndc_core::AgentWorkflowStage::Discovery),
+            workflow_detail: Some("scanning files".to_string()),
+            workflow_stage_index: Some(2),
+            workflow_stage_total: Some(ndc_core::AgentWorkflowStage::TOTAL_STAGES),
+        };
+        let lines = event_to_lines(&event, &mut viz);
+        assert!(lines.iter().any(|l| l.contains("Discovery") && l.contains("scanning files")));
+    }
+
+    #[test]
+    fn test_round_separator_normal_mode() {
+        let mut viz = ReplVisualizationState::new(false);
+        viz.verbosity = DisplayVerbosity::Normal;
+        let event = mk_event(
+            ndc_core::AgentExecutionEventKind::ToolCallStart,
+            "tool_call_start: read | args_preview: {\"path\":\".\"}",
+            2,
+            Some("read"),
+            Some("call-1"),
+            None,
+            false,
+        );
+        let lines = event_to_lines(&event, &mut viz);
+        assert!(lines.iter().any(|l| l.contains("[RoundSep]") && l.contains("Round 2")));
+    }
+
+    #[test]
+    fn test_round_separator_compact_hidden() {
+        let mut viz = ReplVisualizationState::new(false);
+        viz.verbosity = DisplayVerbosity::Compact;
+        let event = mk_event(
+            ndc_core::AgentExecutionEventKind::ToolCallStart,
+            "tool_call_start: read | args_preview: {\"path\":\".\"}",
+            2,
+            Some("read"),
+            Some("call-1"),
+            None,
+            false,
+        );
+        let lines = event_to_lines(&event, &mut viz);
+        assert!(!lines.iter().any(|l| l.contains("[RoundSep]")), "Compact should not show round separators");
+    }
+
+    #[test]
+    fn test_round_separator_not_duplicated() {
+        let mut viz = ReplVisualizationState::new(false);
+        viz.verbosity = DisplayVerbosity::Normal;
+        // First event in round 3
+        let event1 = mk_event(
+            ndc_core::AgentExecutionEventKind::ToolCallStart,
+            "tool_call_start: read | args_preview: {\"path\":\".\"}",
+            3,
+            Some("read"),
+            Some("call-1"),
+            None,
+            false,
+        );
+        let lines1 = event_to_lines(&event1, &mut viz);
+        assert!(lines1.iter().any(|l| l.contains("[RoundSep]")));
+
+        // Second event in same round 3 — no separator
+        let event2 = mk_event(
+            ndc_core::AgentExecutionEventKind::ToolCallEnd,
+            "tool_call_end: read (ok) | result_preview: ok",
+            3,
+            Some("read"),
+            Some("call-1"),
+            Some(5),
+            false,
+        );
+        let lines2 = event_to_lines(&event2, &mut viz);
+        assert!(!lines2.iter().any(|l| l.contains("[RoundSep]")), "Same round should not repeat separator");
+    }
+
+    #[test]
+    fn test_permission_compact_shows_hint() {
+        let mut viz = ReplVisualizationState::new(false);
+        viz.verbosity = DisplayVerbosity::Compact;
+        let event = mk_event(
+            ndc_core::AgentExecutionEventKind::PermissionAsked,
+            "Command not allowed: rm -rf /",
+            1,
+            None,
+            None,
+            None,
+            true,
+        );
+        let lines = event_to_lines(&event, &mut viz);
+        assert!(lines.iter().any(|l| l.contains("[PermBlock]")));
+        assert!(lines.iter().any(|l| l.contains("[PermHint]")));
+        assert!(viz.permission_blocked);
+    }
+
+    #[test]
+    fn test_compact_tool_call_summary_single_line() {
+        let mut viz = ReplVisualizationState::new(false);
+        viz.verbosity = DisplayVerbosity::Compact;
+        let event = ndc_core::AgentExecutionEvent {
+            kind: ndc_core::AgentExecutionEventKind::ToolCallStart,
+            timestamp: chrono::Utc::now(),
+            message: "tool_call_start: shell | args_preview: {\"command\":\"cargo build\"}".to_string(),
+            round: 1,
+            tool_name: Some("shell".to_string()),
+            tool_call_id: Some("call-1".to_string()),
+            duration_ms: None,
+            is_error: false,
+            workflow_stage: None,
+            workflow_detail: None,
+            workflow_stage_index: None,
+            workflow_stage_total: None,
+        };
+        let lines = event_to_lines(&event, &mut viz);
+        assert_eq!(lines.len(), 1, "Compact ToolCallStart should be single line");
+        assert!(lines[0].contains("[ToolRun]"));
+        assert!(lines[0].contains("shell"));
+        assert!(lines[0].contains("cargo build"));
+    }
+
+    #[test]
+    fn test_verbosity_env_override() {
+        with_env_overrides(
+            &[("NDC_DISPLAY_VERBOSITY", Some("normal"))],
+            || {
+                let state = ReplVisualizationState::new(false);
+                assert!(matches!(state.verbosity, DisplayVerbosity::Normal));
+            },
+        );
     }
 }
