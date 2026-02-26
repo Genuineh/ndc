@@ -7,8 +7,75 @@
 //! - Parse response status
 
 use super::{Tool, ToolError, ToolResult};
+use std::net::IpAddr;
 use std::time::Duration;
 use tracing::debug;
+
+/// Validate that a URL is safe to fetch (SSRF protection).
+///
+/// Rejects:
+/// - Non HTTP/HTTPS schemes (file://, ftp://, gopher://, etc.)
+/// - Private / loopback / link-local IP addresses
+/// - Cloud metadata endpoints (169.254.169.254)
+fn validate_url_safety(url_str: &str) -> Result<(), ToolError> {
+    let parsed = url::Url::parse(url_str)
+        .map_err(|e| ToolError::InvalidArgument(format!("Invalid URL: {e}")))?;
+
+    // Scheme whitelist
+    match parsed.scheme() {
+        "http" | "https" => {}
+        scheme => {
+            return Err(ToolError::InvalidArgument(format!(
+                "URL scheme '{scheme}' not allowed; only http/https permitted"
+            )));
+        }
+    }
+
+    // Resolve hostname and check for private IPs
+    if let Some(host) = parsed.host_str() {
+        // Try to parse as IP directly
+        if let Ok(ip) = host.parse::<IpAddr>() {
+            if is_private_ip(&ip) {
+                return Err(ToolError::InvalidArgument(format!(
+                    "URL targets private/reserved IP address: {ip}"
+                )));
+            }
+        }
+        // Block well-known dangerous hostnames
+        let lower = host.to_ascii_lowercase();
+        if lower == "localhost"
+            || lower == "metadata.google.internal"
+            || lower.ends_with(".internal")
+        {
+            return Err(ToolError::InvalidArgument(format!(
+                "URL targets blocked hostname: {host}"
+            )));
+        }
+    } else {
+        return Err(ToolError::InvalidArgument(
+            "URL has no host".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+/// Check if an IP address belongs to a private, loopback, or link-local range.
+fn is_private_ip(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            v4.is_loopback()           // 127.0.0.0/8
+                || v4.is_private()     // 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+                || v4.is_link_local()  // 169.254.0.0/16 (AWS metadata, etc.)
+                || v4.is_unspecified() // 0.0.0.0
+                || v4.is_broadcast()   // 255.255.255.255
+        }
+        IpAddr::V6(v6) => {
+            v6.is_loopback()           // ::1
+                || v6.is_unspecified() // ::
+        }
+    }
+}
 
 /// WebFetch tool
 #[derive(Debug)]
@@ -44,8 +111,11 @@ impl WebFetchTool {
         headers: Option<&serde_json::Value>,
         body: Option<&str>,
     ) -> Result<String, ToolError> {
+        validate_url_safety(url)?;
+
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(self.timeout_seconds))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
 
@@ -165,5 +235,62 @@ impl Tool for WebFetchTool {
             },
             "required": ["url"]
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_url_blocks_file_scheme() {
+        let result = validate_url_safety("file:///etc/passwd");
+        assert!(result.is_err());
+        assert!(format!("{:?}", result).contains("not allowed"));
+    }
+
+    #[test]
+    fn test_validate_url_blocks_private_ipv4() {
+        assert!(validate_url_safety("http://127.0.0.1/secret").is_err());
+        assert!(validate_url_safety("http://10.0.0.1/admin").is_err());
+        assert!(validate_url_safety("http://192.168.1.1/config").is_err());
+        assert!(validate_url_safety("http://172.16.0.1/internal").is_err());
+        // AWS metadata endpoint
+        assert!(validate_url_safety("http://169.254.169.254/latest/meta-data").is_err());
+    }
+
+    #[test]
+    fn test_validate_url_blocks_localhost() {
+        assert!(validate_url_safety("http://localhost/secret").is_err());
+        assert!(validate_url_safety("http://localhost:3000/api").is_err());
+    }
+
+    #[test]
+    fn test_validate_url_blocks_internal_hostnames() {
+        assert!(validate_url_safety("http://metadata.google.internal/").is_err());
+        assert!(validate_url_safety("http://something.internal/").is_err());
+    }
+
+    #[test]
+    fn test_validate_url_allows_public_https() {
+        assert!(validate_url_safety("https://example.com/page").is_ok());
+        assert!(validate_url_safety("http://api.github.com/repos").is_ok());
+    }
+
+    #[test]
+    fn test_validate_url_rejects_invalid_url() {
+        assert!(validate_url_safety("not-a-url").is_err());
+    }
+
+    #[test]
+    fn test_is_private_ip_loopback() {
+        assert!(is_private_ip(&"127.0.0.1".parse().unwrap()));
+        assert!(is_private_ip(&"::1".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_is_private_ip_public() {
+        assert!(!is_private_ip(&"8.8.8.8".parse().unwrap()));
+        assert!(!is_private_ip(&"1.1.1.1".parse().unwrap()));
     }
 }
