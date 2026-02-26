@@ -52,19 +52,29 @@ impl AnthropicProvider {
         }
     }
 
+    /// Parse a string into a header value safely, returning ProviderError on invalid chars.
+    fn safe_header_value(s: &str) -> Result<reqwest::header::HeaderValue, ProviderError> {
+        s.parse().map_err(|_| ProviderError::InvalidConfig {
+            message: "API key or header value contains invalid characters".to_string(),
+        })
+    }
+
     /// Get auth headers
-    fn get_headers(&self) -> reqwest::header::HeaderMap {
+    fn get_headers(&self) -> Result<reqwest::header::HeaderMap, ProviderError> {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
             reqwest::header::AUTHORIZATION,
-            format!("Bearer {}", self.config.api_key).parse().unwrap(),
+            Self::safe_header_value(&format!("Bearer {}", self.config.api_key))?,
         );
-        headers.insert("x-api-key", self.config.api_key.parse().unwrap());
-        headers.insert("anthropic-version", ANTHROPIC_API_VERSION.parse().unwrap());
+        headers.insert("x-api-key", Self::safe_header_value(&self.config.api_key)?);
+        headers.insert(
+            "anthropic-version",
+            Self::safe_header_value(ANTHROPIC_API_VERSION)?,
+        );
         if let Some(org) = &self.config.organization {
-            headers.insert("anthropic-organization", org.parse().unwrap());
+            headers.insert("anthropic-organization", Self::safe_header_value(org)?);
         }
-        headers
+        Ok(headers)
     }
 
     /// Map model name to Anthropic model ID
@@ -338,7 +348,7 @@ impl LlmProvider for AnthropicProvider {
         let response = self
             .client
             .post(&url)
-            .headers(self.get_headers())
+            .headers(self.get_headers()?)
             .json(&body)
             .send()
             .await
@@ -448,7 +458,7 @@ impl LlmProvider for AnthropicProvider {
         let mut stream = self
             .client
             .post(&url)
-            .headers(self.get_headers())
+            .headers(self.get_headers()?)
             .json(&body)
             .send()
             .await
@@ -672,5 +682,41 @@ mod tests {
         assert_eq!(mapped[1]["role"], "user");
         assert_eq!(mapped[1]["content"][0]["type"], "tool_result");
         assert_eq!(mapped[1]["content"][0]["tool_use_id"], "toolu_1");
+    }
+
+    #[test]
+    fn test_get_headers_returns_error_on_invalid_api_key() {
+        // API key with newline characters should NOT panic — must return InvalidConfig error
+        let config = create_anthropic_config("anthropic", "bad\nkey\r\n", "claude-sonnet-4");
+        let provider = AnthropicProvider::new(config, Arc::new(SimpleTokenCounter::new()));
+        let result = provider.get_headers();
+        assert!(result.is_err(), "Expected Err for API key with control chars");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, ProviderError::InvalidConfig { .. }),
+            "Expected InvalidConfig, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_get_headers_succeeds_with_valid_key() {
+        let config = create_anthropic_config("anthropic", "sk-ant-valid-key-1234", "claude-sonnet-4");
+        let provider = AnthropicProvider::new(config, Arc::new(SimpleTokenCounter::new()));
+        let result = provider.get_headers();
+        assert!(result.is_ok(), "Valid API key should succeed: {result:?}");
+    }
+
+    #[test]
+    fn test_provider_config_debug_masks_api_key() {
+        let config = create_anthropic_config("anthropic", "sk-ant-secret-key-12345678", "claude-sonnet-4");
+        let debug_output = format!("{:?}", config);
+        assert!(
+            !debug_output.contains("sk-ant-secret-key-12345678"),
+            "Debug output must NOT contain full API key: {debug_output}"
+        );
+        assert!(
+            debug_output.contains("sk-a***"),
+            "Debug output should contain masked prefix: {debug_output}"
+        );
     }
 }

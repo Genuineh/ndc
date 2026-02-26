@@ -54,6 +54,9 @@ pub enum ProviderError {
 
     #[error("Unknown provider: {name}")]
     UnknownProvider { name: String },
+
+    #[error("Invalid config: {message}")]
+    InvalidConfig { message: String },
 }
 
 /// Message role
@@ -198,7 +201,7 @@ pub struct ModelPermission {
 }
 
 /// Provider configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ProviderConfig {
     pub name: String,
     pub provider_type: ProviderType,
@@ -209,6 +212,27 @@ pub struct ProviderConfig {
     pub models: Vec<String>,
     pub timeout_ms: u64,
     pub max_retries: u32,
+}
+
+impl std::fmt::Debug for ProviderConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let masked_key = if self.api_key.len() > 8 {
+            format!("{}***", &self.api_key[..4])
+        } else {
+            "***".to_string()
+        };
+        f.debug_struct("ProviderConfig")
+            .field("name", &self.name)
+            .field("provider_type", &self.provider_type)
+            .field("api_key", &masked_key)
+            .field("base_url", &self.base_url)
+            .field("organization", &self.organization)
+            .field("default_model", &self.default_model)
+            .field("models", &self.models)
+            .field("timeout_ms", &self.timeout_ms)
+            .field("max_retries", &self.max_retries)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
