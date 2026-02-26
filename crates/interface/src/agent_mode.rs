@@ -610,11 +610,17 @@ pub enum PermissionRule {
 impl Default for AgentModeConfig {
     fn default() -> Self {
         let mut permissions = HashMap::new();
-        // 默认权限规则
-        permissions.insert("*".to_string(), PermissionRule::Allow);
+        // 默认权限规则：未知操作需确认
+        permissions.insert("*".to_string(), PermissionRule::Ask);
+        // 安全的只读操作直接放行
+        permissions.insert("file_read".to_string(), PermissionRule::Allow);
+        permissions.insert("task_manage".to_string(), PermissionRule::Allow);
+        // 危险操作需要用户确认
         permissions.insert("file_write".to_string(), PermissionRule::Ask);
-        permissions.insert("git_commit".to_string(), PermissionRule::Ask);
         permissions.insert("file_delete".to_string(), PermissionRule::Ask);
+        permissions.insert("git_commit".to_string(), PermissionRule::Ask);
+        permissions.insert("shell_execute".to_string(), PermissionRule::Ask);
+        permissions.insert("network".to_string(), PermissionRule::Ask);
 
         let mut config = Self {
             agent_name: "build".to_string(),
@@ -3029,5 +3035,40 @@ mod tests {
         unsafe {
             std::env::remove_var("NDC_SECURITY_PERMISSION_ENFORCE_GATEWAY");
         }
+    }
+
+    #[test]
+    fn test_default_wildcard_permission_is_ask() {
+        let config = AgentModeConfig::default();
+        assert_eq!(
+            config.permissions.get("*"),
+            Some(&PermissionRule::Ask),
+            "Wildcard default must be Ask, not Allow"
+        );
+    }
+
+    #[test]
+    fn test_read_only_operations_are_allowed_by_default() {
+        let config = AgentModeConfig::default();
+        assert_eq!(
+            config.permissions.get("file_read"),
+            Some(&PermissionRule::Allow),
+            "file_read should be explicitly Allow"
+        );
+        assert_eq!(
+            config.permissions.get("task_manage"),
+            Some(&PermissionRule::Allow),
+            "task_manage should be explicitly Allow"
+        );
+    }
+
+    #[test]
+    fn test_dangerous_operations_require_ask() {
+        let config = AgentModeConfig::default();
+        assert_eq!(config.permissions.get("shell_execute"), Some(&PermissionRule::Ask));
+        assert_eq!(config.permissions.get("network"), Some(&PermissionRule::Ask));
+        assert_eq!(config.permissions.get("file_write"), Some(&PermissionRule::Ask));
+        assert_eq!(config.permissions.get("file_delete"), Some(&PermissionRule::Ask));
+        assert_eq!(config.permissions.get("git_commit"), Some(&PermissionRule::Ask));
     }
 }
