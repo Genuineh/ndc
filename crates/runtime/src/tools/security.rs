@@ -145,6 +145,29 @@ fn project_root(working_dir_hint: Option<&Path>) -> PathBuf {
     canonicalize_lossy(&from_env)
 }
 
+/// Normalize a path by resolving `.` and `..` components purely logically
+/// (no filesystem access). This is used as a safe fallback when `canonicalize`
+/// fails, preventing `..` traversal from fooling `Path::starts_with`.
+fn normalize_path(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut parts: Vec<Component<'_>> = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                if let Some(Component::Normal(_)) = parts.last() {
+                    parts.pop();
+                } else if !matches!(parts.last(), Some(Component::RootDir)) {
+                    // Only keep `..` if we haven't hit root; discard at root boundary
+                    parts.push(component);
+                }
+            }
+            Component::CurDir => {} // skip `.`
+            _ => parts.push(component),
+        }
+    }
+    parts.iter().collect()
+}
+
 fn canonicalize_lossy(path: &Path) -> PathBuf {
     if let Ok(canonical) = std::fs::canonicalize(path) {
         return canonical;
@@ -159,7 +182,8 @@ fn canonicalize_lossy(path: &Path) -> PathBuf {
         return parent_canonical;
     }
 
-    path.to_path_buf()
+    // Fallback: normalize logically to prevent `..` traversal bypass
+    normalize_path(path)
 }
 
 fn resolve_absolute(path: &Path, working_dir: Option<&Path>) -> PathBuf {
@@ -491,6 +515,60 @@ mod tests {
         assert!(parsed.contains(PERMISSION_SHELL_HIGH_RISK));
         unsafe {
             std::env::remove_var("NDC_SECURITY_OVERRIDE_PERMISSIONS");
+        }
+    }
+
+    #[test]
+    fn test_normalize_path_removes_dotdot() {
+        use std::path::Path;
+        assert_eq!(
+            normalize_path(Path::new("/a/b/../../etc/passwd")),
+            PathBuf::from("/etc/passwd")
+        );
+        assert_eq!(
+            normalize_path(Path::new("/project/src/../../../outside")),
+            PathBuf::from("/outside")
+        );
+        assert_eq!(
+            normalize_path(Path::new("/a/b/./c")),
+            PathBuf::from("/a/b/c")
+        );
+        assert_eq!(
+            normalize_path(Path::new("/a/b/c")),
+            PathBuf::from("/a/b/c")
+        );
+    }
+
+    #[test]
+    fn test_dotdot_traversal_blocked_by_boundary_check() {
+        let _guard = test_env_lock();
+        unsafe {
+            std::env::set_var("NDC_SECURITY_PERMISSION_ENFORCE_GATEWAY", "1");
+        }
+        unsafe {
+            std::env::set_var("NDC_SECURITY_EXTERNAL_DIRECTORY_ACTION", "deny");
+        }
+        // Use a non-existent deep path so canonicalize falls back to normalize
+        let fake_root = PathBuf::from("/nonexistent/ndc-project-root-xyz");
+        unsafe {
+            std::env::set_var("NDC_PROJECT_ROOT", fake_root.to_string_lossy().to_string());
+        }
+        // Path that uses .. to escape: /nonexistent/ndc-project-root-xyz/../../etc/passwd
+        // Without normalize_path, starts_with would incorrectly pass
+        let attack_path = fake_root.join("../../etc/passwd");
+        let result = enforce_path_boundary(attack_path.as_path(), None, "read");
+        assert!(
+            matches!(result, Err(ToolError::PermissionDenied(_))),
+            "Path with .. traversal must be denied, but got: {result:?}"
+        );
+        unsafe {
+            std::env::remove_var("NDC_PROJECT_ROOT");
+        }
+        unsafe {
+            std::env::remove_var("NDC_SECURITY_EXTERNAL_DIRECTORY_ACTION");
+        }
+        unsafe {
+            std::env::remove_var("NDC_SECURITY_PERMISSION_ENFORCE_GATEWAY");
         }
     }
 }
