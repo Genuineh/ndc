@@ -17,7 +17,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::sync::{Mutex, broadcast};
+use tokio::sync::{Mutex, broadcast, mpsc, oneshot};
 use tracing::{debug, info};
 
 use ndc_core::{
@@ -697,6 +697,9 @@ pub struct AgentModeManager {
 
     /// Persistent cross-process session archive.
     session_archive: Arc<Mutex<SessionArchiveStore>>,
+
+    /// Channel sender for TUI permission prompts.
+    permission_tx: Arc<Mutex<Option<mpsc::Sender<PermissionRequest>>>>,
 }
 
 impl AgentModeManager {
@@ -710,7 +713,13 @@ impl AgentModeManager {
             runtime_working_dir: Arc::new(Mutex::new(None)),
             project_index: Arc::new(Mutex::new(ProjectIndexStore::load_default())),
             session_archive: Arc::new(Mutex::new(SessionArchiveStore::load_default())),
+            permission_tx: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Set the TUI permission channel for interactive confirmation.
+    pub async fn set_permission_channel(&self, tx: mpsc::Sender<PermissionRequest>) {
+        *self.permission_tx.lock().await = Some(tx);
     }
 
     /// 启用 Agent 模式
@@ -721,11 +730,15 @@ impl AgentModeManager {
             build_project_scoped_session_id(detected_identity.project_id.as_str());
 
         // 创建 Agent Orchestrator
-        let tool_executor = Arc::new(ReplToolExecutor::new(
+        let mut executor = ReplToolExecutor::new(
             self.tool_registry.clone(),
             config.permissions.clone(),
             self.runtime_working_dir.clone(),
-        ));
+        );
+        if let Some(tx) = self.permission_tx.lock().await.clone() {
+            executor = executor.with_permission_channel(tx);
+        }
+        let tool_executor = Arc::new(executor);
         let provider = self.create_provider(&config.provider, &config.model)?;
 
         // TaskVerifier 与工具调用共享同一份 runtime storage
@@ -1768,10 +1781,21 @@ pub struct ProjectSwitchOutcome {
 }
 
 /// REPL Tool Executor - 桥接 Agent Orchestrator 和 Tool Registry
+/// A permission confirmation request sent from the tool executor to the TUI event loop.
+pub struct PermissionRequest {
+    /// Human-readable description of the operation being requested.
+    pub description: String,
+    /// Send `true` to allow, `false` to deny.
+    pub response_tx: oneshot::Sender<bool>,
+}
+
 pub struct ReplToolExecutor {
     tool_registry: Arc<ToolRegistry>,
     permissions: HashMap<String, PermissionRule>,
     runtime_working_dir: Arc<Mutex<Option<PathBuf>>>,
+    /// Channel to send permission requests to the TUI event loop.
+    /// When `None`, falls back to stdin-based confirmation (non-TUI mode).
+    permission_tx: Option<mpsc::Sender<PermissionRequest>>,
 }
 
 impl ReplToolExecutor {
@@ -1784,7 +1808,13 @@ impl ReplToolExecutor {
             tool_registry,
             permissions,
             runtime_working_dir,
+            permission_tx: None,
         }
+    }
+
+    pub fn with_permission_channel(mut self, tx: mpsc::Sender<PermissionRequest>) -> Self {
+        self.permission_tx = Some(tx);
+        self
     }
 
     fn resolve_permission_rule(&self, key: &str) -> PermissionRule {
@@ -1883,6 +1913,29 @@ impl ReplToolExecutor {
             return Ok(true);
         }
 
+        // If we have a TUI channel, use it instead of stdin
+        if let Some(tx) = &self.permission_tx {
+            let (resp_tx, resp_rx) = oneshot::channel();
+            tx.send(PermissionRequest {
+                description: description.clone(),
+                response_tx: resp_tx,
+            })
+            .await
+            .map_err(|_| {
+                AgentError::PermissionDenied(format!(
+                    "Permission channel closed: {}",
+                    description
+                ))
+            })?;
+            return resp_rx.await.map_err(|_| {
+                AgentError::PermissionDenied(format!(
+                    "Permission response channel dropped: {}",
+                    description
+                ))
+            });
+        }
+
+        // Fallback: stdin-based confirmation for non-TUI mode
         if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
             return Err(AgentError::PermissionDenied(format!(
                 "non_interactive confirmation required: {}; set NDC_AUTO_APPROVE_TOOLS=1 for CI/tests or configure explicit allow policy",
@@ -3070,5 +3123,67 @@ mod tests {
         assert_eq!(config.permissions.get("file_write"), Some(&PermissionRule::Ask));
         assert_eq!(config.permissions.get("file_delete"), Some(&PermissionRule::Ask));
         assert_eq!(config.permissions.get("git_commit"), Some(&PermissionRule::Ask));
+    }
+
+    #[tokio::test]
+    async fn test_confirm_operation_via_channel_approved() {
+        let (tx, mut rx) = mpsc::channel::<PermissionRequest>(4);
+        let mut registry = ToolRegistry::new();
+        registry.register(DummyWriteTool);
+        let registry = Arc::new(registry);
+
+        let mut permissions = HashMap::new();
+        permissions.insert("*".to_string(), PermissionRule::Ask);
+
+        let executor = ReplToolExecutor::new(
+            registry,
+            permissions,
+            Arc::new(tokio::sync::Mutex::new(None)),
+        )
+        .with_permission_channel(tx);
+
+        // Spawn a task to respond to the permission request
+        let responder = tokio::spawn(async move {
+            let req = rx.recv().await.expect("should receive permission request");
+            assert!(req.description.contains("write"));
+            req.response_tx.send(true).expect("send response");
+        });
+
+        let result = executor
+            .confirm_operation("test write operation".to_string())
+            .await
+            .expect("should not error");
+        assert!(result);
+        responder.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_confirm_operation_via_channel_denied() {
+        let (tx, mut rx) = mpsc::channel::<PermissionRequest>(4);
+        let mut registry = ToolRegistry::new();
+        registry.register(DummyWriteTool);
+        let registry = Arc::new(registry);
+
+        let mut permissions = HashMap::new();
+        permissions.insert("*".to_string(), PermissionRule::Ask);
+
+        let executor = ReplToolExecutor::new(
+            registry,
+            permissions,
+            Arc::new(tokio::sync::Mutex::new(None)),
+        )
+        .with_permission_channel(tx);
+
+        let responder = tokio::spawn(async move {
+            let req = rx.recv().await.expect("should receive permission request");
+            req.response_tx.send(false).expect("send response");
+        });
+
+        let result = executor
+            .confirm_operation("test write operation".to_string())
+            .await
+            .expect("should not error");
+        assert!(!result);
+        responder.await.unwrap();
     }
 }

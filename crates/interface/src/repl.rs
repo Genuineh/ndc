@@ -37,7 +37,7 @@ use ratatui::widgets::{
 };
 
 // Agent mode integration
-use crate::agent_mode::{AgentModeConfig, AgentModeManager, handle_agent_command};
+use crate::agent_mode::{AgentModeConfig, AgentModeManager, PermissionRequest, handle_agent_command};
 use crate::redaction::{RedactionMode, sanitize_text};
 
 const TUI_MAX_LOG_LINES: usize = 3000;
@@ -1601,14 +1601,24 @@ pub async fn run_repl(history_file: PathBuf, executor: Arc<ndc_runtime::Executor
         )),
     ));
 
+    // TUI 模式下设置权限确认通道（在 enable 之前）
+    let is_tui = io::stdout().is_terminal() && std::env::var("NDC_REPL_LEGACY").is_err();
+    let permission_rx = if is_tui {
+        let (tx, rx) = tokio::sync::mpsc::channel::<PermissionRequest>(4);
+        agent_manager.set_permission_channel(tx).await;
+        Some(rx)
+    } else {
+        None
+    };
+
     // 启动时自动启用 Agent 模式
     let agent_config = AgentModeConfig::default();
     if let Err(e) = agent_manager.enable(agent_config).await {
         println!("[Warning] Failed to enable agent mode: {}", e);
     }
 
-    if io::stdout().is_terminal() && std::env::var("NDC_REPL_LEGACY").is_err() {
-        if let Err(e) = run_repl_tui(&config, &mut viz_state, agent_manager.clone()).await {
+    if is_tui {
+        if let Err(e) = run_repl_tui(&config, &mut viz_state, agent_manager.clone(), permission_rx.unwrap()).await {
             warn!("TUI mode failed, fallback to legacy REPL: {}", e);
         } else {
             return;
@@ -2748,6 +2758,7 @@ async fn run_repl_tui(
     _config: &ReplConfig,
     viz_state: &mut ReplVisualizationState,
     agent_manager: Arc<AgentModeManager>,
+    mut permission_rx: tokio::sync::mpsc::Receiver<PermissionRequest>,
 ) -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -2771,6 +2782,7 @@ async fn run_repl_tui(
     let mut streamed_any = false;
     let mut last_poll = Instant::now();
     let mut should_quit = false;
+    let mut pending_permission_tx: Option<tokio::sync::oneshot::Sender<bool>> = None;
     let mut session_view = TuiSessionViewState::default();
     let mut turn_counter: usize = 0;
     let mut live_events: Option<
@@ -2788,6 +2800,13 @@ async fn run_repl_tui(
             )
         {
             streamed_any = true;
+        }
+
+        // Poll for incoming permission requests from the executor
+        if let Ok(req) = permission_rx.try_recv() {
+            viz_state.permission_blocked = true;
+            viz_state.permission_pending_message = Some(req.description);
+            pending_permission_tx = Some(req.response_tx);
         }
 
         let status = agent_manager.status().await;
@@ -2988,6 +3007,37 @@ async fn run_repl_tui(
 
                     if let Some(action) = detect_tui_shortcut(&key, &keymap) {
                         apply_tui_shortcut_action(action, viz_state, entries.as_mut());
+                        continue;
+                    }
+
+                    // Handle y/n/a permission response keys when a permission prompt is active
+                    if viz_state.permission_blocked {
+                        if let Some(tx) = pending_permission_tx.take() {
+                            match key.code {
+                                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                                    let _ = tx.send(true);
+                                    viz_state.permission_blocked = false;
+                                    viz_state.permission_pending_message = None;
+                                }
+                                KeyCode::Char('n') | KeyCode::Char('N') => {
+                                    let _ = tx.send(false);
+                                    viz_state.permission_blocked = false;
+                                    viz_state.permission_pending_message = None;
+                                }
+                                KeyCode::Char('a') | KeyCode::Char('A') => {
+                                    let _ = tx.send(true);
+                                    viz_state.permission_blocked = false;
+                                    viz_state.permission_pending_message = None;
+                                    // Set env var so future operations are auto-approved this session
+                                    // SAFETY: no other threads are reading this env var concurrently
+                                    unsafe { std::env::set_var("NDC_AUTO_APPROVE_TOOLS", "1") };
+                                }
+                                _ => {
+                                    // Put the sender back — not consumed
+                                    pending_permission_tx = Some(tx);
+                                }
+                            }
+                        }
                         continue;
                     }
 
