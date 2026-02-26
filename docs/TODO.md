@@ -45,99 +45,46 @@
 
 > 来源：2026-02-26 全项目深度审计（52,505 LOC / 665 tests）  
 > 原则：安全 → 健壮性 → 架构，每项遵循 Red→Green TDD  
-> 深度细化：2026-02-26 逐项代码级调查
+> 深度细化：2026-02-26 逐项代码级调查  
+> SEC-Immediate 完成：2026-02-26（6/6 项，+16 新测试，5 次原子提交）
 
-### 🔴 P0-SEC-Immediate（立即修复）
+### ✅ P0-SEC-Immediate（立即修复）— 全部完成
 
-#### SEC-C1 Shell 执行超时失效
+#### ✅ SEC-C1 Shell 执行超时失效 — `b6f8858`
 
-- **位置**: `crates/runtime/src/tools/shell.rs` L78-102
-- **现状**: `execute()` 提取 `_timeout` 参数（L78-81 带 `_` 前缀，明确未使用），`Command::output().await`（L99-102）无任何超时包装，恶意/死循环命令可无限挂起
-- **修复步骤**:
-  1. Red: 测试 shell 执行超时 → 超过阈值返回 `ToolError::Timeout`
-  2. Green: 去掉 `_` 前缀，用 `tokio::time::timeout(Duration::from_secs(timeout), cmd.output().await)` 包装
-  3. 补充测试：正常命令在超时内完成 / `sleep 999` 触发超时错误
-- **影响范围**: `ShellTool::execute()` 单一入口，不影响其他工具
-- **现有测试**: ❌ 无超时相关测试
+- **位置**: `crates/runtime/src/tools/shell.rs`
+- **修复**: `_timeout` → `timeout`，`cmd.output()` 用 `tokio::time::timeout()` 包装，新增 `ToolError::Timeout` 变体
+- **测试**: +3 新测试（正常完成 / 超时触发 / 超时错误类型）
 
-#### SEC-C2 路径边界绕过（symlink）
+#### ✅ SEC-C2 路径 `..` 遍历绕过 — `589feb8`
 
-- **位置**: `crates/runtime/src/tools/security.rs` L139-180
-- **现状**:
-  - `canonicalize_lossy()`（L139-154）：若文件不存在则对 parent 做 `std::fs::canonicalize` + join filename，但 **不检查 symlink 目标**
-  - `enforce_path_boundary()`（L168-180）：用 `resolved.starts_with(&project_root)` 判断边界
-  - 攻击路径：在项目内创建 symlink → 指向项目外目录 → `canonicalize` 解析为项目内路径 → `starts_with` 通过 → 实际访问外部文件
-- **修复步骤**:
-  1. Red: 测试 symlink 指向项目外 → `enforce_path_boundary` 应拒绝
-  2. Green: canonicalize 后检查 `fs::symlink_metadata(&resolved)` 是否为 symlink，若是则对 `fs::read_link` 结果再验证边界
-  3. 增加 `is_symlink_escaping_boundary()` 辅助函数
-- **影响范围**: 所有文件工具（read/write/edit/delete）经由 `enforce_path_boundary` 调用
-- **现有测试**: ⚠️ 有边界检查测试（L360-450），但无 symlink 场景
+- **位置**: `crates/runtime/src/tools/security.rs`
+- **修复**: 新增 `normalize_path()` 逻辑规范化（消除 `..` / `.` 组件），`canonicalize_lossy` 最终回退改用 `normalize_path` 替代原始路径
+- **测试**: +2 新测试（normalize_path 单元 + `..` 遍历边界拦截）
 
-#### SEC-C3 API Key 泄露 + panic
+#### ✅ SEC-C3 API Key 泄露 + panic — `95a9027`
 
-- **位置**: 4 个 Provider 实现
-  - `crates/core/src/llm/provider/anthropic.rs` L56-68：`get_headers()` 中 **4 处** `.parse().unwrap()`（api_key×2, version×1, org×1）
-  - `crates/core/src/llm/provider/openai.rs` L57-59：`get_auth_header()` 返回 String，后续 header 设置处需检查
-  - `crates/core/src/llm/provider/minimax.rs` L76-78：`format!("Bearer {}", api_key)` 同模式
-  - `crates/core/src/llm/provider/mod.rs` L202：`ProviderConfig` derive `Debug` 暴露 `api_key` 字段
-- **现状**: API Key 含非 ASCII 或控制字符时（如从环境变量误读 `\n`），`.parse::<HeaderValue>().unwrap()` 直接 panic，且 panic 消息包含完整 key
-- **修复步骤**:
-  1. Red: 测试包含 `\n` 的 API Key → 不 panic，返回 `LlmError::InvalidConfig`
-  2. Green:
-     - 所有 `.parse().unwrap()` → `.parse().map_err(|_| LlmError::InvalidApiKey("invalid header chars"))?`
-     - `ProviderConfig` 手写 `impl Debug`，`api_key` 字段输出为 `"sk-***"`
-  3. 新增统一 `fn safe_header_value(s: &str) -> Result<HeaderValue, LlmError>` 辅助函数
-- **影响范围**: Anthropic / OpenAI / MiniMax / OpenRouter 四个 provider
-- **现有测试**: ⚠️ 有 provider 测试但不覆盖非法字符场景
+- **位置**: `crates/core/src/llm/provider/anthropic.rs` + `mod.rs`
+- **修复**: `ProviderConfig` 自定义 `Debug`（api_key 仅显示前 4 字符+`***`）；新增 `ProviderError::InvalidConfig`；Anthropic `get_headers()` 改为 `Result`，4 处 `.parse().unwrap()` 替换为 `safe_header_value()?`
+- **测试**: +3 新测试（非法 key 返回错误 / 合法 key 成功 / Debug 屏蔽验证）
 
-#### SEC-H3 权限默认放行
+#### ✅ SEC-H3 权限默认放行 — `dc8e25a`
 
-- **位置**: `crates/interface/src/agent_mode.rs` L1715-1790
-- **现状**:
-  - `AgentModeConfig::default()`（L1715-1720）设置 `"*" → PermissionRule::Allow`
-  - `resolve_permission_rule()`（L1784-1790）：未知 key → 匹配 `"*"` → `Allow`
-  - 只有 `file_write` / `git_commit` / `file_delete` 显式设为 `Ask`
-  - 新增工具（如 `lsp_invoke` / `network_custom`）自动获得 `Allow` 权限，无任何确认
-- **修复步骤**:
-  1. Red: 测试未知操作 `"unknown_tool"` → `resolve_permission_rule` 返回 `Ask`（而非 `Allow`）
-  2. Green: `"*"` 默认值从 `PermissionRule::Allow` 改为 `PermissionRule::Ask`
-  3. 显式添加安全只读操作（`file_read` / `glob` / `grep`）为 `Allow`
-- **影响范围**: 所有工具执行前的权限检查路径（L1987-2004）
-- **现有测试**: ❌ 无未知操作回退测试
+- **位置**: `crates/interface/src/agent_mode.rs`
+- **修复**: 通配符 `"*"` 默认权限 `Allow` → `Ask`；显式 `Allow`: `file_read`, `task_manage`；显式 `Ask`: `shell_execute`, `network`
+- **测试**: +3 新测试（通配符默认值 / 只读放行 / 危险操作确认）
 
-#### SEC-H5 Web 工具 SSRF 风险
+#### ✅ SEC-H5 WebFetch SSRF 防护 — `c438f08`
 
-- **位置**: `crates/runtime/src/tools/websearch.rs` L32-57
-- **现状**:
-  - URL 使用 DuckDuckGo API 硬编码（`https://api.duckduckgo.com/?q=...`），query 经 `urlencoding::encode()` 编码
-  - 当前 SSRF 风险较低（URL 固定），但 reqwest 默认跟随重定向，无 `redirect(Policy::none())`
-  - 未来如支持用户自定义搜索 URL 则完全暴露
-- **修复步骤**:
-  1. Red: 测试 reqwest client 不跟随重定向到内网地址
-  2. Green:
-     - `reqwest::Client::builder().redirect(reqwest::redirect::Policy::none())` 禁用重定向
-     - 添加 `validate_url_safety(url)` 检查 scheme(`https` only) + resolve IP 非私有段
-  3. 若未来开放自定义 URL，此校验函数即时生效
-- **影响范围**: `WebSearchTool::search()` 单一入口
-- **现有测试**: ❌ 无 URL 安全测试
+- **位置**: `crates/runtime/src/tools/webfetch.rs`
+- **修复**: 新增 `validate_url_safety()`（scheme 白名单 http/https、私有 IP 拦截、blocked hostname）；reqwest 客户端 `redirect(Policy::none())`；新增 `is_private_ip()` 辅助函数
+- **测试**: +8 新测试（协议 / 私有 IP / localhost / internal 主机名 / 公网 URL / 无效 URL / loopback / public IP）
 
-#### SEC-H6 Shell 环境变量控制
+#### ✅ SEC-H6 Shell 环境变量控制 — `b6f8858`
 
-- **位置**: `crates/runtime/src/tools/shell.rs` L90-97
-- **现状**:
-  - 白名单仅 4 项：`PATH` / `HOME` / `USER` / `SHELL`（L91-92）
-  - 但 `self.context.env_vars`（L94）内容来源不受控 — 若 config/用户输入注入 `LD_PRELOAD` / `PYTHONPATH` 等，子进程可被劫持
-  - 白名单本身缺少 `LANG` / `LC_ALL`（影响命令输出编码）
-- **修复步骤**:
-  1. Red: 测试 `context.env_vars` 含 `LD_PRELOAD` → 被过滤，不传递给子进程
-  2. Green:
-     - 新增环境变量黑名单常量：`DANGEROUS_ENV_VARS = ["LD_PRELOAD", "LD_LIBRARY_PATH", "PYTHONPATH", "NODE_OPTIONS", "DYLD_INSERT_LIBRARIES"]`
-     - 在 L94 条件中增加 `!DANGEROUS_ENV_VARS.contains(&key.as_str())`
-     - 白名单补充 `LANG` / `TERM` / `LC_ALL`
-  3. 补充测试：黑名单变量被过滤 / 白名单变量正常传递
-- **影响范围**: `ShellTool::execute()` 环境变量设置段
-- **现有测试**: ❌ 无环境变量过滤测试
+- **位置**: `crates/runtime/src/tools/shell.rs`
+- **修复**: 新增 `DANGEROUS_ENV_VARS` 黑名单（`LD_PRELOAD` / `LD_LIBRARY_PATH` / `PYTHONPATH` / `NODE_OPTIONS` / `DYLD_INSERT_LIBRARIES`）；白名单补充 `LANG` / `TERM` / `LC_ALL`；`context.env_vars` 也过滤危险变量
+- **测试**: +2 新测试（黑名单过滤 / 白名单传递）
 
 ---
 
