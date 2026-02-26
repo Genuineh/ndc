@@ -23,10 +23,11 @@ use tracing::{info, warn};
 use crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
 };
-use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
-};
 use crossterm::execute;
+use crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
+use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
@@ -34,11 +35,10 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
     Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
 };
-use ratatui::Terminal;
 
 // Agent mode integration
-use crate::agent_mode::{handle_agent_command, AgentModeConfig, AgentModeManager};
-use crate::redaction::{sanitize_text, RedactionMode};
+use crate::agent_mode::{AgentModeConfig, AgentModeManager, handle_agent_command};
+use crate::redaction::{RedactionMode, sanitize_text};
 
 const TUI_MAX_LOG_LINES: usize = 3000;
 const TUI_SCROLL_STEP: usize = 3;
@@ -349,6 +349,786 @@ impl WorkflowOverviewMode {
             WorkflowOverviewMode::Verbose => "verbose",
         }
     }
+}
+
+// ===== Chat Turn Model (P1-UX-2) =====
+
+/// Status of a tool call card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolCardStatus {
+    Running,
+    Completed,
+    Failed,
+}
+
+/// A collapsible card representing a tool call execution.
+#[derive(Debug, Clone)]
+struct ToolCallCard {
+    name: String,
+    status: ToolCardStatus,
+    duration: Option<String>,
+    args_summary: Option<String>,
+    output_preview: Option<String>,
+    is_error: bool,
+    collapsed: bool,
+    round: usize,
+}
+
+/// A single structured entry in the conversation log.
+#[derive(Debug, Clone)]
+enum ChatEntry {
+    /// Visual separator (blank line)
+    Separator,
+    /// User input message with turn identifier
+    UserMessage { content: String, turn_id: usize },
+    /// Assistant response with turn identifier
+    AssistantMessage { content: String, turn_id: usize },
+    /// System/agent note (e.g., processing indicator)
+    SystemNote(String),
+    /// Round separator divider
+    RoundSeparator { round: usize },
+    /// Tool call card (collapsible)
+    ToolCard(ToolCallCard),
+    /// Reasoning block (collapsible, default collapsed)
+    ReasoningBlock {
+        round: usize,
+        content: String,
+        collapsed: bool,
+    },
+    /// Workflow stage indicator
+    StageNote(String),
+    /// Token usage information
+    UsageNote(String),
+    /// Error message
+    ErrorNote(String),
+    /// Warning message
+    WarningNote(String),
+    /// Permission request
+    PermissionNote(String),
+    /// Permission hint
+    PermissionHint(String),
+}
+
+/// A complete conversation turn grouping a user message and the agent's
+/// response cycle (events + assistant reply).
+#[derive(Debug, Clone)]
+struct ChatTurn {
+    turn_id: usize,
+    entries: Vec<ChatEntry>,
+}
+
+const TUI_MAX_CHAT_ENTRIES: usize = 3000;
+
+fn push_chat_entry(entries: &mut Vec<ChatEntry>, entry: ChatEntry) {
+    entries.push(entry);
+    if entries.len() > TUI_MAX_CHAT_ENTRIES {
+        let overflow = entries.len() - TUI_MAX_CHAT_ENTRIES;
+        entries.drain(0..overflow);
+    }
+}
+
+fn push_chat_entries(entries: &mut Vec<ChatEntry>, new_entries: Vec<ChatEntry>) {
+    for entry in new_entries {
+        push_chat_entry(entries, entry);
+    }
+}
+
+/// Count the number of rendered display lines a single ChatEntry will produce.
+fn chat_entry_display_lines(entry: &ChatEntry) -> usize {
+    match entry {
+        ChatEntry::Separator => 1,
+        ChatEntry::UserMessage { content, .. } => {
+            // header + content lines + footer
+            2 + content.lines().count().max(1)
+        }
+        ChatEntry::AssistantMessage { content, .. } => 2 + content.lines().count().max(1),
+        ChatEntry::SystemNote(_)
+        | ChatEntry::RoundSeparator { .. }
+        | ChatEntry::StageNote(_)
+        | ChatEntry::UsageNote(_)
+        | ChatEntry::ErrorNote(_)
+        | ChatEntry::WarningNote(_)
+        | ChatEntry::PermissionNote(_)
+        | ChatEntry::PermissionHint(_) => 1,
+        ChatEntry::ToolCard(card) => {
+            let mut n = 1; // header line
+            if !card.collapsed {
+                if card.args_summary.is_some() {
+                    n += 1;
+                }
+                if card.output_preview.is_some() {
+                    n += 1;
+                }
+            }
+            n
+        }
+        ChatEntry::ReasoningBlock {
+            collapsed, content, ..
+        } => {
+            if *collapsed {
+                1
+            } else {
+                1 + content.lines().count().max(1)
+            }
+        }
+    }
+}
+
+/// Total rendered display lines for a slice of entries.
+fn total_display_lines(entries: &[ChatEntry]) -> usize {
+    entries.iter().map(chat_entry_display_lines).sum()
+}
+
+/// Render structured chat entries to styled ratatui Lines.
+fn style_chat_entries(entries: &[ChatEntry]) -> Vec<Line<'static>> {
+    let theme = TuiTheme::default_dark();
+    let mut lines = Vec::new();
+    for entry in entries {
+        style_chat_entry(entry, &theme, &mut lines);
+    }
+    lines
+}
+
+/// Render a single ChatEntry into styled Lines.
+fn style_chat_entry(entry: &ChatEntry, theme: &TuiTheme, lines: &mut Vec<Line<'static>>) {
+    match entry {
+        ChatEntry::Separator => {
+            lines.push(Line::default());
+        }
+        ChatEntry::UserMessage { content, turn_id } => {
+            // Header: ▌ You [#n]
+            lines.push(Line::from(vec![
+                Span::styled("▌ ", Style::default().fg(theme.user_accent)),
+                Span::styled(
+                    format!("You [#{}]", turn_id),
+                    Style::default()
+                        .fg(theme.user_accent)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            // Content with left border
+            for l in content.lines() {
+                lines.push(Line::from(vec![
+                    Span::styled("│ ", Style::default().fg(theme.user_accent)),
+                    Span::styled(l.to_string(), Style::default().fg(theme.text_strong)),
+                ]));
+            }
+            if content.is_empty() {
+                lines.push(Line::from(vec![
+                    Span::styled("│ ", Style::default().fg(theme.user_accent)),
+                    Span::styled("", Style::default()),
+                ]));
+            }
+            // Footer
+            lines.push(Line::from(Span::styled(
+                "└─",
+                Style::default().fg(theme.user_accent),
+            )));
+        }
+        ChatEntry::AssistantMessage { content, turn_id } => {
+            lines.push(Line::from(vec![
+                Span::styled("▌ ", Style::default().fg(theme.assistant_accent)),
+                Span::styled(
+                    format!("Assistant [#{}]", turn_id),
+                    Style::default()
+                        .fg(theme.assistant_accent)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            for l in content.lines() {
+                lines.push(Line::from(vec![
+                    Span::styled("│ ", Style::default().fg(theme.assistant_accent)),
+                    Span::styled(l.to_string(), Style::default().fg(theme.text_base)),
+                ]));
+            }
+            if content.is_empty() {
+                lines.push(Line::from(vec![
+                    Span::styled("│ ", Style::default().fg(theme.assistant_accent)),
+                    Span::styled("", Style::default()),
+                ]));
+            }
+            lines.push(Line::from(Span::styled(
+                "└─",
+                Style::default().fg(theme.assistant_accent),
+            )));
+        }
+        ChatEntry::SystemNote(text) => {
+            lines.push(Line::from(vec![
+                Span::styled("  ◆ ", Style::default().fg(theme.warning)),
+                Span::styled(text.clone(), Style::default().fg(theme.warning)),
+            ]));
+        }
+        ChatEntry::RoundSeparator { round } => {
+            lines.push(Line::from(Span::styled(
+                format!("  ── Round {} ──", round),
+                Style::default()
+                    .fg(theme.text_dim)
+                    .add_modifier(Modifier::DIM),
+            )));
+        }
+        ChatEntry::ToolCard(card) => {
+            let icon = if card.collapsed { "▸" } else { "▾" };
+            let (status_icon, status_color) = match card.status {
+                ToolCardStatus::Running => ("⟳", theme.warning),
+                ToolCardStatus::Completed => ("✓", theme.success),
+                ToolCardStatus::Failed => ("✗", theme.danger),
+            };
+            let dur_str = card
+                .duration
+                .as_deref()
+                .filter(|d| !d.is_empty())
+                .map(|d| format!(" ({})", d))
+                .unwrap_or_default();
+            // Header: ▸/▾ ✓/✗/⟳ tool_name (duration)
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("  {} ", icon),
+                    Style::default().fg(theme.tool_accent),
+                ),
+                Span::styled(status_icon.to_string(), Style::default().fg(status_color)),
+                Span::styled(
+                    format!(" {}", card.name),
+                    Style::default().fg(theme.text_strong),
+                ),
+                Span::styled(dur_str, Style::default().fg(theme.text_muted)),
+            ]));
+            if !card.collapsed {
+                if let Some(args) = &card.args_summary {
+                    lines.push(Line::from(vec![
+                        Span::styled("    ├─ input : ", Style::default().fg(theme.text_muted)),
+                        Span::styled(args.clone(), Style::default().fg(theme.text_base)),
+                    ]));
+                }
+                if let Some(output) = &card.output_preview {
+                    let prefix = if card.is_error { "error " } else { "output" };
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("    └─ {}: ", prefix),
+                            Style::default().fg(theme.text_muted),
+                        ),
+                        Span::styled(output.clone(), Style::default().fg(theme.text_base)),
+                    ]));
+                }
+            }
+        }
+        ChatEntry::ReasoningBlock {
+            round,
+            content,
+            collapsed,
+        } => {
+            if *collapsed {
+                lines.push(Line::from(vec![
+                    Span::styled("  ▸ ", Style::default().fg(theme.thinking_accent)),
+                    Span::styled(
+                        format!("Thinking [r{}] (collapsed)", round),
+                        Style::default().fg(theme.thinking_accent),
+                    ),
+                ]));
+            } else {
+                lines.push(Line::from(vec![
+                    Span::styled("  ▾ ", Style::default().fg(theme.thinking_accent)),
+                    Span::styled(
+                        format!("Thinking [r{}]", round),
+                        Style::default()
+                            .fg(theme.thinking_accent)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]));
+                for l in content.lines() {
+                    lines.push(Line::from(vec![
+                        Span::styled("    ", Style::default()),
+                        Span::styled(l.to_string(), Style::default().fg(theme.text_muted)),
+                    ]));
+                }
+                if content.is_empty() {
+                    lines.push(Line::from(vec![
+                        Span::styled("    ", Style::default()),
+                        Span::styled("", Style::default()),
+                    ]));
+                }
+            }
+        }
+        ChatEntry::StageNote(text) => {
+            lines.push(Line::from(vec![
+                Span::styled("  ◆ ", Style::default().fg(theme.primary)),
+                Span::styled(text.clone(), Style::default().fg(theme.primary)),
+            ]));
+        }
+        ChatEntry::UsageNote(text) => {
+            lines.push(Line::from(vec![
+                Span::styled("  ", Style::default()),
+                Span::styled(text.clone(), Style::default().fg(theme.text_muted)),
+            ]));
+        }
+        ChatEntry::ErrorNote(text) => {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    "  ✗ ",
+                    Style::default()
+                        .fg(theme.danger)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(text.clone(), Style::default().fg(theme.danger)),
+            ]));
+        }
+        ChatEntry::WarningNote(text) => {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    "  ⚠ ",
+                    Style::default()
+                        .fg(theme.warning)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(text.clone(), Style::default().fg(theme.warning)),
+            ]));
+        }
+        ChatEntry::PermissionNote(text) => {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    "  ⚠ ",
+                    Style::default()
+                        .fg(theme.warning)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(text.clone(), Style::default().fg(theme.warning)),
+            ]));
+        }
+        ChatEntry::PermissionHint(text) => {
+            lines.push(Line::from(vec![
+                Span::styled("  ⓘ ", Style::default().fg(theme.info)),
+                Span::styled(text.clone(), Style::default().fg(theme.info)),
+            ]));
+        }
+    }
+}
+
+/// Convert an AgentExecutionEvent into structured ChatEntry variants.
+fn event_to_entries(
+    event: &ndc_core::AgentExecutionEvent,
+    viz_state: &mut ReplVisualizationState,
+) -> Vec<ChatEntry> {
+    if !matches!(
+        event.kind,
+        ndc_core::AgentExecutionEventKind::PermissionAsked
+            | ndc_core::AgentExecutionEventKind::Reasoning
+    ) {
+        viz_state.permission_blocked = false;
+        viz_state.permission_pending_message = None;
+    }
+    let v = viz_state.verbosity;
+    let mut entries = Vec::new();
+
+    // Round separator (Normal/Verbose only)
+    if matches!(v, DisplayVerbosity::Normal | DisplayVerbosity::Verbose)
+        && event.round > viz_state.last_emitted_round
+        && event.round > 0
+    {
+        entries.push(ChatEntry::RoundSeparator { round: event.round });
+    }
+    if event.round > 0 {
+        viz_state.last_emitted_round = event.round;
+    }
+
+    match event.kind {
+        ndc_core::AgentExecutionEventKind::WorkflowStage => {
+            if let Some(stage_info) = event.workflow_stage_info() {
+                let stage = stage_info.stage;
+                viz_state.current_workflow_stage = Some(stage.as_str().to_string());
+                viz_state.current_workflow_stage_index = Some(stage_info.index);
+                viz_state.current_workflow_stage_total = Some(stage_info.total);
+                viz_state.current_workflow_stage_started_at = Some(event.timestamp);
+                match v {
+                    DisplayVerbosity::Compact => {
+                        entries.push(ChatEntry::StageNote(format!(
+                            "{}...",
+                            capitalize_stage(stage.as_str())
+                        )));
+                    }
+                    DisplayVerbosity::Normal => {
+                        let detail = if stage_info.detail.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" — {}", stage_info.detail)
+                        };
+                        entries.push(ChatEntry::StageNote(format!(
+                            "{}{}",
+                            capitalize_stage(stage.as_str()),
+                            detail
+                        )));
+                    }
+                    DisplayVerbosity::Verbose => {
+                        entries.push(ChatEntry::StageNote(format!("stage:{}", stage)));
+                        entries.push(ChatEntry::SystemNote(format!(
+                            "[Workflow][r{}] {}",
+                            event.round,
+                            sanitize_text(&event.message, viz_state.redaction_mode)
+                        )));
+                    }
+                }
+            } else {
+                entries.push(ChatEntry::SystemNote(format!(
+                    "[Workflow][r{}] {}",
+                    event.round,
+                    sanitize_text(&event.message, viz_state.redaction_mode)
+                )));
+            }
+        }
+        ndc_core::AgentExecutionEventKind::Reasoning => {
+            let collapsed = !viz_state.show_thinking;
+            if viz_state.show_thinking {
+                entries.push(ChatEntry::ReasoningBlock {
+                    round: event.round,
+                    content: sanitize_text(&event.message, viz_state.redaction_mode),
+                    collapsed: false,
+                });
+            } else if !viz_state.hidden_thinking_round_hints.contains(&event.round) {
+                viz_state.hidden_thinking_round_hints.insert(event.round);
+                entries.push(ChatEntry::ReasoningBlock {
+                    round: event.round,
+                    content: sanitize_text(&event.message, viz_state.redaction_mode),
+                    collapsed: true,
+                });
+            }
+        }
+        ndc_core::AgentExecutionEventKind::ToolCallStart => {
+            let tool = event.tool_name.as_deref().unwrap_or("unknown");
+            let args = extract_tool_args_preview(&event.message)
+                .map(|a| sanitize_text(a, viz_state.redaction_mode));
+            let args_summary = match v {
+                DisplayVerbosity::Compact => args.as_deref().and_then(|a| {
+                    let summary = extract_tool_summary(tool, a);
+                    if summary.is_empty() {
+                        None
+                    } else {
+                        let (s, _) = truncate_output(&summary, 80);
+                        Some(s)
+                    }
+                }),
+                DisplayVerbosity::Normal => args.as_deref().and_then(|a| {
+                    let summary = extract_tool_summary(tool, a);
+                    if summary.is_empty() {
+                        None
+                    } else {
+                        Some(summary)
+                    }
+                }),
+                DisplayVerbosity::Verbose => args.clone(),
+            };
+            entries.push(ChatEntry::ToolCard(ToolCallCard {
+                name: tool.to_string(),
+                status: ToolCardStatus::Running,
+                duration: None,
+                args_summary: args_summary,
+                output_preview: None,
+                is_error: false,
+                collapsed: !viz_state.expand_tool_cards,
+                round: event.round,
+            }));
+        }
+        ndc_core::AgentExecutionEventKind::ToolCallEnd => {
+            let tool = event.tool_name.as_deref().unwrap_or("unknown");
+            let duration = event.duration_ms.map(|d| format_duration_ms(d));
+            let output = extract_tool_result_preview(&event.message)
+                .map(|p| sanitize_text(p, viz_state.redaction_mode));
+            let output_preview = match v {
+                DisplayVerbosity::Compact => output.map(|o| {
+                    let (msg, truncated) = truncate_output(&o, 100);
+                    if truncated {
+                        format!("{} …", msg)
+                    } else {
+                        msg
+                    }
+                }),
+                DisplayVerbosity::Normal | DisplayVerbosity::Verbose => output,
+            };
+            entries.push(ChatEntry::ToolCard(ToolCallCard {
+                name: tool.to_string(),
+                status: if event.is_error {
+                    ToolCardStatus::Failed
+                } else {
+                    ToolCardStatus::Completed
+                },
+                duration,
+                args_summary: if viz_state.expand_tool_cards
+                    || matches!(v, DisplayVerbosity::Verbose)
+                {
+                    extract_tool_args_preview(&event.message)
+                        .map(|a| sanitize_text(a, viz_state.redaction_mode))
+                } else {
+                    None
+                },
+                output_preview,
+                is_error: event.is_error,
+                collapsed: !viz_state.expand_tool_cards,
+                round: event.round,
+            }));
+        }
+        ndc_core::AgentExecutionEventKind::TokenUsage => {
+            if let Some(usage) = event.token_usage_info() {
+                viz_state.latest_round_token_total = usage.total_tokens;
+                viz_state.session_token_total = usage.session_total;
+            }
+            match v {
+                DisplayVerbosity::Compact => {}
+                DisplayVerbosity::Normal => {
+                    if let Some(usage) = event.token_usage_info() {
+                        entries.push(ChatEntry::UsageNote(format!(
+                            "tok +{} ({} total)",
+                            format_token_count(usage.total_tokens),
+                            format_token_count(usage.session_total),
+                        )));
+                    }
+                }
+                DisplayVerbosity::Verbose => {
+                    entries.push(ChatEntry::UsageNote(format!(
+                        "[Usage][r{}] {}",
+                        event.round,
+                        sanitize_text(&event.message, viz_state.redaction_mode)
+                    )));
+                }
+            }
+        }
+        ndc_core::AgentExecutionEventKind::PermissionAsked => {
+            viz_state.permission_blocked = true;
+            viz_state.permission_pending_message =
+                Some(sanitize_text(&event.message, viz_state.redaction_mode));
+            match v {
+                DisplayVerbosity::Compact | DisplayVerbosity::Normal => {
+                    let msg = sanitize_text(&event.message, viz_state.redaction_mode);
+                    entries.push(ChatEntry::PermissionNote(msg));
+                    entries.push(ChatEntry::PermissionHint(
+                        "Reply in terminal to approve, or set /allow".to_string(),
+                    ));
+                }
+                DisplayVerbosity::Verbose => {
+                    entries.push(ChatEntry::PermissionNote(format!(
+                        "[Permission][r{}] {}",
+                        event.round,
+                        sanitize_text(&event.message, viz_state.redaction_mode)
+                    )));
+                    entries.push(ChatEntry::PermissionHint(
+                        "Reply in terminal to approve, or set /allow".to_string(),
+                    ));
+                }
+            }
+        }
+        ndc_core::AgentExecutionEventKind::StepStart
+        | ndc_core::AgentExecutionEventKind::StepFinish
+        | ndc_core::AgentExecutionEventKind::Verification => match v {
+            DisplayVerbosity::Compact => {}
+            DisplayVerbosity::Normal => {
+                if matches!(event.kind, ndc_core::AgentExecutionEventKind::StepFinish)
+                    && event.duration_ms.is_some()
+                {
+                    entries.push(ChatEntry::SystemNote(format!(
+                        "[Step][r{}] {}{}",
+                        event.round,
+                        sanitize_text(&event.message, viz_state.redaction_mode),
+                        event
+                            .duration_ms
+                            .map(|d| format!(" ({})", format_duration_ms(d)))
+                            .unwrap_or_default()
+                    )));
+                }
+            }
+            DisplayVerbosity::Verbose => {
+                if !viz_state.show_tool_details
+                    && matches!(event.kind, ndc_core::AgentExecutionEventKind::StepStart)
+                {
+                    entries.push(ChatEntry::SystemNote(format!(
+                        "[Agent][r{}] thinking...",
+                        event.round
+                    )));
+                } else if viz_state.show_tool_details {
+                    entries.push(ChatEntry::SystemNote(format!(
+                        "[Step][r{}] {}{}",
+                        event.round,
+                        sanitize_text(&event.message, viz_state.redaction_mode),
+                        event
+                            .duration_ms
+                            .map(|d| format!(" ({}ms)", d))
+                            .unwrap_or_default()
+                    )));
+                }
+            }
+        },
+        ndc_core::AgentExecutionEventKind::Error => {
+            entries.push(ChatEntry::ErrorNote(format!(
+                "[Error][r{}] {}",
+                event.round,
+                sanitize_text(&event.message, viz_state.redaction_mode)
+            )));
+        }
+        ndc_core::AgentExecutionEventKind::SessionStatus
+        | ndc_core::AgentExecutionEventKind::Text => {}
+    }
+    entries
+}
+
+/// Drain live execution events into structured chat entries.
+fn drain_live_chat_entries(
+    receiver: &mut Option<tokio::sync::broadcast::Receiver<ndc_core::AgentSessionExecutionEvent>>,
+    expected_session_id: Option<&str>,
+    viz_state: &mut ReplVisualizationState,
+    entries: &mut Vec<ChatEntry>,
+) -> bool {
+    let Some(rx) = receiver.as_mut() else {
+        return false;
+    };
+    let mut rendered = false;
+    loop {
+        match rx.try_recv() {
+            Ok(message) => {
+                if expected_session_id
+                    .map(|sid| sid != message.session_id)
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+                append_timeline_events(
+                    &mut viz_state.timeline_cache,
+                    std::slice::from_ref(&message.event),
+                    TIMELINE_CACHE_MAX_EVENTS,
+                );
+                push_chat_entries(entries, event_to_entries(&message.event, viz_state));
+                rendered = true;
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(skipped)) => {
+                push_chat_entry(
+                    entries,
+                    ChatEntry::WarningNote(format!(
+                        "realtime stream lagged, dropped {} event(s)",
+                        skipped
+                    )),
+                );
+                rendered = true;
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                *receiver = None;
+                push_chat_entry(
+                    entries,
+                    ChatEntry::WarningNote(
+                        "realtime stream closed, fallback to polling".to_string(),
+                    ),
+                );
+                rendered = true;
+                break;
+            }
+        }
+    }
+    rendered
+}
+
+/// Compute effective scroll offset for chat entries (display-line based).
+fn effective_chat_scroll(entries: &[ChatEntry], view: &TuiSessionViewState) -> usize {
+    let total = total_display_lines(entries);
+    if view.auto_follow || total <= view.body_height {
+        total.saturating_sub(view.body_height)
+    } else {
+        view.scroll_offset
+            .min(total.saturating_sub(view.body_height))
+    }
+}
+
+/// Toggle collapse state for all tool cards in entries.
+fn toggle_all_tool_cards(entries: &mut [ChatEntry]) {
+    for entry in entries.iter_mut() {
+        if let ChatEntry::ToolCard(card) = entry {
+            card.collapsed = !card.collapsed;
+        }
+    }
+}
+
+/// Toggle collapse state for all reasoning blocks in entries.
+fn toggle_all_reasoning_blocks(entries: &mut [ChatEntry]) {
+    for entry in entries.iter_mut() {
+        if let ChatEntry::ReasoningBlock { collapsed, .. } = entry {
+            *collapsed = !*collapsed;
+        }
+    }
+}
+
+/// Bridge function: push a plain text string as a typed ChatEntry.
+/// Empty text becomes Separator; "[Error]" prefix becomes ErrorNote;
+/// "[Warning]" or "[Tip]" becomes WarningNote; everything else SystemNote.
+fn push_text_entry(entries: &mut Vec<ChatEntry>, text: &str) {
+    if text.is_empty() {
+        push_chat_entry(entries, ChatEntry::Separator);
+    } else if text.starts_with("[Error]") {
+        push_chat_entry(entries, ChatEntry::ErrorNote(text.to_string()));
+    } else if text.starts_with("[Warning]") || text.starts_with("[Tip]") {
+        push_chat_entry(entries, ChatEntry::WarningNote(text.to_string()));
+    } else {
+        push_chat_entry(entries, ChatEntry::SystemNote(text.to_string()));
+    }
+}
+
+/// Convert ChatEntry list to plain text for export (/copy command).
+fn entries_to_plain_text(entries: &[ChatEntry]) -> String {
+    let mut lines = Vec::new();
+    for entry in entries {
+        match entry {
+            ChatEntry::Separator => lines.push(String::new()),
+            ChatEntry::UserMessage { content, turn_id } => {
+                lines.push(format!("You [#{}]: {}", turn_id, content));
+            }
+            ChatEntry::AssistantMessage { content, turn_id } => {
+                lines.push(format!("Assistant [#{}]:", turn_id));
+                for l in content.lines() {
+                    lines.push(format!("  {}", l));
+                }
+            }
+            ChatEntry::SystemNote(text)
+            | ChatEntry::StageNote(text)
+            | ChatEntry::UsageNote(text)
+            | ChatEntry::ErrorNote(text)
+            | ChatEntry::WarningNote(text)
+            | ChatEntry::PermissionNote(text)
+            | ChatEntry::PermissionHint(text) => {
+                lines.push(text.clone());
+            }
+            ChatEntry::RoundSeparator { round } => {
+                lines.push(format!("── Round {} ──", round));
+            }
+            ChatEntry::ToolCard(card) => {
+                let icon = match card.status {
+                    ToolCardStatus::Running => "⟳",
+                    ToolCardStatus::Completed => "✓",
+                    ToolCardStatus::Failed => "✗",
+                };
+                let dur = card
+                    .duration
+                    .as_deref()
+                    .map(|d| format!(" ({})", d))
+                    .unwrap_or_default();
+                lines.push(format!("{} {}{}", icon, card.name, dur));
+                if !card.collapsed {
+                    if let Some(args) = &card.args_summary {
+                        lines.push(format!("  input: {}", args));
+                    }
+                    if let Some(output) = &card.output_preview {
+                        lines.push(format!("  output: {}", output));
+                    }
+                }
+            }
+            ChatEntry::ReasoningBlock {
+                round,
+                content,
+                collapsed,
+            } => {
+                if *collapsed {
+                    lines.push(format!("Thinking [r{}] (collapsed)", round));
+                } else {
+                    lines.push(format!("Thinking [r{}]:", round));
+                    for l in content.lines() {
+                        lines.push(format!("  {}", l));
+                    }
+                }
+            }
+        }
+    }
+    lines.join("\n")
 }
 
 #[derive(Debug, Clone)]
@@ -767,22 +1547,22 @@ fn apply_slash_completion(
 ) -> bool {
     if let Some(state) = completion.as_mut()
         && !state.suggestions.is_empty()
-            && state.selected_index < state.suggestions.len()
-            && input.trim() == state.suggestions[state.selected_index]
-        {
-            let len = state.suggestions.len();
-            state.selected_index = if reverse {
-                if state.selected_index == 0 {
-                    len - 1
-                } else {
-                    state.selected_index - 1
-                }
+        && state.selected_index < state.suggestions.len()
+        && input.trim() == state.suggestions[state.selected_index]
+    {
+        let len = state.suggestions.len();
+        state.selected_index = if reverse {
+            if state.selected_index == 0 {
+                len - 1
             } else {
-                (state.selected_index + 1) % len
-            };
-            *input = state.suggestions[state.selected_index].clone();
-            return true;
-        }
+                state.selected_index - 1
+            }
+        } else {
+            (state.selected_index + 1) % len
+        };
+        *input = state.suggestions[state.selected_index].clone();
+        return true;
+    }
 
     let suggestions = completion_suggestions_for_input(input);
     if suggestions.is_empty() {
@@ -1054,10 +1834,7 @@ fn build_title_bar<'a>(
             format!("{}  ", status.model),
             Style::default().fg(theme.success),
         ),
-        Span::styled(
-            state_text.to_string(),
-            Style::default().fg(state_color),
-        ),
+        Span::styled(state_text.to_string(), Style::default().fg(state_color)),
     ])
 }
 
@@ -1071,16 +1848,10 @@ fn build_workflow_progress_bar<'a>(
     let mut spans: Vec<Span<'a>> = vec![Span::raw(" ")];
     for (i, stage) in WORKFLOW_STAGE_ORDER.iter().enumerate() {
         if i > 0 {
-            spans.push(Span::styled(
-                " ── ",
-                Style::default().fg(theme.border_dim),
-            ));
+            spans.push(Span::styled(" ── ", Style::default().fg(theme.border_dim)));
         }
         let (text, style) = match current_idx {
-            Some(ci) if i < ci => (
-                stage.to_string(),
-                Style::default().fg(theme.progress_done),
-            ),
+            Some(ci) if i < ci => (stage.to_string(), Style::default().fg(theme.progress_done)),
             Some(ci) if i == ci => (
                 format!("[{}]", stage),
                 Style::default()
@@ -1097,10 +1868,7 @@ fn build_workflow_progress_bar<'a>(
     Line::from(spans)
 }
 
-fn build_permission_bar<'a>(
-    viz_state: &ReplVisualizationState,
-    theme: &TuiTheme,
-) -> Vec<Line<'a>> {
+fn build_permission_bar<'a>(viz_state: &ReplVisualizationState, theme: &TuiTheme) -> Vec<Line<'a>> {
     let msg = match &viz_state.permission_pending_message {
         Some(m) => m.clone(),
         None => "Awaiting confirmation...".to_string(),
@@ -1192,7 +1960,12 @@ fn build_status_hint_bar<'a>(
         // Visual token bar (8 chars wide)
         let bar = token_progress_bar(session, 128_000);
         spans.push(Span::styled(
-            format!("tok {}/{} {}", format_token_count(round), format_token_count(session), bar),
+            format!(
+                "tok {}/{} {}",
+                format_token_count(round),
+                format_token_count(session),
+                bar
+            ),
             Style::default().fg(theme.text_dim),
         ));
         spans.push(sep.clone());
@@ -1268,7 +2041,9 @@ fn extract_tool_summary(tool_name: &str, args_json: &str) -> String {
             let end = inner.find('"')?;
             Some(inner[..end].to_string())
         } else {
-            let end = rest.find(&[',', '}', '\n'] as &[char]).unwrap_or(rest.len());
+            let end = rest
+                .find(&[',', '}', '\n'] as &[char])
+                .unwrap_or(rest.len());
             Some(rest[..end].trim().to_string())
         }
     };
@@ -1297,7 +2072,10 @@ fn extract_tool_summary(tool_name: &str, args_json: &str) -> String {
                 val
             } else {
                 // Ultra-fallback: truncated raw
-                let clean = args_json.trim_start_matches('{').trim_end_matches('}').trim();
+                let clean = args_json
+                    .trim_start_matches('{')
+                    .trim_end_matches('}')
+                    .trim();
                 let (t, _) = truncate_output(clean, 60);
                 t
             }
@@ -1347,11 +2125,7 @@ fn resolve_stream_state(
     if !is_processing {
         return "ready";
     }
-    if has_live_receiver {
-        "live"
-    } else {
-        "poll"
-    }
+    if has_live_receiver { "live" } else { "poll" }
 }
 
 fn apply_stream_command(
@@ -1531,10 +2305,7 @@ fn style_session_log_line(line: &str, theme: &TuiTheme) -> Line<'static> {
 
     if line == "You:" {
         return Line::from(vec![
-            Span::styled(
-                "▌ ",
-                Style::default().fg(theme.user_accent),
-            ),
+            Span::styled("▌ ", Style::default().fg(theme.user_accent)),
             Span::styled(
                 "You",
                 Style::default()
@@ -1545,19 +2316,13 @@ fn style_session_log_line(line: &str, theme: &TuiTheme) -> Line<'static> {
     }
     if line == "Assistant:" {
         return Line::from(vec![
-            Span::styled(
-                "▌ ",
-                Style::default().fg(theme.assistant_accent),
-            ),
+            Span::styled("▌ ", Style::default().fg(theme.assistant_accent)),
             Span::styled("Assistant", title),
         ]);
     }
     if let Some(text) = line.strip_prefix("You: ") {
         return Line::from(vec![
-            Span::styled(
-                "▌ ",
-                Style::default().fg(theme.user_accent),
-            ),
+            Span::styled("▌ ", Style::default().fg(theme.user_accent)),
             Span::styled(
                 "You  ",
                 Style::default()
@@ -1589,7 +2354,9 @@ fn style_session_log_line(line: &str, theme: &TuiTheme) -> Line<'static> {
         return Line::from(vec![
             Span::styled("  ⚠ ", warning),
             Span::styled(
-                line.strip_prefix("[Permission] ").unwrap_or(line).to_string(),
+                line.strip_prefix("[Permission] ")
+                    .unwrap_or(line)
+                    .to_string(),
                 Style::default().fg(theme.warning),
             ),
         ]);
@@ -1776,7 +2543,9 @@ fn style_session_log_line(line: &str, theme: &TuiTheme) -> Line<'static> {
             Span::styled("  ├─ ", subtle),
             Span::styled(
                 "error",
-                Style::default().fg(theme.danger).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.danger)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(" : ", subtle),
             Span::raw(value.to_string()),
@@ -1802,7 +2571,12 @@ fn style_session_log_line(line: &str, theme: &TuiTheme) -> Line<'static> {
         return Line::from(Span::styled(line.to_string(), muted));
     }
     // Simple Markdown rendering for assistant output (indented lines)
-    if line.starts_with("  ") && !line.starts_with("  ├") && !line.starts_with("  └") && !line.starts_with("  (") && !line.starts_with("  - r") {
+    if line.starts_with("  ")
+        && !line.starts_with("  ├")
+        && !line.starts_with("  └")
+        && !line.starts_with("  (")
+        && !line.starts_with("  - r")
+    {
         return render_inline_markdown(line, theme);
     }
     plain()
@@ -1817,10 +2591,7 @@ fn render_inline_markdown<'a>(line: &str, theme: &TuiTheme) -> Line<'a> {
     if trimmed.starts_with("```") {
         return Line::from(vec![
             Span::raw(indent.to_string()),
-            Span::styled(
-                trimmed.to_string(),
-                Style::default().fg(theme.text_muted),
-            ),
+            Span::styled(trimmed.to_string(), Style::default().fg(theme.text_muted)),
         ]);
     }
 
@@ -1898,7 +2669,9 @@ fn parse_inline_spans<'a>(text: &str, theme: &TuiTheme) -> Vec<Span<'a>> {
         let earliest = [
             next_backtick.map(|p| (p, '`')),
             next_double_star.map(|p| (p, 'B')), // B = bold **
-            next_star.filter(|&p| next_double_star != Some(p)).map(|p| (p, '*')),
+            next_star
+                .filter(|&p| next_double_star != Some(p))
+                .map(|p| (p, '*')),
         ]
         .into_iter()
         .flatten()
@@ -1983,9 +2756,9 @@ async fn run_repl_tui(
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
 
-    let mut logs: Vec<String> = vec![
+    let mut entries: Vec<ChatEntry> = vec![ChatEntry::SystemNote(
         "NDC — describe what you want, press Enter.  /help for commands".to_string(),
-    ];
+    )];
     let keymap = ReplTuiKeymap::from_env();
 
     let mut input = String::new();
@@ -1999,6 +2772,7 @@ async fn run_repl_tui(
     let mut last_poll = Instant::now();
     let mut should_quit = false;
     let mut session_view = TuiSessionViewState::default();
+    let mut turn_counter: usize = 0;
     let mut live_events: Option<
         tokio::sync::broadcast::Receiver<ndc_core::AgentSessionExecutionEvent>,
     > = None;
@@ -2006,11 +2780,11 @@ async fn run_repl_tui(
 
     while !should_quit {
         if viz_state.live_events_enabled
-            && drain_live_execution_events(
+            && drain_live_chat_entries(
                 &mut live_events,
                 live_session_id.as_deref(),
                 viz_state,
-                &mut logs,
+                &mut entries,
             )
         {
             streamed_any = true;
@@ -2042,8 +2816,7 @@ async fn run_repl_tui(
             // [0] Title bar
             let title_bar = build_title_bar(&status, is_processing, None, &theme);
             f.render_widget(
-                Paragraph::new(title_bar)
-                    .style(Style::default().bg(Color::Rgb(30, 30, 30))),
+                Paragraph::new(title_bar).style(Style::default().bg(Color::Rgb(30, 30, 30))),
                 areas[0],
             );
 
@@ -2061,15 +2834,17 @@ async fn run_repl_tui(
                 .border_style(Style::default().fg(theme.border_normal));
             let inner = body_block.inner(areas[body_idx]);
             session_view.body_height = (inner.height as usize).max(1);
-            let scroll = effective_log_scroll(logs.len(), &session_view) as u16;
-            let body = Paragraph::new(Text::from(style_session_log_lines(logs.as_slice())))
+            let styled_lines = style_chat_entries(entries.as_slice());
+            let display_line_count = styled_lines.len();
+            let scroll = effective_chat_scroll(&entries, &session_view) as u16;
+            let body = Paragraph::new(Text::from(styled_lines))
                 .block(body_block)
                 .wrap(Wrap { trim: false })
                 .scroll((scroll, 0));
             f.render_widget(body, areas[body_idx]);
-            if logs.len() > session_view.body_height {
-                let mut scrollbar_state = ScrollbarState::new(logs.len())
-                    .position(effective_log_scroll(logs.len(), &session_view));
+            if display_line_count > session_view.body_height {
+                let mut scrollbar_state = ScrollbarState::new(display_line_count)
+                    .position(effective_chat_scroll(&entries, &session_view));
                 let scrollbar = Scrollbar::default()
                     .orientation(ScrollbarOrientation::VerticalRight)
                     .thumb_style(Style::default().fg(theme.text_muted));
@@ -2091,13 +2866,16 @@ async fn run_repl_tui(
                 &theme,
             );
             f.render_widget(
-                Paragraph::new(hint_line)
-                    .style(Style::default().bg(Color::Rgb(25, 25, 25))),
+                Paragraph::new(hint_line).style(Style::default().bg(Color::Rgb(25, 25, 25))),
                 areas[hint_idx],
             );
 
             // [n-1] Input area (multiline)
-            let multiline_hint = if input.contains('\n') { " (multiline) " } else { "" };
+            let multiline_hint = if input.contains('\n') {
+                " (multiline) "
+            } else {
+                ""
+            };
             let input_title_text = format!(" > {}", multiline_hint);
             let input_block = Block::default()
                 .title(Span::styled(
@@ -2112,8 +2890,7 @@ async fn run_repl_tui(
                 .split('\n')
                 .map(|l| Line::from(l.to_string()))
                 .collect();
-            let input_widget =
-                Paragraph::new(Text::from(input_lines)).block(input_block);
+            let input_widget = Paragraph::new(Text::from(input_lines)).block(input_block);
             f.render_widget(input_widget, areas[input_idx]);
             // Cursor at end of last line
             let last_line = input.rsplit('\n').next().unwrap_or(&input);
@@ -2128,21 +2905,20 @@ async fn run_repl_tui(
                 if let Ok(events) = agent_manager
                     .session_timeline(Some(TIMELINE_CACHE_MAX_EVENTS))
                     .await
-                    && events.len() > streamed_count {
-                        let new_events = &events[streamed_count..];
-                        append_timeline_events(
-                            &mut viz_state.timeline_cache,
-                            new_events,
-                            TIMELINE_CACHE_MAX_EVENTS,
-                        );
-                        for event in new_events {
-                            for line in event_to_lines(event, viz_state) {
-                                push_log_line(&mut logs, &line);
-                            }
-                        }
-                        streamed_count = events.len();
-                        streamed_any = true;
+                    && events.len() > streamed_count
+                {
+                    let new_events = &events[streamed_count..];
+                    append_timeline_events(
+                        &mut viz_state.timeline_cache,
+                        new_events,
+                        TIMELINE_CACHE_MAX_EVENTS,
+                    );
+                    for event in new_events {
+                        push_chat_entries(&mut entries, event_to_entries(event, viz_state));
                     }
+                    streamed_count = events.len();
+                    streamed_any = true;
+                }
                 last_poll = Instant::now();
             }
 
@@ -2157,24 +2933,31 @@ async fn run_repl_tui(
                                 TIMELINE_CACHE_MAX_EVENTS,
                             );
                             for event in &response.execution_events {
-                                for line in event_to_lines(event, viz_state) {
-                                    push_log_line(&mut logs, &line);
-                                }
+                                push_chat_entries(&mut entries, event_to_entries(event, viz_state));
                             }
                         }
                         if !response.content.trim().is_empty() {
-                            push_log_line(&mut logs, "");
-                            push_log_line(&mut logs, "Assistant:");
-                            for line in response.content.lines() {
-                                push_log_line(&mut logs, &format!("  {}", line));
-                            }
+                            push_chat_entry(&mut entries, ChatEntry::Separator);
+                            push_chat_entry(
+                                &mut entries,
+                                ChatEntry::AssistantMessage {
+                                    content: response.content.clone(),
+                                    turn_id: turn_counter,
+                                },
+                            );
                         }
                     }
                     Ok(Err(e)) => {
-                        push_log_line(&mut logs, &format!("[Error] {}", e));
+                        push_chat_entry(
+                            &mut entries,
+                            ChatEntry::ErrorNote(format!("[Error] {}", e)),
+                        );
                     }
                     Err(e) => {
-                        push_log_line(&mut logs, &format!("[Error] join failed: {}", e));
+                        push_chat_entry(
+                            &mut entries,
+                            ChatEntry::ErrorNote(format!("[Error] join failed: {}", e)),
+                        );
                     }
                 }
             }
@@ -2195,12 +2978,16 @@ async fn run_repl_tui(
                         continue;
                     }
 
-                    if handle_session_scroll_key(&key, &mut session_view, logs.len()) {
+                    if handle_session_scroll_key(
+                        &key,
+                        &mut session_view,
+                        total_display_lines(&entries),
+                    ) {
                         continue;
                     }
 
                     if let Some(action) = detect_tui_shortcut(&key, &keymap) {
-                        apply_tui_shortcut_action(action, viz_state, logs.as_mut());
+                        apply_tui_shortcut_action(action, viz_state, entries.as_mut());
                         continue;
                     }
 
@@ -2256,7 +3043,7 @@ async fn run_repl_tui(
                                     &cmd,
                                     viz_state,
                                     agent_manager.clone(),
-                                    &mut logs,
+                                    &mut entries,
                                 )
                                 .await?
                                 {
@@ -2265,9 +3052,19 @@ async fn run_repl_tui(
                                 continue;
                             }
 
-                            push_log_line(&mut logs, "");
-                            push_log_line(&mut logs, &format!("You: {}", cmd));
-                            push_log_line(&mut logs, "[Agent] processing...");
+                            turn_counter += 1;
+                            push_chat_entry(&mut entries, ChatEntry::Separator);
+                            push_chat_entry(
+                                &mut entries,
+                                ChatEntry::UserMessage {
+                                    content: cmd.clone(),
+                                    turn_id: turn_counter,
+                                },
+                            );
+                            push_chat_entry(
+                                &mut entries,
+                                ChatEntry::SystemNote("processing...".to_string()),
+                            );
                             session_view.auto_follow = true;
                             live_events = None;
                             live_session_id = None;
@@ -2286,19 +3083,22 @@ async fn run_repl_tui(
                                         live_events = Some(rx);
                                     }
                                     Err(e) => {
-                                        push_log_line(
-                                            &mut logs,
-                                            &format!(
+                                        push_chat_entry(
+                                            &mut entries,
+                                            ChatEntry::WarningNote(format!(
                                                 "[Warning] realtime stream unavailable: {}",
                                                 e
-                                            ),
+                                            )),
                                         );
                                     }
                                 }
                             } else {
-                                push_log_line(
-                                    &mut logs,
-                                    "[Tip] realtime stream is OFF, using polling fallback",
+                                push_chat_entry(
+                                    &mut entries,
+                                    ChatEntry::SystemNote(
+                                        "[Tip] realtime stream is OFF, using polling fallback"
+                                            .to_string(),
+                                    ),
                                 );
                             }
                             let manager = agent_manager.clone();
@@ -2321,7 +3121,11 @@ async fn run_repl_tui(
                     }
                 }
                 Event::Mouse(mouse) => {
-                    let _ = handle_session_scroll_mouse(&mouse, &mut session_view, logs.len());
+                    let _ = handle_session_scroll_mouse(
+                        &mouse,
+                        &mut session_view,
+                        total_display_lines(&entries),
+                    );
                 }
                 _ => {}
             }
@@ -2466,7 +3270,10 @@ async fn handle_command(
                     viz_state.verbosity = v;
                     println!("[OK] Verbosity: {}", v.label());
                 } else {
-                    println!("[Error] Unknown verbosity level '{}'. Use: compact, normal, verbose", parts[1]);
+                    println!(
+                        "[Error] Unknown verbosity level '{}'. Use: compact, normal, verbose",
+                        parts[1]
+                    );
                 }
             } else {
                 viz_state.verbosity = viz_state.verbosity.next();
@@ -2568,25 +3375,8 @@ async fn handle_agent_dialogue(
         if let Ok(events) = agent_manager
             .session_timeline(Some(TIMELINE_CACHE_MAX_EVENTS))
             .await
-            && events.len() > streamed_count {
-                let new_events = &events[streamed_count..];
-                append_timeline_events(
-                    &mut viz_state.timeline_cache,
-                    new_events,
-                    TIMELINE_CACHE_MAX_EVENTS,
-                );
-                render_execution_events(new_events, viz_state);
-                streamed_count = events.len();
-                streamed_any = true;
-            }
-
-        tokio::time::sleep(Duration::from_millis(120)).await;
-    }
-
-    if let Ok(events) = agent_manager
-        .session_timeline(Some(TIMELINE_CACHE_MAX_EVENTS))
-        .await
-        && events.len() > streamed_count {
+            && events.len() > streamed_count
+        {
             let new_events = &events[streamed_count..];
             append_timeline_events(
                 &mut viz_state.timeline_cache,
@@ -2594,8 +3384,27 @@ async fn handle_agent_dialogue(
                 TIMELINE_CACHE_MAX_EVENTS,
             );
             render_execution_events(new_events, viz_state);
+            streamed_count = events.len();
             streamed_any = true;
         }
+
+        tokio::time::sleep(Duration::from_millis(120)).await;
+    }
+
+    if let Ok(events) = agent_manager
+        .session_timeline(Some(TIMELINE_CACHE_MAX_EVENTS))
+        .await
+        && events.len() > streamed_count
+    {
+        let new_events = &events[streamed_count..];
+        append_timeline_events(
+            &mut viz_state.timeline_cache,
+            new_events,
+            TIMELINE_CACHE_MAX_EVENTS,
+        );
+        render_execution_events(new_events, viz_state);
+        streamed_any = true;
+    }
 
     match handle.await {
         Ok(Ok(response)) => {
@@ -2934,7 +3743,11 @@ fn event_to_lines(
                         } else {
                             format!(" — {}", stage_info.detail)
                         };
-                        lines.push(format!("[Stage] {}{}", capitalize_stage(stage.as_str()), detail));
+                        lines.push(format!(
+                            "[Stage] {}{}",
+                            capitalize_stage(stage.as_str()),
+                            detail
+                        ));
                     }
                     DisplayVerbosity::Verbose => {
                         // Original two-line format
@@ -2999,10 +3812,7 @@ fn event_to_lines(
                     }
                 }
                 DisplayVerbosity::Verbose => {
-                    lines.push(format!(
-                        "[Tool][r{}] start {}",
-                        event.round, tool
-                    ));
+                    lines.push(format!("[Tool][r{}] start {}", event.round, tool));
                     if let Some(args) = extract_tool_args_preview(&event.message) {
                         lines.push(format!(
                             "  └─ input : {}",
@@ -3027,7 +3837,10 @@ fn event_to_lines(
                                 &sanitize_text(preview, viz_state.redaction_mode),
                                 100,
                             );
-                            lines.push(format!("[ToolEnd] {} {}{} — {}", status_icon, tool, dur, msg));
+                            lines.push(format!(
+                                "[ToolEnd] {} {}{} — {}",
+                                status_icon, tool, dur, msg
+                            ));
                         } else {
                             lines.push(format!("[ToolEnd] {} {}{}", status_icon, tool, dur));
                         }
@@ -3047,10 +3860,7 @@ fn event_to_lines(
                 }
                 DisplayVerbosity::Normal => {
                     let dur = duration.map(|d| format!(" ({})", d)).unwrap_or_default();
-                    lines.push(format!(
-                        "[ToolEnd] {} {}{}",
-                        status_icon, tool, dur
-                    ));
+                    lines.push(format!("[ToolEnd] {} {}{}", status_icon, tool, dur));
                     if let Some(preview) = extract_tool_result_preview(&event.message) {
                         lines.push(format!(
                             "  ├─ {}: {}",
@@ -3133,15 +3943,16 @@ fn event_to_lines(
         }
         ndc_core::AgentExecutionEventKind::PermissionAsked => {
             viz_state.permission_blocked = true;
-            viz_state.permission_pending_message = Some(
-                sanitize_text(&event.message, viz_state.redaction_mode),
-            );
+            viz_state.permission_pending_message =
+                Some(sanitize_text(&event.message, viz_state.redaction_mode));
             match v {
                 DisplayVerbosity::Compact | DisplayVerbosity::Normal => {
                     // Extract tool name from message if possible
                     let msg = sanitize_text(&event.message, viz_state.redaction_mode);
                     lines.push(format!("[PermBlock] {}", msg));
-                    lines.push("[PermHint] ⓘ Reply in terminal to approve, or set /allow".to_string());
+                    lines.push(
+                        "[PermHint] ⓘ Reply in terminal to approve, or set /allow".to_string(),
+                    );
                 }
                 DisplayVerbosity::Verbose => {
                     lines.push(format!(
@@ -3207,12 +4018,12 @@ fn event_to_lines(
     lines
 }
 
-fn append_recent_thinking_to_logs(logs: &mut Vec<String>, viz_state: &ReplVisualizationState) {
+fn append_recent_thinking(entries: &mut Vec<ChatEntry>, viz_state: &ReplVisualizationState) {
     let total = viz_state.timeline_cache.len();
     let start = total.saturating_sub(viz_state.timeline_limit);
-    push_log_line(logs, "");
-    push_log_line(
-        logs,
+    push_text_entry(entries, "");
+    push_text_entry(
+        entries,
         &format!(
             "Recent Thinking (last {} events):",
             viz_state.timeline_limit
@@ -3223,8 +4034,8 @@ fn append_recent_thinking_to_logs(logs: &mut Vec<String>, viz_state: &ReplVisual
         if !matches!(event.kind, ndc_core::AgentExecutionEventKind::Reasoning) {
             continue;
         }
-        push_log_line(
-            logs,
+        push_text_entry(
+            entries,
             &format!(
                 "  - r{} {} | {}",
                 event.round,
@@ -3235,14 +4046,14 @@ fn append_recent_thinking_to_logs(logs: &mut Vec<String>, viz_state: &ReplVisual
         count += 1;
     }
     if count == 0 {
-        push_log_line(logs, "  (no thinking events yet)");
+        push_text_entry(entries, "  (no thinking events yet)");
     }
 }
 
-fn append_recent_timeline_to_logs(logs: &mut Vec<String>, viz_state: &ReplVisualizationState) {
-    push_log_line(logs, "");
-    push_log_line(
-        logs,
+fn append_recent_timeline(entries: &mut Vec<ChatEntry>, viz_state: &ReplVisualizationState) {
+    push_text_entry(entries, "");
+    push_text_entry(
+        entries,
         &format!(
             "Recent Execution Timeline (last {}):",
             viz_state.timeline_limit
@@ -3251,15 +4062,15 @@ fn append_recent_timeline_to_logs(logs: &mut Vec<String>, viz_state: &ReplVisual
     let total = viz_state.timeline_cache.len();
     let start = total.saturating_sub(viz_state.timeline_limit);
     if start == total {
-        push_log_line(logs, "  (empty)");
+        push_text_entry(entries, "  (empty)");
         return;
     }
     let grouped = group_timeline_by_stage(&viz_state.timeline_cache[start..]);
     for (stage, events) in grouped {
-        push_log_line(logs, &format!("  [stage:{}]", stage));
+        push_text_entry(entries, &format!("  [stage:{}]", stage));
         for event in events {
-            push_log_line(
-                logs,
+            push_text_entry(
+                entries,
                 &format!(
                     "    - r{} {} | {}{}",
                     event.round,
@@ -3413,14 +4224,14 @@ fn group_timeline_by_stage<'a>(
     groups
 }
 
-fn append_workflow_overview_to_logs(
-    logs: &mut Vec<String>,
+fn append_workflow_overview(
+    entries: &mut Vec<ChatEntry>,
     viz_state: &ReplVisualizationState,
     mode: WorkflowOverviewMode,
 ) {
-    push_log_line(logs, "");
-    push_log_line(
-        logs,
+    push_text_entry(entries, "");
+    push_text_entry(
+        entries,
         &format!(
             "Workflow Overview ({}) current={} progress={}",
             mode.as_str(),
@@ -3435,15 +4246,15 @@ fn append_workflow_overview_to_logs(
     let summary =
         compute_workflow_progress_summary(viz_state.timeline_cache.as_slice(), chrono::Utc::now());
     if summary.history_may_be_partial {
-        push_log_line(
-            logs,
+        push_text_entry(
+            entries,
             &format!(
                 "[Warning] workflow history may be partial (cache cap={} events)",
                 TIMELINE_CACHE_MAX_EVENTS
             ),
         );
     }
-    push_log_line(logs, "Workflow Progress:");
+    push_text_entry(entries, "Workflow Progress:");
     for stage in WORKFLOW_STAGE_ORDER {
         let metrics = summary.stages.get(*stage).copied().unwrap_or_default();
         let active_ms = if summary.current_stage.as_deref() == Some(*stage) {
@@ -3451,8 +4262,8 @@ fn append_workflow_overview_to_logs(
         } else {
             0
         };
-        push_log_line(
-            logs,
+        push_text_entry(
+            entries,
             &format!(
                 "  - {} count={} total_ms={} active_ms={}",
                 stage, metrics.count, metrics.total_ms, active_ms
@@ -3467,8 +4278,8 @@ fn append_workflow_overview_to_logs(
             if !matches!(event.kind, ndc_core::AgentExecutionEventKind::WorkflowStage) {
                 continue;
             }
-            push_log_line(
-                logs,
+            push_text_entry(
+                entries,
                 &format!(
                     "  - r{} {} | {}",
                     event.round,
@@ -3479,20 +4290,20 @@ fn append_workflow_overview_to_logs(
             count += 1;
         }
         if count == 0 {
-            push_log_line(logs, "  (no workflow stage events yet)");
+            push_text_entry(entries, "  (no workflow stage events yet)");
         }
     } else {
-        push_log_line(
-            logs,
+        push_text_entry(
+            entries,
             "  (use /workflow verbose to inspect stage event timeline)",
         );
     }
 }
 
-fn append_token_usage_to_logs(logs: &mut Vec<String>, viz_state: &ReplVisualizationState) {
-    push_log_line(logs, "");
-    push_log_line(
-        logs,
+fn append_token_usage(entries: &mut Vec<ChatEntry>, viz_state: &ReplVisualizationState) {
+    push_text_entry(entries, "");
+    push_text_entry(
+        entries,
         &format!(
             "Token Usage: round_total={} session_total={} display={}",
             viz_state.latest_round_token_total,
@@ -3506,19 +4317,19 @@ fn append_token_usage_to_logs(logs: &mut Vec<String>, viz_state: &ReplVisualizat
     );
 }
 
-fn append_runtime_metrics_to_logs(logs: &mut Vec<String>, viz_state: &ReplVisualizationState) {
+fn append_runtime_metrics(entries: &mut Vec<ChatEntry>, viz_state: &ReplVisualizationState) {
     let metrics = compute_runtime_metrics(viz_state.timeline_cache.as_slice());
-    push_log_line(logs, "");
-    push_log_line(logs, "Runtime Metrics:");
-    push_log_line(
-        logs,
+    push_text_entry(entries, "");
+    push_text_entry(entries, "Runtime Metrics:");
+    push_text_entry(
+        entries,
         &format!(
             "  - workflow_current={}",
             viz_state.current_workflow_stage.as_deref().unwrap_or("-")
         ),
     );
-    push_log_line(
-        logs,
+    push_text_entry(
+        entries,
         &format!(
             "  - blocked_on_permission={}",
             if viz_state.permission_blocked {
@@ -3528,8 +4339,8 @@ fn append_runtime_metrics_to_logs(logs: &mut Vec<String>, viz_state: &ReplVisual
             }
         ),
     );
-    push_log_line(
-        logs,
+    push_text_entry(
+        entries,
         &format!(
             "  - token_round_total={} token_session_total={} display={}",
             viz_state.latest_round_token_total,
@@ -3541,8 +4352,8 @@ fn append_runtime_metrics_to_logs(logs: &mut Vec<String>, viz_state: &ReplVisual
             }
         ),
     );
-    push_log_line(
-        logs,
+    push_text_entry(
+        entries,
         &format!(
             "  - tools_total={} tools_failed={} tool_error_rate={}%",
             metrics.tool_calls_total,
@@ -3550,8 +4361,8 @@ fn append_runtime_metrics_to_logs(logs: &mut Vec<String>, viz_state: &ReplVisual
             metrics.tool_error_rate_percent()
         ),
     );
-    push_log_line(
-        logs,
+    push_text_entry(
+        entries,
         &format!(
             "  - tool_avg_duration_ms={}",
             metrics
@@ -3560,8 +4371,8 @@ fn append_runtime_metrics_to_logs(logs: &mut Vec<String>, viz_state: &ReplVisual
                 .unwrap_or_else(|| "-".to_string())
         ),
     );
-    push_log_line(
-        logs,
+    push_text_entry(
+        entries,
         &format!(
             "  - permission_waits={} error_events={}",
             metrics.permission_waits, metrics.error_events
@@ -3572,7 +4383,7 @@ fn append_runtime_metrics_to_logs(logs: &mut Vec<String>, viz_state: &ReplVisual
 fn apply_tui_shortcut_action(
     action: TuiShortcutAction,
     viz_state: &mut ReplVisualizationState,
-    logs: &mut Vec<String>,
+    entries: &mut Vec<ChatEntry>,
 ) {
     match action {
         TuiShortcutAction::ToggleThinking => {
@@ -3580,8 +4391,9 @@ fn apply_tui_shortcut_action(
             if viz_state.show_thinking {
                 viz_state.hidden_thinking_round_hints.clear();
             }
-            push_log_line(
-                logs,
+            toggle_all_reasoning_blocks(entries);
+            push_text_entry(
+                entries,
                 &format!(
                     "[OK] Thinking: {}",
                     if viz_state.show_thinking {
@@ -3594,18 +4406,16 @@ fn apply_tui_shortcut_action(
         }
         TuiShortcutAction::ToggleDetails => {
             viz_state.verbosity = viz_state.verbosity.next();
-            push_log_line(
-                logs,
-                &format!(
-                    "[OK] Verbosity: {}",
-                    viz_state.verbosity.label()
-                ),
+            push_text_entry(
+                entries,
+                &format!("[OK] Verbosity: {}", viz_state.verbosity.label()),
             );
         }
         TuiShortcutAction::ToggleToolCards => {
             viz_state.expand_tool_cards = !viz_state.expand_tool_cards;
-            push_log_line(
-                logs,
+            toggle_all_tool_cards(entries);
+            push_text_entry(
+                entries,
                 &format!(
                     "[OK] Tool cards: {}",
                     if viz_state.expand_tool_cards {
@@ -3617,13 +4427,13 @@ fn apply_tui_shortcut_action(
             );
         }
         TuiShortcutAction::ShowRecentThinking => {
-            append_recent_thinking_to_logs(logs, viz_state);
+            append_recent_thinking(entries, viz_state);
         }
         TuiShortcutAction::ShowTimeline => {
-            append_recent_timeline_to_logs(logs, viz_state);
+            append_recent_timeline(entries, viz_state);
         }
         TuiShortcutAction::ClearPanel => {
-            logs.clear();
+            entries.clear();
         }
     }
 }
@@ -3639,10 +4449,10 @@ fn render_execution_events(
     }
 }
 
-async fn restore_session_logs_to_panel(
+async fn restore_session_to_panel(
     agent_manager: &Arc<AgentModeManager>,
     viz_state: &mut ReplVisualizationState,
-    logs: &mut Vec<String>,
+    entries: &mut Vec<ChatEntry>,
 ) {
     match agent_manager
         .session_timeline(Some(TIMELINE_CACHE_MAX_EVENTS))
@@ -3650,17 +4460,15 @@ async fn restore_session_logs_to_panel(
     {
         Ok(events) if !events.is_empty() => {
             viz_state.timeline_cache = events.clone();
-            push_log_line(logs, "--- Restored session history ---");
+            push_text_entry(entries, "--- Restored session history ---");
             for event in &events {
-                for line in event_to_lines(event, viz_state) {
-                    push_log_line(logs, &line);
-                }
+                push_chat_entries(entries, event_to_entries(event, viz_state));
             }
-            push_log_line(logs, "---");
+            push_text_entry(entries, "---");
         }
         Ok(_) => {}
-        Err(e) => push_log_line(
-            logs,
+        Err(e) => push_text_entry(
+            entries,
             &format!("[Warning] Could not restore session history: {}", e),
         ),
     }
@@ -3670,34 +4478,35 @@ async fn handle_tui_command(
     input: &str,
     viz_state: &mut ReplVisualizationState,
     agent_manager: Arc<AgentModeManager>,
-    logs: &mut Vec<String>,
+    entries: &mut Vec<ChatEntry>,
 ) -> io::Result<bool> {
     let parts: Vec<&str> = input.split_whitespace().collect();
     match parts[0] {
         "/help" | "/h" => {
-            push_log_line(
-                logs,
+            push_text_entry(
+                entries,
                 "Commands: /help /provider /model /status /workflow /tokens /metrics /t /d /cards /v /stream /thinking /timeline [N] /copy /resume [id] [--cross] /new /session [N] /project [dir] /clear /exit",
             );
-            push_log_line(
-                logs,
+            push_text_entry(
+                entries,
                 "Shortcuts: Ctrl+T / Ctrl+D / Ctrl+E / Ctrl+Y / Ctrl+I / Ctrl+L",
             );
-            push_log_line(
-                logs,
+            push_text_entry(
+                entries,
                 "Scroll: Up/Down line, PgUp/PgDn half-page, Home/End top-bottom, drag to select",
             );
         }
         "/thinking" | "/t" => {
             if parts.len() > 1 && (parts[1] == "show" || parts[1] == "now") {
-                append_recent_thinking_to_logs(logs, viz_state);
+                append_recent_thinking(entries, viz_state);
             } else {
                 viz_state.show_thinking = !viz_state.show_thinking;
                 if viz_state.show_thinking {
                     viz_state.hidden_thinking_round_hints.clear();
                 }
-                push_log_line(
-                    logs,
+                toggle_all_reasoning_blocks(entries);
+                push_text_entry(
+                    entries,
                     &format!(
                         "[OK] Thinking display: {}",
                         if viz_state.show_thinking {
@@ -3711,8 +4520,8 @@ async fn handle_tui_command(
         }
         "/details" | "/d" => {
             viz_state.show_tool_details = !viz_state.show_tool_details;
-            push_log_line(
-                logs,
+            push_text_entry(
+                entries,
                 &format!(
                     "[OK] Tool details: {}",
                     if viz_state.show_tool_details {
@@ -3725,8 +4534,9 @@ async fn handle_tui_command(
         }
         "/cards" | "/toolcards" => {
             viz_state.expand_tool_cards = !viz_state.expand_tool_cards;
-            push_log_line(
-                logs,
+            toggle_all_tool_cards(entries);
+            push_text_entry(
+                entries,
                 &format!(
                     "[OK] Tool cards: {}",
                     if viz_state.expand_tool_cards {
@@ -3741,63 +4551,73 @@ async fn handle_tui_command(
             if parts.len() > 1 {
                 if let Some(v) = DisplayVerbosity::parse(parts[1]) {
                     viz_state.verbosity = v;
-                    push_log_line(logs, &format!("[OK] Verbosity: {}", v.label()));
+                    push_text_entry(entries, &format!("[OK] Verbosity: {}", v.label()));
                 } else {
-                    push_log_line(logs, &format!("[Error] Unknown verbosity '{}'. Use: compact, normal, verbose", parts[1]));
+                    push_text_entry(
+                        entries,
+                        &format!(
+                            "[Error] Unknown verbosity '{}'. Use: compact, normal, verbose",
+                            parts[1]
+                        ),
+                    );
                 }
             } else {
                 viz_state.verbosity = viz_state.verbosity.next();
-                push_log_line(logs, &format!("[OK] Verbosity: {}", viz_state.verbosity.label()));
+                push_text_entry(
+                    entries,
+                    &format!("[OK] Verbosity: {}", viz_state.verbosity.label()),
+                );
             }
         }
         "/stream" => match apply_stream_command(viz_state, parts.get(1).copied()) {
-            Ok(message) => push_log_line(logs, &format!("[OK] {}", message)),
-            Err(message) => push_log_line(logs, &format!("[Error] {}", message)),
+            Ok(message) => push_text_entry(entries, &format!("[OK] {}", message)),
+            Err(message) => push_text_entry(entries, &format!("[Error] {}", message)),
         },
         "/workflow" => {
             let mode = match WorkflowOverviewMode::parse(parts.get(1).copied()) {
                 Ok(mode) => mode,
                 Err(message) => {
-                    push_log_line(logs, &format!("[Error] {}", message));
+                    push_text_entry(entries, &format!("[Error] {}", message));
                     return Ok(false);
                 }
             };
-            append_workflow_overview_to_logs(logs, viz_state, mode);
+            append_workflow_overview(entries, viz_state, mode);
         }
         "/tokens" => match apply_tokens_command(viz_state, parts.get(1).copied()) {
             Ok(message) => {
-                push_log_line(logs, &format!("[OK] {}", message));
-                append_token_usage_to_logs(logs, viz_state);
+                push_text_entry(entries, &format!("[OK] {}", message));
+                append_token_usage(entries, viz_state);
             }
-            Err(message) => push_log_line(logs, &format!("[Error] {}", message)),
+            Err(message) => push_text_entry(entries, &format!("[Error] {}", message)),
         },
         "/metrics" => {
-            append_runtime_metrics_to_logs(logs, viz_state);
+            append_runtime_metrics(entries, viz_state);
         }
         "/timeline" => {
             if parts.len() > 1
-                && let Ok(parsed) = parts[1].parse::<usize>() {
-                    viz_state.timeline_limit = parsed.max(1);
-                }
+                && let Ok(parsed) = parts[1].parse::<usize>()
+            {
+                viz_state.timeline_limit = parsed.max(1);
+            }
             match agent_manager
                 .session_timeline(Some(viz_state.timeline_limit))
                 .await
             {
                 Ok(events) => {
                     viz_state.timeline_cache = events;
-                    append_recent_timeline_to_logs(logs, viz_state);
+                    append_recent_timeline(entries, viz_state);
                 }
-                Err(e) => push_log_line(logs, &format!("[Warning] {}", e)),
+                Err(e) => push_text_entry(entries, &format!("[Warning] {}", e)),
             }
         }
         "/provider" | "/providers" | "/p" => {
             if parts.len() > 1 {
                 if let Err(e) = agent_manager.switch_provider(parts[1], None).await {
-                    push_log_line(logs, &format!("[Error] {}", e));
+                    push_text_entry(entries, &format!("[Error] {}", e));
                 } else {
                     let status = agent_manager.status().await;
-                    push_log_line(
-                        logs,
+                    push_text_entry(
+                        entries,
                         &format!(
                             "[OK] Provider switched to '{}' with model '{}'",
                             status.provider, status.model
@@ -3806,12 +4626,12 @@ async fn handle_tui_command(
                 }
             } else {
                 let status = agent_manager.status().await;
-                push_log_line(logs, &format!("Current provider: {}", status.provider));
-                push_log_line(
-                    logs,
+                push_text_entry(entries, &format!("Current provider: {}", status.provider));
+                push_text_entry(
+                    entries,
                     &format!("Available providers: {}", AVAILABLE_PROVIDERS.join(", ")),
                 );
-                push_log_line(logs, "Usage: /provider <name>");
+                push_text_entry(entries, "Usage: /provider <name>");
             }
         }
         "/model" | "/m" => {
@@ -3820,11 +4640,11 @@ async fn handle_tui_command(
                     let provider = &parts[1][..idx];
                     let model = &parts[1][idx + 1..];
                     if let Err(e) = agent_manager.switch_provider(provider, Some(model)).await {
-                        push_log_line(logs, &format!("[Error] {}", e));
+                        push_text_entry(entries, &format!("[Error] {}", e));
                     } else {
                         let status = agent_manager.status().await;
-                        push_log_line(
-                            logs,
+                        push_text_entry(
+                            entries,
                             &format!(
                                 "[OK] Provider '{}' using model '{}'",
                                 status.provider, status.model
@@ -3832,17 +4652,17 @@ async fn handle_tui_command(
                         );
                     }
                 } else if let Err(e) = agent_manager.switch_model(parts[1]).await {
-                    push_log_line(logs, &format!("[Error] {}", e));
+                    push_text_entry(entries, &format!("[Error] {}", e));
                 }
             } else {
                 let status = agent_manager.status().await;
-                push_log_line(logs, &format!("Current model: {}", status.model));
+                push_text_entry(entries, &format!("Current model: {}", status.model));
             }
         }
         "/status" | "/st" => {
             let status = agent_manager.status().await;
-            push_log_line(
-                logs,
+            push_text_entry(
+                entries,
                 &format!(
                     "Agent={} Provider={} Model={} Session={}",
                     status.agent_name,
@@ -3859,20 +4679,22 @@ async fn handle_tui_command(
                 "/agent help".to_string()
             };
             if let Err(e) = handle_agent_command(&agent_input, &agent_manager).await {
-                push_log_line(logs, &format!("[Error] {}", e));
+                push_text_entry(entries, &format!("[Error] {}", e));
             } else {
-                push_log_line(logs, "[OK] agent command executed");
+                push_text_entry(entries, "[OK] agent command executed");
             }
         }
         "/clear" | "/cls" => {
-            logs.clear();
+            entries.clear();
         }
         "/copy" => {
             let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
             let path = format!("/tmp/ndc-session-{}.txt", timestamp);
-            match std::fs::write(&path, logs.join("\n")) {
-                Ok(()) => push_log_line(logs, &format!("[OK] Session saved to: {}", path)),
-                Err(e) => push_log_line(logs, &format!("[Error] Failed to save session: {}", e)),
+            match std::fs::write(&path, entries_to_plain_text(entries)) {
+                Ok(()) => push_text_entry(entries, &format!("[OK] Session saved to: {}", path)),
+                Err(e) => {
+                    push_text_entry(entries, &format!("[Error] Failed to save session: {}", e))
+                }
             }
         }
         "/resume" | "/r" => {
@@ -3885,21 +4707,19 @@ async fn handle_tui_command(
             };
             match result {
                 Ok(sid) => {
-                    push_log_line(logs, &format!("[OK] Session resumed: {}", sid));
-                    restore_session_logs_to_panel(&agent_manager, viz_state, logs).await;
+                    push_text_entry(entries, &format!("[OK] Session resumed: {}", sid));
+                    restore_session_to_panel(&agent_manager, viz_state, entries).await;
                 }
-                Err(e) => push_log_line(logs, &format!("[Error] {}", e)),
+                Err(e) => push_text_entry(entries, &format!("[Error] {}", e)),
             }
         }
-        "/new" => {
-            match agent_manager.start_new_session().await {
-                Ok(sid) => {
-                    logs.clear();
-                    push_log_line(logs, &format!("[OK] New session started: {}", sid));
-                }
-                Err(e) => push_log_line(logs, &format!("[Error] {}", e)),
+        "/new" => match agent_manager.start_new_session().await {
+            Ok(sid) => {
+                entries.clear();
+                push_text_entry(entries, &format!("[OK] New session started: {}", sid));
             }
-        }
+            Err(e) => push_text_entry(entries, &format!("[Error] {}", e)),
+        },
         "/session" | "/sessions" => {
             let limit = parts
                 .get(1)
@@ -3908,38 +4728,37 @@ async fn handle_tui_command(
                 .max(1);
             match agent_manager.list_project_session_ids(None, limit).await {
                 Ok(ids) if ids.is_empty() => {
-                    push_log_line(logs, "[Info] No sessions for current project.");
+                    push_text_entry(entries, "[Info] No sessions for current project.");
                 }
                 Ok(ids) => {
-                    push_log_line(logs, "Sessions (newest first):");
+                    push_text_entry(entries, "Sessions (newest first):");
                     for id in &ids {
-                        push_log_line(logs, &format!("  {}", id));
+                        push_text_entry(entries, &format!("  {}", id));
                     }
-                    push_log_line(
-                        logs,
+                    push_text_entry(
+                        entries,
                         "Use /resume <id> to restore, or /resume for latest.",
                     );
                 }
-                Err(e) => push_log_line(logs, &format!("[Error] {}", e)),
+                Err(e) => push_text_entry(entries, &format!("[Error] {}", e)),
             }
         }
         "/project" | "/projects" => {
             if parts.len() > 1 {
-                // Switch to a project directory
                 let dir = std::path::PathBuf::from(parts[1]);
                 match agent_manager.switch_project_context(dir).await {
                     Ok(outcome) => {
-                        logs.clear();
-                        push_log_line(
-                            logs,
+                        entries.clear();
+                        push_text_entry(
+                            entries,
                             &format!(
                                 "[OK] Switched to project '{}' ({})",
                                 outcome.project_id,
                                 outcome.project_root.display()
                             ),
                         );
-                        push_log_line(
-                            logs,
+                        push_text_entry(
+                            entries,
                             &format!(
                                 "Session: {} ({})",
                                 outcome.session_id,
@@ -3951,40 +4770,35 @@ async fn handle_tui_command(
                             ),
                         );
                         if outcome.resumed_existing_session {
-                            push_log_line(
-                                logs,
+                            push_text_entry(
+                                entries,
                                 "Use /resume to restore session history into this panel.",
                             );
                         }
                     }
-                    Err(e) => push_log_line(logs, &format!("[Error] {}", e)),
+                    Err(e) => push_text_entry(entries, &format!("[Error] {}", e)),
                 }
             } else {
-                // List known projects
                 match agent_manager.discover_projects(10).await {
                     Ok(candidates) if candidates.is_empty() => {
-                        push_log_line(logs, "[Info] No projects discovered.");
+                        push_text_entry(entries, "[Info] No projects discovered.");
                     }
                     Ok(candidates) => {
-                        push_log_line(logs, "Known projects:");
+                        push_text_entry(entries, "Known projects:");
                         for c in &candidates {
-                            push_log_line(
-                                logs,
-                                &format!(
-                                    "  {} — {}",
-                                    c.project_id,
-                                    c.project_root.display()
-                                ),
+                            push_text_entry(
+                                entries,
+                                &format!("  {} — {}", c.project_id, c.project_root.display()),
                             );
                         }
-                        push_log_line(logs, "Use /project <dir> to switch.");
+                        push_text_entry(entries, "Use /project <dir> to switch.");
                     }
-                    Err(e) => push_log_line(logs, &format!("[Error] {}", e)),
+                    Err(e) => push_text_entry(entries, &format!("[Error] {}", e)),
                 }
             }
         }
         "/exit" => return Ok(true),
-        _ => push_log_line(logs, "[Tip] Unknown command. Use /help."),
+        _ => push_text_entry(entries, "[Tip] Unknown command. Use /help."),
     }
     Ok(false)
 }
@@ -4554,7 +5368,10 @@ mod tests {
         assert!(rendered);
         assert_eq!(viz.timeline_cache.len(), 1);
         assert_eq!(viz.timeline_cache[0].message, event.message);
-        assert!(logs.iter().any(|l| l.contains("[ToolRun]") && l.contains("read")));
+        assert!(
+            logs.iter()
+                .any(|l| l.contains("[ToolRun]") && l.contains("read"))
+        );
     }
 
     #[test]
@@ -4607,10 +5424,11 @@ mod tests {
             workflow_stage_index: None,
             workflow_stage_total: None,
         });
-        let mut logs = Vec::new();
-        append_recent_thinking_to_logs(&mut logs, &viz);
-        assert!(logs.iter().any(|l| l.contains("Recent Thinking")));
-        assert!(logs.iter().any(|l| l.contains("plan: inspect files")));
+        let mut entries: Vec<ChatEntry> = Vec::new();
+        append_recent_thinking(&mut entries, &viz);
+        let joined = entries_to_plain_text(&entries);
+        assert!(joined.contains("Recent Thinking"));
+        assert!(joined.contains("plan: inspect files"));
     }
 
     #[test]
@@ -4645,12 +5463,13 @@ mod tests {
             workflow_stage_index: None,
             workflow_stage_total: None,
         });
-        let mut logs = Vec::new();
-        append_recent_timeline_to_logs(&mut logs, &viz);
-        assert!(logs.iter().any(|l| l.contains("Recent Execution Timeline")));
-        assert!(logs.iter().any(|l| l.contains("[stage:")));
-        assert!(logs.iter().any(|l| l.contains("llm_round_1_start")));
-        assert!(logs.iter().any(|l| l.contains("result_preview")));
+        let mut entries: Vec<ChatEntry> = Vec::new();
+        append_recent_timeline(&mut entries, &viz);
+        let joined = entries_to_plain_text(&entries);
+        assert!(joined.contains("Recent Execution Timeline"));
+        assert!(joined.contains("[stage:"));
+        assert!(joined.contains("llm_round_1_start"));
+        assert!(joined.contains("result_preview"));
     }
 
     #[test]
@@ -4734,7 +5553,11 @@ mod tests {
             viz.current_workflow_stage_total,
             Some(ndc_core::AgentWorkflowStage::TOTAL_STAGES)
         );
-        assert!(lines.iter().any(|line| line.contains("[Stage]") && line.contains("Verifying")));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("[Stage]") && line.contains("Verifying"))
+        );
     }
 
     #[test]
@@ -4943,9 +5766,9 @@ mod tests {
             Some(3),
             false,
         )];
-        let mut logs = Vec::new();
-        append_runtime_metrics_to_logs(&mut logs, &viz);
-        let joined = logs.join("\n");
+        let mut entries: Vec<ChatEntry> = Vec::new();
+        append_runtime_metrics(&mut entries, &viz);
+        let joined = entries_to_plain_text(&entries);
         assert!(joined.contains("Runtime Metrics"));
         assert!(joined.contains("workflow_current=executing"));
         assert!(joined.contains("blocked_on_permission=yes"));
@@ -4977,9 +5800,9 @@ mod tests {
                 false,
             ),
         ];
-        let mut logs = Vec::new();
-        append_workflow_overview_to_logs(&mut logs, &viz, WorkflowOverviewMode::Verbose);
-        let joined = logs.join("\n");
+        let mut entries: Vec<ChatEntry> = Vec::new();
+        append_workflow_overview(&mut entries, &viz, WorkflowOverviewMode::Verbose);
+        let joined = entries_to_plain_text(&entries);
         assert!(joined.contains("Workflow Overview (verbose) current=executing progress=60%(3/5)"));
         assert!(joined.contains("Workflow Progress"));
         assert!(joined.contains("planning count="));
@@ -4999,9 +5822,9 @@ mod tests {
             None,
             false,
         )];
-        let mut logs = Vec::new();
-        append_workflow_overview_to_logs(&mut logs, &viz, WorkflowOverviewMode::Compact);
-        let joined = logs.join("\n");
+        let mut entries: Vec<ChatEntry> = Vec::new();
+        append_workflow_overview(&mut entries, &viz, WorkflowOverviewMode::Compact);
+        let joined = entries_to_plain_text(&entries);
         assert!(joined.contains("Workflow Overview (compact)"));
         assert!(joined.contains("use /workflow verbose"));
         assert!(!joined.contains("r1"));
@@ -5011,7 +5834,9 @@ mod tests {
     fn test_env_char_default_and_override() {
         with_env_overrides(&[("NDC_REPL_KEY_TOGGLE_THINKING", None)], || {
             assert_eq!(env_char("NDC_REPL_KEY_TOGGLE_THINKING", 't'), 't');
-            unsafe { std::env::set_var("NDC_REPL_KEY_TOGGLE_THINKING", "X"); }
+            unsafe {
+                std::env::set_var("NDC_REPL_KEY_TOGGLE_THINKING", "X");
+            }
             assert_eq!(env_char("NDC_REPL_KEY_TOGGLE_THINKING", 't'), 'x');
         });
     }
@@ -5324,12 +6149,8 @@ mod tests {
         assert_eq!(tool.spans[0].content.as_ref(), "  ✗ ");
         assert_eq!(tool.spans[0].style.fg, Some(Color::Red));
 
-        let input =
-            style_session_log_line("  ├─ input : {\"path\":\"README.md\"}", &theme);
-        assert_eq!(
-            line_plain(&input),
-            "  ├─ input : {\"path\":\"README.md\"}"
-        );
+        let input = style_session_log_line("  ├─ input : {\"path\":\"README.md\"}", &theme);
+        assert_eq!(line_plain(&input), "  ├─ input : {\"path\":\"README.md\"}");
         assert_eq!(input.spans[1].content.as_ref(), "input");
         assert_eq!(input.spans[1].style.fg, Some(Color::Cyan));
 
@@ -5412,23 +6233,34 @@ mod tests {
             ],
             || {
                 let mut viz = ReplVisualizationState::new(false);
-                let mut logs = vec!["seed".to_string()];
+                let mut entries: Vec<ChatEntry> = vec![ChatEntry::SystemNote("seed".to_string())];
 
-                apply_tui_shortcut_action(TuiShortcutAction::ToggleThinking, &mut viz, &mut logs);
+                apply_tui_shortcut_action(
+                    TuiShortcutAction::ToggleThinking,
+                    &mut viz,
+                    &mut entries,
+                );
                 assert!(viz.show_thinking);
-                assert!(logs.iter().any(|l| l.contains("[OK] Thinking")));
+                let joined = entries_to_plain_text(&entries);
+                assert!(joined.contains("[OK] Thinking"));
 
                 // ToggleDetails now cycles verbosity: Compact → Normal
-                apply_tui_shortcut_action(TuiShortcutAction::ToggleDetails, &mut viz, &mut logs);
+                apply_tui_shortcut_action(TuiShortcutAction::ToggleDetails, &mut viz, &mut entries);
                 assert!(matches!(viz.verbosity, DisplayVerbosity::Normal));
-                assert!(logs.iter().any(|l| l.contains("[OK] Verbosity")));
+                let joined = entries_to_plain_text(&entries);
+                assert!(joined.contains("[OK] Verbosity"));
 
-                apply_tui_shortcut_action(TuiShortcutAction::ToggleToolCards, &mut viz, &mut logs);
+                apply_tui_shortcut_action(
+                    TuiShortcutAction::ToggleToolCards,
+                    &mut viz,
+                    &mut entries,
+                );
                 assert!(viz.expand_tool_cards);
-                assert!(logs.iter().any(|l| l.contains("[OK] Tool cards")));
+                let joined = entries_to_plain_text(&entries);
+                assert!(joined.contains("[OK] Tool cards"));
 
-                apply_tui_shortcut_action(TuiShortcutAction::ClearPanel, &mut viz, &mut logs);
-                assert!(logs.is_empty());
+                apply_tui_shortcut_action(TuiShortcutAction::ClearPanel, &mut viz, &mut entries);
+                assert!(entries.is_empty());
             },
         );
     }
@@ -5447,39 +6279,49 @@ mod tests {
             false,
         ));
 
-        let mut logs = Vec::new();
-        apply_tui_shortcut_action(TuiShortcutAction::ShowTimeline, &mut viz, &mut logs);
+        let mut entries: Vec<ChatEntry> = Vec::new();
+        apply_tui_shortcut_action(TuiShortcutAction::ShowTimeline, &mut viz, &mut entries);
 
-        assert!(logs.iter().any(|l| l.contains("Recent Execution Timeline")));
-        assert!(logs.iter().any(|l| l.contains("llm_round_1_finish")));
+        let joined = entries_to_plain_text(&entries);
+        assert!(joined.contains("Recent Execution Timeline"));
+        assert!(joined.contains("llm_round_1_finish"));
     }
 
     #[test]
     fn test_runtime_shortcut_pipeline_ctrl_t_and_scroll_reset() {
         use crossterm::event::KeyEvent;
-        with_env_overrides(&[("NDC_DISPLAY_THINKING", None), ("NDC_DISPLAY_VERBOSITY", None)], || {
-            let map = ReplTuiKeymap {
-                toggle_thinking: 't',
-                toggle_details: 'd',
-                toggle_tool_cards: 'e',
-                show_recent_thinking: 'y',
-                show_timeline: 'i',
-                clear_panel: 'l',
-            };
-            let key = KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL);
-            let action = detect_tui_shortcut(&key, &map).expect("shortcut action");
-            let mut viz = ReplVisualizationState::new(false);
-            let mut logs = (0..30).map(|i| format!("line-{}", i)).collect::<Vec<_>>();
-            let before_scroll = calc_log_scroll(logs.len(), 10);
-            assert!(before_scroll > 0);
+        with_env_overrides(
+            &[
+                ("NDC_DISPLAY_THINKING", None),
+                ("NDC_DISPLAY_VERBOSITY", None),
+            ],
+            || {
+                let map = ReplTuiKeymap {
+                    toggle_thinking: 't',
+                    toggle_details: 'd',
+                    toggle_tool_cards: 'e',
+                    show_recent_thinking: 'y',
+                    show_timeline: 'i',
+                    clear_panel: 'l',
+                };
+                let key = KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL);
+                let action = detect_tui_shortcut(&key, &map).expect("shortcut action");
+                let mut viz = ReplVisualizationState::new(false);
+                let mut entries: Vec<ChatEntry> = (0..30)
+                    .map(|i| ChatEntry::SystemNote(format!("line-{}", i)))
+                    .collect();
+                let total_lines = total_display_lines(&entries);
+                let before_scroll = calc_log_scroll(total_lines, 10);
+                assert!(before_scroll > 0);
 
-            apply_tui_shortcut_action(action, &mut viz, &mut logs);
-            assert!(viz.show_thinking);
+                apply_tui_shortcut_action(action, &mut viz, &mut entries);
+                assert!(viz.show_thinking);
 
-            apply_tui_shortcut_action(TuiShortcutAction::ClearPanel, &mut viz, &mut logs);
-            let after_scroll = calc_log_scroll(logs.len(), 10);
-            assert_eq!(after_scroll, 0);
-        });
+                apply_tui_shortcut_action(TuiShortcutAction::ClearPanel, &mut viz, &mut entries);
+                let after_scroll = calc_log_scroll(total_display_lines(&entries), 10);
+                assert_eq!(after_scroll, 0);
+            },
+        );
     }
 
     #[test]
@@ -5756,7 +6598,7 @@ mod tests {
         ];
         assert_eq!(expanded_lines, expanded_expected);
 
-        let mut logs = Vec::new();
+        let mut entries: Vec<ChatEntry> = Vec::new();
         expanded.timeline_cache = vec![mk_event(
             ndc_core::AgentExecutionEventKind::StepFinish,
             "llm_round_1_finish",
@@ -5767,9 +6609,10 @@ mod tests {
             false,
         )];
         expanded.timeline_limit = 10;
-        append_recent_timeline_to_logs(&mut logs, &expanded);
-        assert!(logs.iter().any(|l| l.contains("Recent Execution Timeline")));
-        assert!(logs.iter().any(|l| l.contains("llm_round_1_finish")));
+        append_recent_timeline(&mut entries, &expanded);
+        let joined = entries_to_plain_text(&entries);
+        assert!(joined.contains("Recent Execution Timeline"));
+        assert!(joined.contains("llm_round_1_finish"));
     }
 
     // ===== P1-UX Feature Tests =====
@@ -5949,10 +6792,7 @@ mod tests {
         let spans = parse_inline_spans("this is **bold** text", &theme);
         assert_eq!(spans.len(), 3);
         assert_eq!(spans[1].content.as_ref(), "bold");
-        assert!(spans[1]
-            .style
-            .add_modifier
-            .contains(Modifier::BOLD));
+        assert!(spans[1].style.add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]
@@ -5961,10 +6801,7 @@ mod tests {
         let spans = parse_inline_spans("this is *italic* text", &theme);
         assert_eq!(spans.len(), 3);
         assert_eq!(spans[1].content.as_ref(), "italic");
-        assert!(spans[1]
-            .style
-            .add_modifier
-            .contains(Modifier::ITALIC));
+        assert!(spans[1].style.add_modifier.contains(Modifier::ITALIC));
     }
 
     #[test]
@@ -6119,21 +6956,51 @@ mod tests {
 
     #[test]
     fn test_display_verbosity_parse() {
-        assert!(matches!(DisplayVerbosity::parse("compact"), Some(DisplayVerbosity::Compact)));
-        assert!(matches!(DisplayVerbosity::parse("c"), Some(DisplayVerbosity::Compact)));
-        assert!(matches!(DisplayVerbosity::parse("normal"), Some(DisplayVerbosity::Normal)));
-        assert!(matches!(DisplayVerbosity::parse("n"), Some(DisplayVerbosity::Normal)));
-        assert!(matches!(DisplayVerbosity::parse("verbose"), Some(DisplayVerbosity::Verbose)));
-        assert!(matches!(DisplayVerbosity::parse("v"), Some(DisplayVerbosity::Verbose)));
-        assert!(matches!(DisplayVerbosity::parse("debug"), Some(DisplayVerbosity::Verbose)));
+        assert!(matches!(
+            DisplayVerbosity::parse("compact"),
+            Some(DisplayVerbosity::Compact)
+        ));
+        assert!(matches!(
+            DisplayVerbosity::parse("c"),
+            Some(DisplayVerbosity::Compact)
+        ));
+        assert!(matches!(
+            DisplayVerbosity::parse("normal"),
+            Some(DisplayVerbosity::Normal)
+        ));
+        assert!(matches!(
+            DisplayVerbosity::parse("n"),
+            Some(DisplayVerbosity::Normal)
+        ));
+        assert!(matches!(
+            DisplayVerbosity::parse("verbose"),
+            Some(DisplayVerbosity::Verbose)
+        ));
+        assert!(matches!(
+            DisplayVerbosity::parse("v"),
+            Some(DisplayVerbosity::Verbose)
+        ));
+        assert!(matches!(
+            DisplayVerbosity::parse("debug"),
+            Some(DisplayVerbosity::Verbose)
+        ));
         assert!(DisplayVerbosity::parse("unknown").is_none());
     }
 
     #[test]
     fn test_display_verbosity_cycle() {
-        assert!(matches!(DisplayVerbosity::Compact.next(), DisplayVerbosity::Normal));
-        assert!(matches!(DisplayVerbosity::Normal.next(), DisplayVerbosity::Verbose));
-        assert!(matches!(DisplayVerbosity::Verbose.next(), DisplayVerbosity::Compact));
+        assert!(matches!(
+            DisplayVerbosity::Compact.next(),
+            DisplayVerbosity::Normal
+        ));
+        assert!(matches!(
+            DisplayVerbosity::Normal.next(),
+            DisplayVerbosity::Verbose
+        ));
+        assert!(matches!(
+            DisplayVerbosity::Verbose.next(),
+            DisplayVerbosity::Compact
+        ));
     }
 
     #[test]
@@ -6265,7 +7132,11 @@ mod tests {
             workflow_stage_total: Some(ndc_core::AgentWorkflowStage::TOTAL_STAGES),
         };
         let lines = event_to_lines(&event, &mut viz);
-        assert_eq!(lines.len(), 1, "Compact should produce exactly 1 line for stage");
+        assert_eq!(
+            lines.len(),
+            1,
+            "Compact should produce exactly 1 line for stage"
+        );
         assert!(lines[0].contains("[Stage]"));
         assert!(lines[0].contains("Planning"));
         assert!(lines[0].ends_with("..."));
@@ -6290,7 +7161,11 @@ mod tests {
             workflow_stage_total: Some(ndc_core::AgentWorkflowStage::TOTAL_STAGES),
         };
         let lines = event_to_lines(&event, &mut viz);
-        assert!(lines.iter().any(|l| l.contains("Discovery") && l.contains("scanning files")));
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("Discovery") && l.contains("scanning files"))
+        );
     }
 
     #[test]
@@ -6307,7 +7182,11 @@ mod tests {
             false,
         );
         let lines = event_to_lines(&event, &mut viz);
-        assert!(lines.iter().any(|l| l.contains("[RoundSep]") && l.contains("Round 2")));
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("[RoundSep]") && l.contains("Round 2"))
+        );
     }
 
     #[test]
@@ -6324,7 +7203,10 @@ mod tests {
             false,
         );
         let lines = event_to_lines(&event, &mut viz);
-        assert!(!lines.iter().any(|l| l.contains("[RoundSep]")), "Compact should not show round separators");
+        assert!(
+            !lines.iter().any(|l| l.contains("[RoundSep]")),
+            "Compact should not show round separators"
+        );
     }
 
     #[test]
@@ -6355,7 +7237,10 @@ mod tests {
             false,
         );
         let lines2 = event_to_lines(&event2, &mut viz);
-        assert!(!lines2.iter().any(|l| l.contains("[RoundSep]")), "Same round should not repeat separator");
+        assert!(
+            !lines2.iter().any(|l| l.contains("[RoundSep]")),
+            "Same round should not repeat separator"
+        );
     }
 
     #[test]
@@ -6384,7 +7269,8 @@ mod tests {
         let event = ndc_core::AgentExecutionEvent {
             kind: ndc_core::AgentExecutionEventKind::ToolCallStart,
             timestamp: chrono::Utc::now(),
-            message: "tool_call_start: shell | args_preview: {\"command\":\"cargo build\"}".to_string(),
+            message: "tool_call_start: shell | args_preview: {\"command\":\"cargo build\"}"
+                .to_string(),
             round: 1,
             tool_name: Some("shell".to_string()),
             tool_call_id: Some("call-1".to_string()),
@@ -6396,7 +7282,11 @@ mod tests {
             workflow_stage_total: None,
         };
         let lines = event_to_lines(&event, &mut viz);
-        assert_eq!(lines.len(), 1, "Compact ToolCallStart should be single line");
+        assert_eq!(
+            lines.len(),
+            1,
+            "Compact ToolCallStart should be single line"
+        );
         assert!(lines[0].contains("[ToolRun]"));
         assert!(lines[0].contains("shell"));
         assert!(lines[0].contains("cargo build"));
@@ -6404,12 +7294,854 @@ mod tests {
 
     #[test]
     fn test_verbosity_env_override() {
-        with_env_overrides(
-            &[("NDC_DISPLAY_VERBOSITY", Some("normal"))],
-            || {
-                let state = ReplVisualizationState::new(false);
-                assert!(matches!(state.verbosity, DisplayVerbosity::Normal));
-            },
+        with_env_overrides(&[("NDC_DISPLAY_VERBOSITY", Some("normal"))], || {
+            let state = ReplVisualizationState::new(false);
+            assert!(matches!(state.verbosity, DisplayVerbosity::Normal));
+        });
+    }
+
+    // ===== P1-UX-2 Chat Turn Model Tests =====
+
+    fn render_entries_snapshot(
+        events: &[ndc_core::AgentExecutionEvent],
+        viz: &mut ReplVisualizationState,
+    ) -> Vec<ChatEntry> {
+        let mut out = Vec::new();
+        for event in events {
+            out.extend(event_to_entries(event, viz));
+        }
+        out
+    }
+
+    fn entry_lines_plain(entry: &ChatEntry) -> Vec<String> {
+        let theme = TuiTheme::default_dark();
+        let mut lines = Vec::new();
+        style_chat_entry(entry, &theme, &mut lines);
+        lines.iter().map(line_plain).collect()
+    }
+
+    #[test]
+    fn test_chat_entry_user_message_rendering() {
+        let entry = ChatEntry::UserMessage {
+            content: "hello world".to_string(),
+            turn_id: 1,
+        };
+        let rendered = entry_lines_plain(&entry);
+        assert_eq!(rendered.len(), 3); // header + content + footer
+        assert!(rendered[0].contains("You [#1]"));
+        assert!(rendered[1].contains("hello world"));
+        assert!(rendered[2].contains("└─"));
+    }
+
+    #[test]
+    fn test_chat_entry_user_message_multiline() {
+        let entry = ChatEntry::UserMessage {
+            content: "line1\nline2\nline3".to_string(),
+            turn_id: 2,
+        };
+        let rendered = entry_lines_plain(&entry);
+        // header + 3 content lines + footer = 5
+        assert_eq!(rendered.len(), 5);
+        assert!(rendered[0].contains("You [#2]"));
+        assert!(rendered[1].contains("line1"));
+        assert!(rendered[2].contains("line2"));
+        assert!(rendered[3].contains("line3"));
+        assert!(rendered[4].contains("└─"));
+    }
+
+    #[test]
+    fn test_chat_entry_assistant_message_rendering() {
+        let entry = ChatEntry::AssistantMessage {
+            content: "I can help with that.".to_string(),
+            turn_id: 1,
+        };
+        let rendered = entry_lines_plain(&entry);
+        assert_eq!(rendered.len(), 3); // header + content + footer
+        assert!(rendered[0].contains("Assistant [#1]"));
+        assert!(rendered[1].contains("I can help with that."));
+        assert!(rendered[2].contains("└─"));
+    }
+
+    #[test]
+    fn test_chat_entry_tool_card_collapsed() {
+        let card = ToolCallCard {
+            name: "shell".to_string(),
+            status: ToolCardStatus::Completed,
+            duration: Some("1.2s".to_string()),
+            args_summary: Some("cargo build".to_string()),
+            output_preview: Some("success".to_string()),
+            is_error: false,
+            collapsed: true,
+            round: 1,
+        };
+        let entry = ChatEntry::ToolCard(card);
+        let rendered = entry_lines_plain(&entry);
+        // Collapsed: only header line
+        assert_eq!(rendered.len(), 1);
+        assert!(rendered[0].contains("▸"));
+        assert!(rendered[0].contains("✓"));
+        assert!(rendered[0].contains("shell"));
+        assert!(rendered[0].contains("(1.2s)"));
+    }
+
+    #[test]
+    fn test_chat_entry_tool_card_expanded() {
+        let card = ToolCallCard {
+            name: "shell".to_string(),
+            status: ToolCardStatus::Completed,
+            duration: Some("1.2s".to_string()),
+            args_summary: Some("cargo build".to_string()),
+            output_preview: Some("success".to_string()),
+            is_error: false,
+            collapsed: false,
+            round: 1,
+        };
+        let entry = ChatEntry::ToolCard(card);
+        let rendered = entry_lines_plain(&entry);
+        // Expanded: header + args + output = 3
+        assert_eq!(rendered.len(), 3);
+        assert!(rendered[0].contains("▾"));
+        assert!(rendered[0].contains("✓"));
+        assert!(rendered[0].contains("shell"));
+        assert!(rendered[1].contains("input"));
+        assert!(rendered[1].contains("cargo build"));
+        assert!(rendered[2].contains("output"));
+        assert!(rendered[2].contains("success"));
+    }
+
+    #[test]
+    fn test_chat_entry_tool_card_failed() {
+        let card = ToolCallCard {
+            name: "write".to_string(),
+            status: ToolCardStatus::Failed,
+            duration: Some("0.5s".to_string()),
+            args_summary: None,
+            output_preview: Some("permission denied".to_string()),
+            is_error: true,
+            collapsed: false,
+            round: 1,
+        };
+        let entry = ChatEntry::ToolCard(card);
+        let rendered = entry_lines_plain(&entry);
+        assert!(rendered[0].contains("✗"));
+        assert!(rendered[0].contains("write"));
+        // Error output should say "error" not "output"
+        assert!(
+            rendered
+                .iter()
+                .any(|l| l.contains("error") && l.contains("permission denied"))
         );
+    }
+
+    #[test]
+    fn test_chat_entry_tool_card_running() {
+        let card = ToolCallCard {
+            name: "shell".to_string(),
+            status: ToolCardStatus::Running,
+            duration: None,
+            args_summary: Some("cargo test".to_string()),
+            output_preview: None,
+            is_error: false,
+            collapsed: false,
+            round: 1,
+        };
+        let entry = ChatEntry::ToolCard(card);
+        let rendered = entry_lines_plain(&entry);
+        assert!(rendered[0].contains("⟳"));
+        assert!(rendered[0].contains("shell"));
+    }
+
+    #[test]
+    fn test_chat_entry_reasoning_collapsed() {
+        let entry = ChatEntry::ReasoningBlock {
+            round: 1,
+            content: "analyzing the code structure".to_string(),
+            collapsed: true,
+        };
+        let rendered = entry_lines_plain(&entry);
+        assert_eq!(rendered.len(), 1);
+        assert!(rendered[0].contains("▸"));
+        assert!(rendered[0].contains("Thinking"));
+        assert!(rendered[0].contains("collapsed"));
+    }
+
+    #[test]
+    fn test_chat_entry_reasoning_expanded() {
+        let entry = ChatEntry::ReasoningBlock {
+            round: 2,
+            content: "step 1: read files\nstep 2: analyze".to_string(),
+            collapsed: false,
+        };
+        let rendered = entry_lines_plain(&entry);
+        // header + 2 content lines = 3
+        assert_eq!(rendered.len(), 3);
+        assert!(rendered[0].contains("▾"));
+        assert!(rendered[0].contains("Thinking [r2]"));
+        assert!(rendered[1].contains("step 1: read files"));
+        assert!(rendered[2].contains("step 2: analyze"));
+    }
+
+    #[test]
+    fn test_chat_entry_round_separator() {
+        let entry = ChatEntry::RoundSeparator { round: 3 };
+        let rendered = entry_lines_plain(&entry);
+        assert_eq!(rendered.len(), 1);
+        assert!(rendered[0].contains("Round 3"));
+    }
+
+    #[test]
+    fn test_chat_entry_error_note() {
+        let entry = ChatEntry::ErrorNote("something failed".to_string());
+        let rendered = entry_lines_plain(&entry);
+        assert_eq!(rendered.len(), 1);
+        assert!(rendered[0].contains("✗"));
+        assert!(rendered[0].contains("something failed"));
+    }
+
+    #[test]
+    fn test_chat_entry_stage_note() {
+        let entry = ChatEntry::StageNote("Planning...".to_string());
+        let rendered = entry_lines_plain(&entry);
+        assert_eq!(rendered.len(), 1);
+        assert!(rendered[0].contains("◆"));
+        assert!(rendered[0].contains("Planning..."));
+    }
+
+    #[test]
+    fn test_chat_entry_system_note() {
+        let entry = ChatEntry::SystemNote("processing...".to_string());
+        let rendered = entry_lines_plain(&entry);
+        assert_eq!(rendered.len(), 1);
+        assert!(rendered[0].contains("◆"));
+        assert!(rendered[0].contains("processing..."));
+    }
+
+    #[test]
+    fn test_chat_entry_display_lines_count() {
+        // Separator = 1
+        assert_eq!(chat_entry_display_lines(&ChatEntry::Separator), 1);
+
+        // User message: header + 1 line + footer = 3
+        assert_eq!(
+            chat_entry_display_lines(&ChatEntry::UserMessage {
+                content: "hello".to_string(),
+                turn_id: 1,
+            }),
+            3
+        );
+
+        // User message multiline: header + 3 lines + footer = 5
+        assert_eq!(
+            chat_entry_display_lines(&ChatEntry::UserMessage {
+                content: "a\nb\nc".to_string(),
+                turn_id: 1,
+            }),
+            5
+        );
+
+        // Collapsed tool card = 1
+        assert_eq!(
+            chat_entry_display_lines(&ChatEntry::ToolCard(ToolCallCard {
+                name: "t".to_string(),
+                status: ToolCardStatus::Running,
+                duration: None,
+                args_summary: Some("a".to_string()),
+                output_preview: Some("o".to_string()),
+                is_error: false,
+                collapsed: true,
+                round: 1,
+            })),
+            1
+        );
+
+        // Expanded tool card with args + output = 3
+        assert_eq!(
+            chat_entry_display_lines(&ChatEntry::ToolCard(ToolCallCard {
+                name: "t".to_string(),
+                status: ToolCardStatus::Completed,
+                duration: None,
+                args_summary: Some("a".to_string()),
+                output_preview: Some("o".to_string()),
+                is_error: false,
+                collapsed: false,
+                round: 1,
+            })),
+            3
+        );
+
+        // Collapsed reasoning = 1
+        assert_eq!(
+            chat_entry_display_lines(&ChatEntry::ReasoningBlock {
+                round: 1,
+                content: "think\nabout it".to_string(),
+                collapsed: true,
+            }),
+            1
+        );
+
+        // Expanded reasoning: header + 2 lines = 3
+        assert_eq!(
+            chat_entry_display_lines(&ChatEntry::ReasoningBlock {
+                round: 1,
+                content: "think\nabout it".to_string(),
+                collapsed: false,
+            }),
+            3
+        );
+    }
+
+    #[test]
+    fn test_total_display_lines() {
+        let entries = vec![
+            ChatEntry::Separator,
+            ChatEntry::UserMessage {
+                content: "hi".to_string(),
+                turn_id: 1,
+            },
+            ChatEntry::SystemNote("processing".to_string()),
+        ];
+        // 1 + 3 + 1 = 5
+        assert_eq!(total_display_lines(&entries), 5);
+    }
+
+    #[test]
+    fn test_push_chat_entry_cap() {
+        let mut entries = Vec::new();
+        for i in 0..(TUI_MAX_CHAT_ENTRIES + 5) {
+            push_chat_entry(&mut entries, ChatEntry::SystemNote(format!("note-{}", i)));
+        }
+        assert_eq!(entries.len(), TUI_MAX_CHAT_ENTRIES);
+        // First entry should be note-5 (0..4 evicted)
+        if let ChatEntry::SystemNote(text) = &entries[0] {
+            assert_eq!(text, "note-5");
+        } else {
+            panic!("expected SystemNote");
+        }
+    }
+
+    #[test]
+    fn test_toggle_all_tool_cards() {
+        let mut entries = vec![
+            ChatEntry::ToolCard(ToolCallCard {
+                name: "a".to_string(),
+                status: ToolCardStatus::Completed,
+                duration: None,
+                args_summary: None,
+                output_preview: None,
+                is_error: false,
+                collapsed: true,
+                round: 1,
+            }),
+            ChatEntry::SystemNote("note".to_string()),
+            ChatEntry::ToolCard(ToolCallCard {
+                name: "b".to_string(),
+                status: ToolCardStatus::Running,
+                duration: None,
+                args_summary: None,
+                output_preview: None,
+                is_error: false,
+                collapsed: true,
+                round: 1,
+            }),
+        ];
+        toggle_all_tool_cards(&mut entries);
+        if let ChatEntry::ToolCard(ref card) = entries[0] {
+            assert!(!card.collapsed);
+        }
+        if let ChatEntry::ToolCard(ref card) = entries[2] {
+            assert!(!card.collapsed);
+        }
+        // Toggle back
+        toggle_all_tool_cards(&mut entries);
+        if let ChatEntry::ToolCard(ref card) = entries[0] {
+            assert!(card.collapsed);
+        }
+    }
+
+    #[test]
+    fn test_toggle_all_reasoning_blocks() {
+        let mut entries = vec![
+            ChatEntry::ReasoningBlock {
+                round: 1,
+                content: "think".to_string(),
+                collapsed: true,
+            },
+            ChatEntry::Separator,
+            ChatEntry::ReasoningBlock {
+                round: 2,
+                content: "more".to_string(),
+                collapsed: true,
+            },
+        ];
+        toggle_all_reasoning_blocks(&mut entries);
+        if let ChatEntry::ReasoningBlock { collapsed, .. } = &entries[0] {
+            assert!(!collapsed);
+        }
+        if let ChatEntry::ReasoningBlock { collapsed, .. } = &entries[2] {
+            assert!(!collapsed);
+        }
+    }
+
+    #[test]
+    fn test_effective_chat_scroll_auto_follow() {
+        let entries = vec![
+            ChatEntry::UserMessage {
+                content: "hi".to_string(),
+                turn_id: 1,
+            },
+            ChatEntry::AssistantMessage {
+                content: "hello there\nline2\nline3".to_string(),
+                turn_id: 1,
+            },
+        ];
+        // total display lines = 3 + 5 = 8
+        let view = TuiSessionViewState {
+            scroll_offset: 0,
+            auto_follow: true,
+            body_height: 5,
+        };
+        let scroll = effective_chat_scroll(&entries, &view);
+        // auto_follow: total(8) - body_height(5) = 3
+        assert_eq!(scroll, 3);
+    }
+
+    #[test]
+    fn test_effective_chat_scroll_manual() {
+        let entries = vec![
+            ChatEntry::SystemNote("a".to_string()),
+            ChatEntry::SystemNote("b".to_string()),
+            ChatEntry::SystemNote("c".to_string()),
+            ChatEntry::SystemNote("d".to_string()),
+            ChatEntry::SystemNote("e".to_string()),
+        ];
+        // 5 entries × 1 line each = 5 display lines
+        let view = TuiSessionViewState {
+            scroll_offset: 2,
+            auto_follow: false,
+            body_height: 3,
+        };
+        let scroll = effective_chat_scroll(&entries, &view);
+        // manual: min(scroll_offset=2, total(5)-body(3)=2) = 2
+        assert_eq!(scroll, 2);
+    }
+
+    #[test]
+    fn test_event_to_entries_tool_call_start_compact() {
+        let event = mk_event(
+            ndc_core::AgentExecutionEventKind::ToolCallStart,
+            "tool_call_start: shell | args_preview: {\"command\":\"cargo build\"}",
+            1,
+            Some("shell"),
+            Some("call-1"),
+            None,
+            false,
+        );
+        let mut viz = ReplVisualizationState::new(false);
+        viz.verbosity = DisplayVerbosity::Compact;
+        let entries = event_to_entries(&event, &mut viz);
+        assert!(!entries.is_empty());
+        // Should produce a ToolCard with Running status
+        let tool_card = entries.iter().find(|e| matches!(e, ChatEntry::ToolCard(_)));
+        assert!(tool_card.is_some(), "expected ToolCard in entries");
+        if let Some(ChatEntry::ToolCard(card)) = tool_card {
+            assert_eq!(card.name, "shell");
+            assert!(matches!(card.status, ToolCardStatus::Running));
+            assert!(card.collapsed); // default collapsed in compact mode
+        }
+    }
+
+    #[test]
+    fn test_event_to_entries_tool_call_end_with_result() {
+        let event = mk_event(
+            ndc_core::AgentExecutionEventKind::ToolCallEnd,
+            "tool_call_end: read (ok) | result_preview: README.md contents",
+            1,
+            Some("read"),
+            Some("call-1"),
+            Some(42),
+            false,
+        );
+        let mut viz = ReplVisualizationState::new(false);
+        viz.verbosity = DisplayVerbosity::Normal;
+        let entries = event_to_entries(&event, &mut viz);
+        let tool_card = entries.iter().find(|e| matches!(e, ChatEntry::ToolCard(_)));
+        assert!(tool_card.is_some());
+        if let Some(ChatEntry::ToolCard(card)) = tool_card {
+            assert_eq!(card.name, "read");
+            assert!(matches!(card.status, ToolCardStatus::Completed));
+            assert!(!card.is_error);
+            assert!(card.duration.is_some());
+            assert!(card.output_preview.is_some());
+        }
+    }
+
+    #[test]
+    fn test_event_to_entries_tool_call_end_error() {
+        let event = mk_event(
+            ndc_core::AgentExecutionEventKind::ToolCallEnd,
+            "tool_call_end: write (error) | result_preview: permission denied",
+            1,
+            Some("write"),
+            Some("call-1"),
+            Some(100),
+            true,
+        );
+        let mut viz = ReplVisualizationState::new(false);
+        viz.verbosity = DisplayVerbosity::Compact;
+        let entries = event_to_entries(&event, &mut viz);
+        let tool_card = entries.iter().find(|e| matches!(e, ChatEntry::ToolCard(_)));
+        assert!(tool_card.is_some());
+        if let Some(ChatEntry::ToolCard(card)) = tool_card {
+            assert_eq!(card.name, "write");
+            assert!(matches!(card.status, ToolCardStatus::Failed));
+            assert!(card.is_error);
+        }
+    }
+
+    #[test]
+    fn test_event_to_entries_reasoning_collapsed_by_default() {
+        let event = mk_event(
+            ndc_core::AgentExecutionEventKind::Reasoning,
+            "analyzing the code",
+            1,
+            None,
+            None,
+            None,
+            false,
+        );
+        let mut viz = ReplVisualizationState::new(false);
+        // show_thinking is false by default → reasoning collapsed
+        let entries = event_to_entries(&event, &mut viz);
+        let reasoning = entries
+            .iter()
+            .find(|e| matches!(e, ChatEntry::ReasoningBlock { .. }));
+        assert!(reasoning.is_some());
+        if let Some(ChatEntry::ReasoningBlock { collapsed, .. }) = reasoning {
+            assert!(collapsed, "reasoning should be collapsed by default");
+        }
+    }
+
+    #[test]
+    fn test_event_to_entries_reasoning_expanded_when_show_thinking() {
+        let event = mk_event(
+            ndc_core::AgentExecutionEventKind::Reasoning,
+            "analyzing the code",
+            1,
+            None,
+            None,
+            None,
+            false,
+        );
+        let mut viz = ReplVisualizationState::new(false);
+        viz.show_thinking = true;
+        let entries = event_to_entries(&event, &mut viz);
+        let reasoning = entries
+            .iter()
+            .find(|e| matches!(e, ChatEntry::ReasoningBlock { .. }));
+        assert!(reasoning.is_some());
+        if let Some(ChatEntry::ReasoningBlock { collapsed, .. }) = reasoning {
+            assert!(
+                !collapsed,
+                "reasoning should be expanded when show_thinking is on"
+            );
+        }
+    }
+
+    #[test]
+    fn test_event_to_entries_round_separator_normal() {
+        let event = mk_event(
+            ndc_core::AgentExecutionEventKind::ToolCallStart,
+            "tool_call_start: shell",
+            2,
+            Some("shell"),
+            Some("call-1"),
+            None,
+            false,
+        );
+        let mut viz = ReplVisualizationState::new(false);
+        viz.verbosity = DisplayVerbosity::Normal;
+        viz.last_emitted_round = 1;
+        let entries = event_to_entries(&event, &mut viz);
+        // Should start with RoundSeparator
+        assert!(
+            matches!(&entries[0], ChatEntry::RoundSeparator { round: 2 }),
+            "expected RoundSeparator for round 2"
+        );
+    }
+
+    #[test]
+    fn test_event_to_entries_no_round_sep_compact() {
+        let event = mk_event(
+            ndc_core::AgentExecutionEventKind::ToolCallStart,
+            "tool_call_start: shell",
+            2,
+            Some("shell"),
+            Some("call-1"),
+            None,
+            false,
+        );
+        let mut viz = ReplVisualizationState::new(false);
+        viz.verbosity = DisplayVerbosity::Compact;
+        viz.last_emitted_round = 1;
+        let entries = event_to_entries(&event, &mut viz);
+        // Compact mode: no round separator
+        assert!(
+            !entries
+                .iter()
+                .any(|e| matches!(e, ChatEntry::RoundSeparator { .. })),
+            "compact mode should not emit round separators"
+        );
+    }
+
+    #[test]
+    fn test_event_to_entries_permission() {
+        let event = mk_event(
+            ndc_core::AgentExecutionEventKind::PermissionAsked,
+            "tool shell requires permission",
+            1,
+            None,
+            None,
+            None,
+            false,
+        );
+        let mut viz = ReplVisualizationState::new(false);
+        viz.verbosity = DisplayVerbosity::Normal;
+        let entries = event_to_entries(&event, &mut viz);
+        assert!(viz.permission_blocked);
+        let has_note = entries
+            .iter()
+            .any(|e| matches!(e, ChatEntry::PermissionNote(_)));
+        let has_hint = entries
+            .iter()
+            .any(|e| matches!(e, ChatEntry::PermissionHint(_)));
+        assert!(has_note, "expected PermissionNote");
+        assert!(has_hint, "expected PermissionHint");
+    }
+
+    #[test]
+    fn test_event_to_entries_stage() {
+        let event = ndc_core::AgentExecutionEvent {
+            kind: ndc_core::AgentExecutionEventKind::WorkflowStage,
+            timestamp: chrono::Utc::now(),
+            message: "planning phase".to_string(),
+            round: 1,
+            tool_name: None,
+            tool_call_id: None,
+            duration_ms: None,
+            is_error: false,
+            workflow_stage: Some(ndc_core::AgentWorkflowStage::Planning),
+            workflow_detail: Some("analyzing requirements".to_string()),
+            workflow_stage_index: Some(1),
+            workflow_stage_total: Some(3),
+        };
+        let mut viz = ReplVisualizationState::new(false);
+        viz.verbosity = DisplayVerbosity::Normal;
+        let entries = event_to_entries(&event, &mut viz);
+        let stage = entries
+            .iter()
+            .find(|e| matches!(e, ChatEntry::StageNote(_)));
+        assert!(stage.is_some(), "expected StageNote");
+        if let Some(ChatEntry::StageNote(text)) = stage {
+            assert!(text.contains("Planning"));
+        }
+    }
+
+    #[test]
+    fn test_style_chat_entries_mixed() {
+        let entries = vec![
+            ChatEntry::Separator,
+            ChatEntry::UserMessage {
+                content: "build it".to_string(),
+                turn_id: 1,
+            },
+            ChatEntry::SystemNote("processing...".to_string()),
+            ChatEntry::ToolCard(ToolCallCard {
+                name: "shell".to_string(),
+                status: ToolCardStatus::Completed,
+                duration: Some("2.0s".to_string()),
+                args_summary: None,
+                output_preview: None,
+                is_error: false,
+                collapsed: true,
+                round: 1,
+            }),
+            ChatEntry::AssistantMessage {
+                content: "Done!".to_string(),
+                turn_id: 1,
+            },
+        ];
+        let lines = style_chat_entries(&entries);
+        // Separator(1) + User(3) + SystemNote(1) + ToolCard collapsed(1) + Assistant(3) = 9
+        assert_eq!(lines.len(), 9);
+        // Verify user message header is present
+        let plain: Vec<String> = lines.iter().map(line_plain).collect();
+        assert!(plain.iter().any(|l| l.contains("You [#1]")));
+        assert!(plain.iter().any(|l| l.contains("build it")));
+        assert!(plain.iter().any(|l| l.contains("processing...")));
+        assert!(plain.iter().any(|l| l.contains("shell")));
+        assert!(plain.iter().any(|l| l.contains("Assistant [#1]")));
+        assert!(plain.iter().any(|l| l.contains("Done!")));
+    }
+
+    #[test]
+    fn test_chat_turn_grouping() {
+        let turn = ChatTurn {
+            turn_id: 1,
+            entries: vec![
+                ChatEntry::UserMessage {
+                    content: "hello".to_string(),
+                    turn_id: 1,
+                },
+                ChatEntry::SystemNote("processing...".to_string()),
+                ChatEntry::AssistantMessage {
+                    content: "hi".to_string(),
+                    turn_id: 1,
+                },
+            ],
+        };
+        assert_eq!(turn.turn_id, 1);
+        assert_eq!(turn.entries.len(), 3);
+        // Rendering the turn's entries should work
+        let lines = style_chat_entries(&turn.entries);
+        let plain: Vec<String> = lines.iter().map(line_plain).collect();
+        assert!(plain.iter().any(|l| l.contains("You [#1]")));
+        assert!(plain.iter().any(|l| l.contains("hi")));
+    }
+
+    #[test]
+    fn test_drain_live_chat_entries_renders() {
+        let (tx, rx) = tokio::sync::broadcast::channel(8);
+        let event = ndc_core::AgentExecutionEvent {
+            kind: ndc_core::AgentExecutionEventKind::ToolCallStart,
+            timestamp: chrono::Utc::now(),
+            message: "tool_call_start: read | args_preview: {\"path\":\".\"}".to_string(),
+            round: 1,
+            tool_name: Some("read".to_string()),
+            tool_call_id: Some("call-1".to_string()),
+            duration_ms: None,
+            is_error: false,
+            workflow_stage: None,
+            workflow_detail: None,
+            workflow_stage_index: None,
+            workflow_stage_total: None,
+        };
+        tx.send(ndc_core::AgentSessionExecutionEvent {
+            session_id: "session-a".to_string(),
+            event: event.clone(),
+        })
+        .unwrap();
+
+        let mut recv = Some(rx);
+        let mut viz = ReplVisualizationState::new(false);
+        let mut entries: Vec<ChatEntry> = Vec::new();
+        let rendered =
+            drain_live_chat_entries(&mut recv, Some("session-a"), &mut viz, &mut entries);
+        assert!(rendered);
+        assert!(!entries.is_empty());
+        // Should contain a ToolCard entry
+        assert!(entries.iter().any(|e| matches!(e, ChatEntry::ToolCard(_))));
+    }
+
+    #[test]
+    fn test_drain_live_chat_entries_ignores_other_sessions() {
+        let (tx, rx) = tokio::sync::broadcast::channel(8);
+        tx.send(ndc_core::AgentSessionExecutionEvent {
+            session_id: "session-b".to_string(),
+            event: ndc_core::AgentExecutionEvent {
+                kind: ndc_core::AgentExecutionEventKind::StepStart,
+                timestamp: chrono::Utc::now(),
+                message: "llm_round_1_start".to_string(),
+                round: 1,
+                tool_name: None,
+                tool_call_id: None,
+                duration_ms: None,
+                is_error: false,
+                workflow_stage: None,
+                workflow_detail: None,
+                workflow_stage_index: None,
+                workflow_stage_total: None,
+            },
+        })
+        .unwrap();
+
+        let mut recv = Some(rx);
+        let mut viz = ReplVisualizationState::new(false);
+        let mut entries: Vec<ChatEntry> = Vec::new();
+        let rendered =
+            drain_live_chat_entries(&mut recv, Some("session-a"), &mut viz, &mut entries);
+        assert!(!rendered);
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_event_to_entries_verbose_full_round() {
+        let events = vec![
+            ndc_core::AgentExecutionEvent {
+                kind: ndc_core::AgentExecutionEventKind::WorkflowStage,
+                timestamp: chrono::Utc::now(),
+                message: "planning".to_string(),
+                round: 1,
+                tool_name: None,
+                tool_call_id: None,
+                duration_ms: None,
+                is_error: false,
+                workflow_stage: Some(ndc_core::AgentWorkflowStage::Planning),
+                workflow_detail: Some("".to_string()),
+                workflow_stage_index: Some(1),
+                workflow_stage_total: Some(3),
+            },
+            mk_event(
+                ndc_core::AgentExecutionEventKind::Reasoning,
+                "analyze the code",
+                1,
+                None,
+                None,
+                None,
+                false,
+            ),
+            mk_event(
+                ndc_core::AgentExecutionEventKind::ToolCallStart,
+                "tool_call_start: read | args_preview: {\"path\":\"src/\"}",
+                1,
+                Some("read"),
+                Some("call-1"),
+                None,
+                false,
+            ),
+            mk_event(
+                ndc_core::AgentExecutionEventKind::ToolCallEnd,
+                "tool_call_end: read (ok) | args_preview: {\"path\":\"src/\"} | result_preview: main.rs lib.rs",
+                1,
+                Some("read"),
+                Some("call-1"),
+                Some(15),
+                false,
+            ),
+        ];
+        let mut viz = ReplVisualizationState::new(false);
+        viz.verbosity = DisplayVerbosity::Verbose;
+        viz.show_thinking = true;
+        viz.expand_tool_cards = true;
+
+        let entries = render_entries_snapshot(&events, &mut viz);
+
+        // Should have stage, reasoning, tool start card, tool end card
+        let has_stage = entries.iter().any(|e| matches!(e, ChatEntry::StageNote(_)));
+        let has_reasoning = entries.iter().any(|e| {
+            matches!(
+                e,
+                ChatEntry::ReasoningBlock {
+                    collapsed: false,
+                    ..
+                }
+            )
+        });
+        let tool_cards: Vec<_> = entries
+            .iter()
+            .filter(|e| matches!(e, ChatEntry::ToolCard(_)))
+            .collect();
+        assert!(has_stage, "expected stage entry");
+        assert!(has_reasoning, "expected expanded reasoning");
+        assert_eq!(tool_cards.len(), 2, "expected 2 tool cards (start + end)");
     }
 }
