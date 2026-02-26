@@ -7,7 +7,7 @@
 //! - Delete files
 //! - List directory contents
 
-use super::{enforce_path_boundary, Tool, ToolContext, ToolError, ToolResult};
+use super::{Tool, ToolContext, ToolError, ToolResult, enforce_path_boundary};
 use std::path::PathBuf;
 use tokio::fs;
 use tracing::debug;
@@ -74,9 +74,7 @@ impl Tool for FsTool {
 
         let output = match operation {
             "read" => {
-                let content = fs::read_to_string(&path)
-                    .await
-                    .map_err(ToolError::Io)?;
+                let content = fs::read_to_string(&path).await.map_err(ToolError::Io)?;
                 files_read = 1;
                 content
             }
@@ -85,9 +83,7 @@ impl Tool for FsTool {
                     .get("content")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| ToolError::InvalidArgument("Missing content".to_string()))?;
-                fs::write(&path, content)
-                    .await
-                    .map_err(ToolError::Io)?;
+                fs::write(&path, content).await.map_err(ToolError::Io)?;
                 files_written = 1;
                 format!("Written {} bytes to {}", content.len(), path.display())
             }
@@ -95,9 +91,7 @@ impl Tool for FsTool {
                 if path.extension().is_some() {
                     fs::write(&path, "").await.map_err(ToolError::Io)?;
                 } else {
-                    fs::create_dir_all(&path)
-                        .await
-                        .map_err(ToolError::Io)?;
+                    fs::create_dir_all(&path).await.map_err(ToolError::Io)?;
                 }
                 files_written = 1;
                 format!("Created {}", path.display())
@@ -106,16 +100,12 @@ impl Tool for FsTool {
                 if path.is_file() {
                     fs::remove_file(&path).await.map_err(ToolError::Io)?;
                 } else {
-                    fs::remove_dir_all(&path)
-                        .await
-                        .map_err(ToolError::Io)?;
+                    fs::remove_dir_all(&path).await.map_err(ToolError::Io)?;
                 }
                 format!("Deleted {}", path.display())
             }
             "list" => {
-                let mut entries = tokio::fs::read_dir(&path)
-                    .await
-                    .map_err(ToolError::Io)?;
+                let mut entries = tokio::fs::read_dir(&path).await.map_err(ToolError::Io)?;
                 let mut items = Vec::new();
                 while let Some(entry) = entries.next_entry().await.map_err(ToolError::Io)? {
                     items.push(entry.file_name().to_string_lossy().into_owned());

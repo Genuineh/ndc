@@ -10,7 +10,7 @@ use tokio::fs;
 use tracing::debug;
 
 use super::schema::ToolSchemaBuilder;
-use super::{enforce_path_boundary, Tool, ToolError, ToolMetadata, ToolResult};
+use super::{Tool, ToolError, ToolMetadata, ToolResult, enforce_path_boundary};
 
 /// Grep tool - 内容搜索
 #[derive(Debug)]
@@ -116,9 +116,7 @@ impl Tool for GrepTool {
 impl GrepTool {
     /// 搜索单个文件
     async fn search_file(path: &PathBuf, regex: &Regex) -> Result<Vec<String>, ToolError> {
-        let content = fs::read_to_string(path)
-            .await
-            .map_err(ToolError::Io)?;
+        let content = fs::read_to_string(path).await.map_err(ToolError::Io)?;
 
         let mut results = Vec::new();
 
@@ -151,9 +149,7 @@ impl GrepTool {
             .unwrap_or(u64::MAX);
 
         // Walk directory
-        let mut entries = tokio::fs::read_dir(dir)
-            .await
-            .map_err(ToolError::Io)?;
+        let mut entries = tokio::fs::read_dir(dir).await.map_err(ToolError::Io)?;
 
         while let Some(entry) = entries.next_entry().await.map_err(ToolError::Io)? {
             let path = entry.path();

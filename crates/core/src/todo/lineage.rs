@@ -219,11 +219,7 @@ impl LineageService {
 
     /// Add inherited invariant
     pub fn add_inherited_invariant(&mut self, task_id: &str, invariant: InheritedInvariant) {
-        if let Some(lineage) = self
-            .lineage_store
-            .iter_mut()
-            .find(|l| l.task_id == task_id)
-        {
+        if let Some(lineage) = self.lineage_store.iter_mut().find(|l| l.task_id == task_id) {
             lineage.inherited_invariants.push(invariant);
         }
     }
@@ -240,11 +236,7 @@ impl LineageService {
 
     /// Archive context from completed task
     pub fn archive_context(&mut self, task_id: &str, context: ArchivedContext) {
-        if let Some(lineage) = self
-            .lineage_store
-            .iter_mut()
-            .find(|l| l.task_id == task_id)
-        {
+        if let Some(lineage) = self.lineage_store.iter_mut().find(|l| l.task_id == task_id) {
             lineage.inherited_context = Some(context);
         }
     }

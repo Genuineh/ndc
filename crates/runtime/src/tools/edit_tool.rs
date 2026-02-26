@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use tracing::debug;
 
 use super::schema::ToolSchemaBuilder;
-use super::{enforce_path_boundary, Tool, ToolError, ToolMetadata, ToolResult};
+use super::{Tool, ToolError, ToolMetadata, ToolResult, enforce_path_boundary};
 
 /// 编辑错误类型
 #[derive(Debug, thiserror::Error)]
@@ -270,9 +270,7 @@ impl Tool for EditTool {
         let start = std::time::Instant::now();
 
         // Read file
-        let content = fs::read_to_string(&path)
-            .await
-            .map_err(ToolError::Io)?;
+        let content = fs::read_to_string(&path).await.map_err(ToolError::Io)?;
 
         let result = if replace_all {
             // 替换所有匹配
@@ -294,9 +292,7 @@ impl Tool for EditTool {
         };
 
         // Write back
-        fs::write(&path, &result.0)
-            .await
-            .map_err(ToolError::Io)?;
+        fs::write(&path, &result.0).await.map_err(ToolError::Io)?;
 
         let duration = start.elapsed().as_millis() as u64;
 

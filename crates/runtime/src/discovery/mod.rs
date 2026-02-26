@@ -8,8 +8,8 @@ pub mod heatmap;
 pub mod impact_report;
 
 pub use heatmap::{
-    volatility_to_risk_level, ChangeType, GitChange, HeatmapConfig, HeatmapError, ModuleId,
-    ModuleVolatility, VolatilityHeatmap,
+    ChangeType, GitChange, HeatmapConfig, HeatmapError, ModuleId, ModuleVolatility,
+    VolatilityHeatmap, volatility_to_risk_level,
 };
 
 pub use hard_constraints::{
@@ -187,29 +187,30 @@ impl DiscoveryService {
         // Add coupling warnings for high-risk files
         for file in &report.files_to_modify {
             if let Some(heatmap) = heatmap
-                && heatmap.is_high_risk(file) {
-                    constraints.add_coupling_warning(CouplingWarning {
-                        id: format!("coupling-{}", uuid::Uuid::new_v4()),
-                        source: ComponentRef {
-                            name: file
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .map(|s| s.to_string())
-                                .unwrap_or_default(),
-                            path: file.clone(),
-                            kind: ComponentKind::Module,
-                        },
-                        target: ComponentRef {
-                            name: "unknown".to_string(),
-                            path: PathBuf::new(),
-                            kind: ComponentKind::Module,
-                        },
-                        coupling_type: CouplingType::DynamicConfig,
-                        risk_level: ndc_core::RiskLevel::Medium,
-                        description: format!("High volatility file: {}", file.display()),
-                        mitigation: "Ensure thorough testing before commit".to_string(),
-                    });
-                }
+                && heatmap.is_high_risk(file)
+            {
+                constraints.add_coupling_warning(CouplingWarning {
+                    id: format!("coupling-{}", uuid::Uuid::new_v4()),
+                    source: ComponentRef {
+                        name: file
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .map(|s| s.to_string())
+                            .unwrap_or_default(),
+                        path: file.clone(),
+                        kind: ComponentKind::Module,
+                    },
+                    target: ComponentRef {
+                        name: "unknown".to_string(),
+                        path: PathBuf::new(),
+                        kind: ComponentKind::Module,
+                    },
+                    coupling_type: CouplingType::DynamicConfig,
+                    risk_level: ndc_core::RiskLevel::Medium,
+                    description: format!("High volatility file: {}", file.display()),
+                    mitigation: "Ensure thorough testing before commit".to_string(),
+                });
+            }
         }
 
         Ok(constraints)

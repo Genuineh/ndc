@@ -304,16 +304,17 @@ impl LineageInjector {
 
         // Inherited context
         if self.config.include_context
-            && let Some(ref ctx) = entry.inherited_context {
-                lines.push("\nInherited Context:".to_string());
-                lines.push(format!("  {}", ctx.summary));
-                if !ctx.key_decisions.is_empty() {
-                    lines.push("\n  Key Decisions:".to_string());
-                    for decision in &ctx.key_decisions {
-                        lines.push(format!("    • {}", decision));
-                    }
+            && let Some(ref ctx) = entry.inherited_context
+        {
+            lines.push("\nInherited Context:".to_string());
+            lines.push(format!("  {}", ctx.summary));
+            if !ctx.key_decisions.is_empty() {
+                lines.push("\n  Key Decisions:".to_string());
+                for decision in &ctx.key_decisions {
+                    lines.push(format!("    • {}", decision));
                 }
             }
+        }
 
         // Inherited invariants count
         if !entry.inherited_invariants.is_empty() {

@@ -100,9 +100,10 @@ impl AnthropicProvider {
                 if let Some(content_parts) = block.get("content").and_then(|v| v.as_array()) {
                     for p in content_parts {
                         if let Some(text) = p.get("text").and_then(|v| v.as_str())
-                            && !text.trim().is_empty() {
-                                parts.push(text.to_string());
-                            }
+                            && !text.trim().is_empty()
+                        {
+                            parts.push(text.to_string());
+                        }
                     }
                 }
             }
@@ -110,9 +111,10 @@ impl AnthropicProvider {
 
         if parts.is_empty()
             && let Some(text) = data.get("output_text").and_then(|v| v.as_str())
-                && !text.trim().is_empty() {
-                    parts.push(text.to_string());
-                }
+            && !text.trim().is_empty()
+        {
+            parts.push(text.to_string());
+        }
 
         parts.join("\n")
     }

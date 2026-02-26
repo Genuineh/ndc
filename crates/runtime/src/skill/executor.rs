@@ -320,12 +320,13 @@ impl SkillExecutor {
             .ok()
             .as_ref()
             && let Some(cap) = re.captures(invocation)
-                && let (Some(key_match), Some(value_match)) = (cap.get(1), cap.get(2)) {
-                    params.insert(
-                        key_match.as_str().to_string(),
-                        value_match.as_str().to_string(),
-                    );
-                }
+            && let (Some(key_match), Some(value_match)) = (cap.get(1), cap.get(2))
+        {
+            params.insert(
+                key_match.as_str().to_string(),
+                value_match.as_str().to_string(),
+            );
+        }
 
         // Check required parameters
         for param in &skill.parameters {

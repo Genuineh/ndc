@@ -2,9 +2,9 @@
 //!
 //! Allows AI to create new tasks with title and description.
 
-use ndc_storage::{create_memory_storage, SharedStorage};
 use async_trait::async_trait;
 use ndc_core::{AgentRole, Task, TaskPriority};
+use ndc_storage::{SharedStorage, create_memory_storage};
 
 use super::super::schema::ToolSchemaBuilder;
 use super::super::{Tool, ToolError, ToolMetadata, ToolResult};

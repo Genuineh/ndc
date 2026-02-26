@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use tracing::debug;
 
 use super::schema::ToolSchemaBuilder;
-use super::{enforce_path_boundary, Tool, ToolError, ToolMetadata, ToolResult};
+use super::{Tool, ToolError, ToolMetadata, ToolResult, enforce_path_boundary};
 
 /// Glob tool - 文件模式匹配
 #[derive(Debug)]
@@ -49,9 +49,7 @@ impl Tool for GlobTool {
         let base_dir = if path.is_absolute() {
             path
         } else {
-            std::env::current_dir()
-                .map_err(ToolError::Io)?
-                .join(path)
+            std::env::current_dir().map_err(ToolError::Io)?.join(path)
         };
 
         enforce_path_boundary(base_dir.as_path(), None, "glob")?;

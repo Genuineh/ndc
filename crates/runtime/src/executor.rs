@@ -376,9 +376,10 @@ impl Executor {
 
         let mut loader = ndc_core::NdcConfigLoader::new();
         if loader.load().is_ok()
-            && let Some(runtime) = loader.config().runtime.as_ref() {
-                return DiscoveryFailureMode::from_str(&runtime.discovery_failure_mode);
-            }
+            && let Some(runtime) = loader.config().runtime.as_ref()
+        {
+            return DiscoveryFailureMode::from_str(&runtime.discovery_failure_mode);
+        }
 
         DiscoveryFailureMode::Degrade
     }
@@ -623,18 +624,24 @@ mod tests {
 
     #[test]
     fn test_discovery_failure_mode_env_override() {
-        unsafe { std::env::set_var("NDC_DISCOVERY_FAILURE_MODE", "block"); }
+        unsafe {
+            std::env::set_var("NDC_DISCOVERY_FAILURE_MODE", "block");
+        }
         assert_eq!(
             Executor::resolve_discovery_failure_mode(),
             DiscoveryFailureMode::Block
         );
-        unsafe { std::env::remove_var("NDC_DISCOVERY_FAILURE_MODE"); }
+        unsafe {
+            std::env::remove_var("NDC_DISCOVERY_FAILURE_MODE");
+        }
     }
 
     #[tokio::test]
     async fn test_execute_task_persists_intent_action_step() {
         let _guard = env_lock();
-        unsafe { std::env::set_var("NDC_DISCOVERY_FAILURE_MODE", "degrade"); }
+        unsafe {
+            std::env::set_var("NDC_DISCOVERY_FAILURE_MODE", "degrade");
+        }
 
         let temp_dir = TempDir::new().unwrap();
         let file_path = temp_dir.path().join("main.rs");
@@ -676,12 +683,16 @@ mod tests {
 
         let result = executor.execute_task(task.id).await.unwrap();
         assert!(result.success);
-        assert!(result
-            .steps
-            .iter()
-            .any(|step| matches!(step.action, Action::ReadFile { .. })));
+        assert!(
+            result
+                .steps
+                .iter()
+                .any(|step| matches!(step.action, Action::ReadFile { .. }))
+        );
         assert!(!result.steps.is_empty());
 
-        unsafe { std::env::remove_var("NDC_DISCOVERY_FAILURE_MODE"); }
+        unsafe {
+            std::env::remove_var("NDC_DISCOVERY_FAILURE_MODE");
+        }
     }
 }

@@ -207,13 +207,15 @@ impl InvariantInjector {
             for inv in critical {
                 lines.push(format!("  • {}", inv.description));
                 if self.config.include_patterns
-                    && let Some(ref pattern) = inv.pattern {
-                        lines.push(format!("    Pattern: {}", pattern));
-                    }
+                    && let Some(ref pattern) = inv.pattern
+                {
+                    lines.push(format!("    Pattern: {}", pattern));
+                }
                 if self.config.include_source
-                    && let Some(ref task) = inv.source_task {
-                        lines.push(format!("    From: {}", task));
-                    }
+                    && let Some(ref task) = inv.source_task
+                {
+                    lines.push(format!("    From: {}", task));
+                }
             }
             lines.push("".to_string());
         }

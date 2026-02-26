@@ -63,9 +63,10 @@ impl WebSearchTool {
         let mut output = format!("Search results for: \"{}\"\n\n", query);
 
         if let Some(abstract_summary) = json.get("Abstract").and_then(|v| v.as_str())
-            && !abstract_summary.is_empty() {
-                output.push_str(&format!("Summary:\n{}\n\n", abstract_summary));
-            }
+            && !abstract_summary.is_empty()
+        {
+            output.push_str(&format!("Summary:\n{}\n\n", abstract_summary));
+        }
 
         if let Some(results) = json.get("RelatedTopics").and_then(|v| v.as_array()) {
             let mut count = 0;
@@ -75,10 +76,11 @@ impl WebSearchTool {
                 }
 
                 if let Some(text) = item.get("Text").and_then(|v| v.as_str())
-                    && let Some(url) = item.get("FirstURL").and_then(|v| v.as_str()) {
-                        output.push_str(&format!("{}. {}\n   {}\n\n", count + 1, text, url));
-                        count += 1;
-                    }
+                    && let Some(url) = item.get("FirstURL").and_then(|v| v.as_str())
+                {
+                    output.push_str(&format!("{}. {}\n   {}\n\n", count + 1, text, url));
+                    count += 1;
+                }
             }
 
             if count == 0 {

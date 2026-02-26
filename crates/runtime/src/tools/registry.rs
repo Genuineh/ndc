@@ -26,7 +26,6 @@ pub struct ToolRegistry {
     categories: HashMap<String, Vec<String>>,
 }
 
-
 impl ToolRegistry {
     /// 创建新的注册表
     pub fn new() -> Self {
@@ -155,9 +154,7 @@ impl ToolRegistry {
 
     /// 创建分类
     pub fn create_category(&mut self, category: &str) {
-        self.categories
-            .entry(category.to_string())
-            .or_default();
+        self.categories.entry(category.to_string()).or_default();
     }
 
     /// 执行工具

@@ -123,9 +123,10 @@ impl OpenRouterProvider {
                 }
 
                 if let Some(calls) = &m.tool_calls
-                    && !calls.is_empty() {
-                        msg["tool_calls"] = serde_json::json!(calls);
-                    }
+                    && !calls.is_empty()
+                {
+                    msg["tool_calls"] = serde_json::json!(calls);
+                }
 
                 msg
             })
@@ -178,10 +179,10 @@ impl OpenRouterProvider {
 
         // Parse usage if available
         let usage = response_value.get("usage").map(|u| Usage {
-                prompt_tokens: u["prompt_tokens"].as_u64().unwrap_or(0) as u32,
-                completion_tokens: u["completion_tokens"].as_u64().unwrap_or(0) as u32,
-                total_tokens: u["total_tokens"].as_u64().unwrap_or(0) as u32,
-            });
+            prompt_tokens: u["prompt_tokens"].as_u64().unwrap_or(0) as u32,
+            completion_tokens: u["completion_tokens"].as_u64().unwrap_or(0) as u32,
+            total_tokens: u["total_tokens"].as_u64().unwrap_or(0) as u32,
+        });
 
         let finish_reason = first_choice
             .get("finish_reason")

@@ -9,7 +9,7 @@ use tokio::fs;
 use tracing::debug;
 
 use super::schema::ToolSchemaBuilder;
-use super::{enforce_path_boundary, Tool, ToolError, ToolMetadata, ToolResult};
+use super::{Tool, ToolError, ToolMetadata, ToolResult, enforce_path_boundary};
 
 /// Read tool - 读取文件内容
 #[derive(Debug)]
@@ -67,9 +67,7 @@ impl Tool for ReadTool {
         let start = std::time::Instant::now();
 
         // Read entire file first
-        let content = fs::read_to_string(&path)
-            .await
-            .map_err(ToolError::Io)?;
+        let content = fs::read_to_string(&path).await.map_err(ToolError::Io)?;
 
         let total_lines = content.lines().count();
         let total_bytes = content.len();

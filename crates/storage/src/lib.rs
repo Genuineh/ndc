@@ -2,14 +2,14 @@
 //
 // Abstract storage interface with pluggable backends
 
-pub mod trait_;
 pub mod memory;
+pub mod trait_;
 
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
 
+pub use memory::{MemoryStorage, create_memory_storage};
 pub use trait_::*;
-pub use memory::{create_memory_storage, MemoryStorage};
 
 #[cfg(feature = "sqlite")]
-pub use sqlite::{create_sqlite_storage, SqliteStorage, SqliteStorageError};
+pub use sqlite::{SqliteStorage, SqliteStorageError, create_sqlite_storage};

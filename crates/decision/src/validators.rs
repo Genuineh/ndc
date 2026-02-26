@@ -135,14 +135,13 @@ impl Validator for SecurityPolicyValidator {
 
         // 检查是否允许危险操作
         if !policy.allow_dangerous
-            && let ndc_core::Action::RunCommand { command, .. } = &intent.proposed_action {
-                let cmd = command.to_lowercase();
-                if cmd.contains("sudo") || cmd.contains("chmod 777") || cmd.contains("mkfs") {
-                    return ValidationResult::Deny(
-                        "Dangerous operations are not allowed".to_string(),
-                    );
-                }
+            && let ndc_core::Action::RunCommand { command, .. } = &intent.proposed_action
+        {
+            let cmd = command.to_lowercase();
+            if cmd.contains("sudo") || cmd.contains("chmod 777") || cmd.contains("mkfs") {
+                return ValidationResult::Deny("Dangerous operations are not allowed".to_string());
             }
+        }
 
         ValidationResult::Allow
     }
@@ -157,8 +156,9 @@ impl Validator for DependencyValidator {
     async fn validate(&self, intent: &Intent, _policy: &PolicyState) -> ValidationResult {
         // 检查状态转换的前置条件
         if let ndc_core::Action::UpdateTaskState {
-                task_id, new_state, ..
-            } = &intent.proposed_action {
+            task_id, new_state, ..
+        } = &intent.proposed_action
+        {
             // 这里应该检查任务依赖是否满足
             // 目前简化处理
             tracing::debug!(

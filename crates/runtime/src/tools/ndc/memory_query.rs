@@ -7,7 +7,7 @@ use ndc_core::{
 
 use super::super::schema::ToolSchemaBuilder;
 use super::super::{Tool, ToolError, ToolMetadata, ToolResult};
-use ndc_storage::{create_memory_storage, SharedStorage};
+use ndc_storage::{SharedStorage, create_memory_storage};
 
 #[derive(Clone)]
 pub struct MemoryQueryTool {

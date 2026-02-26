@@ -45,9 +45,10 @@ impl StreamHandler for StreamingHandler {
         let mut content = self.content.lock().await;
         for choice in &chunk.choices {
             if let Some(delta) = &choice.delta
-                && !delta.content.is_empty() {
-                    content.push_str(&delta.content);
-                }
+                && !delta.content.is_empty()
+            {
+                content.push_str(&delta.content);
+            }
         }
         Ok(())
     }
@@ -838,119 +839,120 @@ impl AgentOrchestrator {
 
             // 检查是否有工具调用
             if let Some(ref tool_calls) = assistant_message.tool_calls
-                && !tool_calls.is_empty() {
-                    self.emit_workflow_stage(
+                && !tool_calls.is_empty()
+            {
+                self.emit_workflow_stage(
+                    &mut session_state,
+                    &mut execution_events,
+                    round,
+                    AgentWorkflowStage::Discovery,
+                    "tool_calls_planned",
+                )
+                .await;
+                if !assistant_message.content.trim().is_empty() {
+                    self.emit_event(
                         &mut session_state,
                         &mut execution_events,
-                        round,
-                        AgentWorkflowStage::Discovery,
-                        "tool_calls_planned",
+                        AgentExecutionEvent {
+                            kind: AgentExecutionEventKind::Reasoning,
+                            timestamp: chrono::Utc::now(),
+                            message: truncate_for_event(&assistant_message.content, 300),
+                            round,
+                            tool_name: None,
+                            tool_call_id: None,
+                            duration_ms: None,
+                            is_error: false,
+                            workflow_stage: None,
+                            workflow_detail: None,
+                            workflow_stage_index: None,
+                            workflow_stage_total: None,
+                        },
                     )
                     .await;
-                    if !assistant_message.content.trim().is_empty() {
-                        self.emit_event(
-                            &mut session_state,
-                            &mut execution_events,
-                            AgentExecutionEvent {
-                                kind: AgentExecutionEventKind::Reasoning,
-                                timestamp: chrono::Utc::now(),
-                                message: truncate_for_event(&assistant_message.content, 300),
-                                round,
-                                tool_name: None,
-                                tool_call_id: None,
-                                duration_ms: None,
-                                is_error: false,
-                                workflow_stage: None,
-                                workflow_detail: None,
-                                workflow_stage_index: None,
-                                workflow_stage_total: None,
-                            },
-                        )
-                        .await;
-                    } else {
-                        self.emit_event(
-                            &mut session_state,
-                            &mut execution_events,
-                            AgentExecutionEvent {
-                                kind: AgentExecutionEventKind::Reasoning,
-                                timestamp: chrono::Utc::now(),
-                                message: summarize_tool_calls(tool_calls),
-                                round,
-                                tool_name: None,
-                                tool_call_id: None,
-                                duration_ms: None,
-                                is_error: false,
-                                workflow_stage: None,
-                                workflow_detail: None,
-                                workflow_stage_index: None,
-                                workflow_stage_total: None,
-                            },
-                        )
-                        .await;
-                    }
-                    let session_tool_calls: Vec<AgentToolCall> = tool_calls
-                        .iter()
-                        .map(|tc| AgentToolCall {
-                            name: tc.function.name.clone(),
-                            arguments: tc.function.arguments.clone(),
-                            id: tc.id.clone(),
-                        })
-                        .collect();
-                    session_state.add_message(AgentMessage {
-                        role: MessageRole::Assistant,
-                        content: assistant_message.content.clone(),
-                        timestamp: chrono::Utc::now(),
-                        tool_calls: Some(session_tool_calls.clone()),
-                        tool_results: None,
-                        tool_call_id: None,
-                    });
-                    for tc in &session_tool_calls {
-                        session_state.record_tool_call(&tc.name);
-                    }
-
-                    // 执行工具调用
-                    let tool_results = self
-                        .execute_tool_calls(
-                            tool_calls,
-                            round,
-                            &mut execution_events,
-                            &mut session_state,
-                        )
-                        .await?;
-
-                    // 记录工具调用
-                    for tc in tool_calls {
-                        all_tool_calls.push(AgentToolCall {
-                            name: tc.function.name.clone(),
-                            arguments: tc.function.arguments.clone(),
-                            id: tc.id.clone(),
-                        });
-                    }
-                    tool_call_count += tool_calls.len();
-
-                    // 添加助手消息和工具结果到历史
-                    messages.push(assistant_message.clone());
-                    for result in &tool_results {
-                        messages.push(Message {
-                            role: MessageRole::Tool,
-                            content: result.content.clone(),
-                            // We use `name` to carry tool_call_id for provider adapters.
-                            name: Some(result.tool_call_id.clone()),
-                            tool_calls: None,
-                        });
-                        session_state.add_message(AgentMessage {
-                            role: MessageRole::Tool,
-                            content: result.content.clone(),
+                } else {
+                    self.emit_event(
+                        &mut session_state,
+                        &mut execution_events,
+                        AgentExecutionEvent {
+                            kind: AgentExecutionEventKind::Reasoning,
                             timestamp: chrono::Utc::now(),
-                            tool_calls: None,
-                            tool_results: Some(vec![result.content.clone()]),
-                            tool_call_id: Some(result.tool_call_id.clone()),
-                        });
-                    }
-
-                    // 继续循环
-                    continue;
+                            message: summarize_tool_calls(tool_calls),
+                            round,
+                            tool_name: None,
+                            tool_call_id: None,
+                            duration_ms: None,
+                            is_error: false,
+                            workflow_stage: None,
+                            workflow_detail: None,
+                            workflow_stage_index: None,
+                            workflow_stage_total: None,
+                        },
+                    )
+                    .await;
                 }
+                let session_tool_calls: Vec<AgentToolCall> = tool_calls
+                    .iter()
+                    .map(|tc| AgentToolCall {
+                        name: tc.function.name.clone(),
+                        arguments: tc.function.arguments.clone(),
+                        id: tc.id.clone(),
+                    })
+                    .collect();
+                session_state.add_message(AgentMessage {
+                    role: MessageRole::Assistant,
+                    content: assistant_message.content.clone(),
+                    timestamp: chrono::Utc::now(),
+                    tool_calls: Some(session_tool_calls.clone()),
+                    tool_results: None,
+                    tool_call_id: None,
+                });
+                for tc in &session_tool_calls {
+                    session_state.record_tool_call(&tc.name);
+                }
+
+                // 执行工具调用
+                let tool_results = self
+                    .execute_tool_calls(
+                        tool_calls,
+                        round,
+                        &mut execution_events,
+                        &mut session_state,
+                    )
+                    .await?;
+
+                // 记录工具调用
+                for tc in tool_calls {
+                    all_tool_calls.push(AgentToolCall {
+                        name: tc.function.name.clone(),
+                        arguments: tc.function.arguments.clone(),
+                        id: tc.id.clone(),
+                    });
+                }
+                tool_call_count += tool_calls.len();
+
+                // 添加助手消息和工具结果到历史
+                messages.push(assistant_message.clone());
+                for result in &tool_results {
+                    messages.push(Message {
+                        role: MessageRole::Tool,
+                        content: result.content.clone(),
+                        // We use `name` to carry tool_call_id for provider adapters.
+                        name: Some(result.tool_call_id.clone()),
+                        tool_calls: None,
+                    });
+                    session_state.add_message(AgentMessage {
+                        role: MessageRole::Tool,
+                        content: result.content.clone(),
+                        timestamp: chrono::Utc::now(),
+                        tool_calls: None,
+                        tool_results: Some(vec![result.content.clone()]),
+                        tool_call_id: Some(result.tool_call_id.clone()),
+                    });
+                }
+
+                // 继续循环
+                continue;
+            }
 
             // 没有工具调用，获取最终内容
             let final_content = assistant_message.content.clone();
@@ -1171,15 +1173,13 @@ impl AgentOrchestrator {
 
             // Tool 消息：优先使用已有 tool_call_id，否则从缓存的 ID 队列中取
             let name = if msg.role == MessageRole::Tool {
-                msg.tool_call_id
-                    .clone()
-                    .or_else(|| {
-                        if !pending_tc_ids.is_empty() {
-                            Some(pending_tc_ids.remove(0))
-                        } else {
-                            None
-                        }
-                    })
+                msg.tool_call_id.clone().or_else(|| {
+                    if !pending_tc_ids.is_empty() {
+                        Some(pending_tc_ids.remove(0))
+                    } else {
+                        None
+                    }
+                })
             } else {
                 msg.tool_call_id.clone()
             };
@@ -1214,8 +1214,7 @@ impl AgentOrchestrator {
                 .collect();
 
             // 如果存在不匹配的 ID，清理掉孤立的 tool_use 和 tool_result
-            let orphan_uses: HashSet<&String> =
-                tool_use_ids.difference(&tool_result_ids).collect();
+            let orphan_uses: HashSet<&String> = tool_use_ids.difference(&tool_result_ids).collect();
             let orphan_results: HashSet<&String> =
                 tool_result_ids.difference(&tool_use_ids).collect();
 
@@ -2994,12 +2993,8 @@ mod tests {
         let provider = Arc::new(ScriptedProvider::new(vec![]));
         let tool_executor = Arc::new(MockToolExecutor::new());
         let verifier = Arc::new(TaskVerifier::new(Arc::new(MockStorage)));
-        let orchestrator = AgentOrchestrator::new(
-            provider,
-            tool_executor,
-            verifier,
-            AgentConfig::default(),
-        );
+        let orchestrator =
+            AgentOrchestrator::new(provider, tool_executor, verifier, AgentConfig::default());
 
         // 模拟旧 session: Assistant 有 tool_calls，Tool 消息缺少 tool_call_id
         let mut session = AgentSession::new("legacy-session-1".to_string());
@@ -3067,9 +3062,7 @@ mod tests {
         // 找到 Assistant 消息，验证 tool_calls 被正确恢复
         let assistant_msg = messages
             .iter()
-            .find(|m| {
-                m.role == MessageRole::Assistant && m.tool_calls.is_some()
-            })
+            .find(|m| m.role == MessageRole::Assistant && m.tool_calls.is_some())
             .expect("should have an Assistant message with tool_calls");
         let tc = &assistant_msg.tool_calls.as_ref().unwrap()[0];
         assert_eq!(tc.id, "call_abc123");
@@ -3082,12 +3075,8 @@ mod tests {
         let provider = Arc::new(ScriptedProvider::new(vec![]));
         let tool_executor = Arc::new(MockToolExecutor::new());
         let verifier = Arc::new(TaskVerifier::new(Arc::new(MockStorage)));
-        let orchestrator = AgentOrchestrator::new(
-            provider,
-            tool_executor,
-            verifier,
-            AgentConfig::default(),
-        );
+        let orchestrator =
+            AgentOrchestrator::new(provider, tool_executor, verifier, AgentConfig::default());
 
         let mut session = AgentSession::new("orphan-session-1".to_string());
         session.project_id = "test-project".to_string();

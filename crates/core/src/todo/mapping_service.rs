@@ -264,13 +264,13 @@ impl TodoMappingService {
 
         for (i, word) in words.iter().enumerate() {
             // Skip action words and indicators
-            if ["add", "fix", "update", "remove", "implement"].contains(word)
-                && i + 1 < words.len() {
-                    let next_word = words[i + 1];
-                    if !subject_indicators.contains(&next_word) && next_word.len() > 2 {
-                        return Some(next_word.to_string());
-                    }
+            if ["add", "fix", "update", "remove", "implement"].contains(word) && i + 1 < words.len()
+            {
+                let next_word = words[i + 1];
+                if !subject_indicators.contains(&next_word) && next_word.len() > 2 {
+                    return Some(next_word.to_string());
                 }
+            }
         }
 
         None
@@ -445,7 +445,8 @@ impl TodoMappingService {
 
                     tag_overlap || file_overlap
                 })
-                .take(self.config.max_related).cloned()
+                .take(self.config.max_related)
+                .cloned()
                 .collect()
         } else {
             vec![]

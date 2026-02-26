@@ -12,8 +12,7 @@ use super::injectors::working_memory::WorkingMemoryInjector;
 use serde_json::Value as JsonValue;
 
 /// 增强的提示词上下文 - 包含知识注入
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct EnhancedPromptContext {
     /// 可用工具列表 (JSON Schema)
     pub available_tools: Vec<JsonValue>,
@@ -36,7 +35,6 @@ pub struct EnhancedPromptContext {
     /// 当前任务模式匹配
     pub context_patterns: Vec<String>,
 }
-
 
 /// 提示词上下文
 #[derive(Debug, Clone)]
@@ -116,10 +114,11 @@ impl PromptBuilder {
 
         // 2. 注入 Working Memory
         if let Some(ref wm) = context.working_memory
-            && wm.has_context() {
-                let wm_injection = wm.inject();
-                prompt = format!("{}\n\n{}", wm_injection, prompt);
-            }
+            && wm.has_context()
+        {
+            let wm_injection = wm.inject();
+            prompt = format!("{}\n\n{}", wm_injection, prompt);
+        }
 
         // 3. 注入 Invariants (Gold Memory)
         if let Some(ref inv) = context.invariants {
@@ -129,10 +128,11 @@ impl PromptBuilder {
 
         // 4. 注入 Task Lineage
         if let Some(ref lineage) = context.lineage
-            && let Some(ref task_id) = context.active_task_id {
-                let lineage_injection = lineage.inject(&task_id.to_string());
-                prompt = format!("{}\n\n{}", lineage_injection, prompt);
-            }
+            && let Some(ref task_id) = context.active_task_id
+        {
+            let lineage_injection = lineage.inject(&task_id.to_string());
+            prompt = format!("{}\n\n{}", lineage_injection, prompt);
+        }
 
         prompt
     }
@@ -143,9 +143,10 @@ impl PromptBuilder {
 
         // Working Memory
         if let Some(ref wm) = context.working_memory
-            && wm.has_context() {
-                parts.push(wm.inject());
-            }
+            && wm.has_context()
+        {
+            parts.push(wm.inject());
+        }
 
         // Invariants
         if let Some(ref inv) = context.invariants {
@@ -154,9 +155,10 @@ impl PromptBuilder {
 
         // Lineage
         if let Some(ref lineage) = context.lineage
-            && let Some(ref task_id) = context.active_task_id {
-                parts.push(lineage.inject(&task_id.to_string()));
-            }
+            && let Some(ref task_id) = context.active_task_id
+        {
+            parts.push(lineage.inject(&task_id.to_string()));
+        }
 
         parts.join("\n\n")
     }

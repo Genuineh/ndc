@@ -449,13 +449,14 @@ impl NdcConfigLoader {
 
         // Runtime 配置
         if let Ok(v) = env::var("NDC_MAX_CONCURRENT_TASKS")
-            && let Ok(n) = v.parse() {
-                let runtime = self
-                    .config
-                    .runtime
-                    .get_or_insert_with(YamlRuntimeConfig::default);
-                runtime.max_concurrent_tasks = n;
-            }
+            && let Ok(n) = v.parse()
+        {
+            let runtime = self
+                .config
+                .runtime
+                .get_or_insert_with(YamlRuntimeConfig::default);
+            runtime.max_concurrent_tasks = n;
+        }
         if let Ok(v) = env::var("NDC_DISCOVERY_FAILURE_MODE") {
             let runtime = self
                 .config
@@ -536,7 +537,6 @@ pub enum PermissionRule {
     Ask,
     Deny,
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentProfile {

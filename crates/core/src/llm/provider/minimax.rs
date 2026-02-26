@@ -156,16 +156,18 @@ impl MiniMaxProvider {
             serde_json::Value::Object(map) => {
                 for key in ["text", "reply", "answer", "output_text"] {
                     if let Some(v) = map.get(key)
-                        && let Some(text) = Self::extract_text_from_value(v) {
-                            return Some(text);
-                        }
+                        && let Some(text) = Self::extract_text_from_value(v)
+                    {
+                        return Some(text);
+                    }
                 }
 
                 for key in ["content", "message", "messages", "delta"] {
                     if let Some(v) = map.get(key)
-                        && let Some(text) = Self::extract_text_from_value(v) {
-                            return Some(text);
-                        }
+                        && let Some(text) = Self::extract_text_from_value(v)
+                    {
+                        return Some(text);
+                    }
                 }
 
                 None
@@ -220,10 +222,10 @@ impl MiniMaxProvider {
 
         // Parse usage if available
         let usage = response_value.get("usage").map(|u| Usage {
-                prompt_tokens: u["prompt_tokens"].as_u64().unwrap_or(0) as u32,
-                completion_tokens: u["completion_tokens"].as_u64().unwrap_or(0) as u32,
-                total_tokens: u["total_tokens"].as_u64().unwrap_or(0) as u32,
-            });
+            prompt_tokens: u["prompt_tokens"].as_u64().unwrap_or(0) as u32,
+            completion_tokens: u["completion_tokens"].as_u64().unwrap_or(0) as u32,
+            total_tokens: u["total_tokens"].as_u64().unwrap_or(0) as u32,
+        });
 
         let finish_reason = first_choice
             .and_then(|choice| choice.get("finish_reason"))
@@ -290,41 +292,39 @@ impl LlmProvider for MiniMaxProvider {
 
         if let Ok(resp) = response
             && resp.status().is_success()
-                && let Ok(data) = resp.json::<serde_json::Value>().await
-                    && let Some(models_array) = data.get("data").and_then(|v| v.as_array()) {
-                        let now = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap()
-                            .as_secs();
+            && let Ok(data) = resp.json::<serde_json::Value>().await
+            && let Some(models_array) = data.get("data").and_then(|v| v.as_array())
+        {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
 
-                        let models: Vec<ModelInfo> = models_array
-                            .iter()
-                            .filter_map(|m| {
-                                Some(ModelInfo {
-                                    id: m.get("id")?.as_str()?.to_string(),
-                                    object: m
-                                        .get("object")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("model")
-                                        .to_string(),
-                                    created: m
-                                        .get("created")
-                                        .and_then(|v| v.as_u64())
-                                        .unwrap_or(now),
-                                    owned_by: m
-                                        .get("owned_by")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("minimax")
-                                        .to_string(),
-                                    permission: vec![],
-                                })
-                            })
-                            .collect();
+            let models: Vec<ModelInfo> = models_array
+                .iter()
+                .filter_map(|m| {
+                    Some(ModelInfo {
+                        id: m.get("id")?.as_str()?.to_string(),
+                        object: m
+                            .get("object")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("model")
+                            .to_string(),
+                        created: m.get("created").and_then(|v| v.as_u64()).unwrap_or(now),
+                        owned_by: m
+                            .get("owned_by")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("minimax")
+                            .to_string(),
+                        permission: vec![],
+                    })
+                })
+                .collect();
 
-                        if !models.is_empty() {
-                            return Ok(models);
-                        }
-                    }
+            if !models.is_empty() {
+                return Ok(models);
+            }
+        }
 
         // Fallback to static model list
         let now = std::time::SystemTime::now()

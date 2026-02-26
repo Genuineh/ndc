@@ -7,8 +7,8 @@ use ndc_core::{
     MemoryEntry, MemoryMetadata, MemoryStability, SystemFactInput, TaskState,
 };
 use ndc_runtime::{
-    create_default_tool_manager_with_storage, create_memory_storage, ExecutionContext, Executor,
-    MemoryStorage, QualityGateRunner, Tool, ToolManager, WorkflowEngine,
+    ExecutionContext, Executor, MemoryStorage, QualityGateRunner, Tool, ToolManager,
+    WorkflowEngine, create_default_tool_manager_with_storage, create_memory_storage,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -330,7 +330,9 @@ mod e2e_tests {
     #[tokio::test]
     async fn test_discovery_failure_block_mode() {
         let _guard = DISCOVERY_ENV_LOCK.lock().unwrap();
-        unsafe { std::env::set_var("NDC_DISCOVERY_FAILURE_MODE", "block"); }
+        unsafe {
+            std::env::set_var("NDC_DISCOVERY_FAILURE_MODE", "block");
+        }
 
         let mut context = ExecutionContext::default();
         let temp_dir = TempDir::new().unwrap();
@@ -376,14 +378,18 @@ mod e2e_tests {
             ndc_runtime::ExecutionError::DiscoveryFailed(_)
         ));
 
-        unsafe { std::env::remove_var("NDC_DISCOVERY_FAILURE_MODE"); }
+        unsafe {
+            std::env::remove_var("NDC_DISCOVERY_FAILURE_MODE");
+        }
     }
 
     /// Discovery signals should be persisted into GoldMemory even when degrading on failure.
     #[tokio::test]
     async fn test_discovery_signal_persisted_to_gold_memory() {
         let _guard = DISCOVERY_ENV_LOCK.lock().unwrap();
-        unsafe { std::env::set_var("NDC_DISCOVERY_FAILURE_MODE", "degrade"); }
+        unsafe {
+            std::env::set_var("NDC_DISCOVERY_FAILURE_MODE", "degrade");
+        }
 
         let mut context = ExecutionContext::default();
         let temp_dir = TempDir::new().unwrap();
@@ -442,7 +448,9 @@ mod e2e_tests {
             _ => panic!("expected general memory payload"),
         }
 
-        unsafe { std::env::remove_var("NDC_DISCOVERY_FAILURE_MODE"); }
+        unsafe {
+            std::env::remove_var("NDC_DISCOVERY_FAILURE_MODE");
+        }
     }
 
     /// P0.13 smoke: query persisted GoldMemory facts via ndc_memory_query
@@ -500,9 +508,11 @@ mod e2e_tests {
             .unwrap();
         assert!(query.success);
         assert!(query.output.contains("GoldMemory Query Results"));
-        assert!(query
-            .output
-            .contains("Quality gate must pass before completion"));
+        assert!(
+            query
+                .output
+                .contains("Quality gate must pass before completion")
+        );
     }
 
     /// Test task ID uniqueness

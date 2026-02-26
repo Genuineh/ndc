@@ -36,19 +36,19 @@ mod daemon_tests;
 mod e2e_tests;
 
 pub use agent_mode::{
-    handle_agent_command, show_agent_status, AgentModeConfig, AgentModeManager, AgentModeState,
-    AgentModeStatus, PermissionRule,
+    AgentModeConfig, AgentModeManager, AgentModeState, AgentModeStatus, PermissionRule,
+    handle_agent_command, show_agent_status,
 };
-pub use cli::{run, CliConfig};
+pub use cli::{CliConfig, run};
 pub use daemon::run_daemon;
-pub use repl::{run_repl, ReplConfig, ReplState};
+pub use repl::{ReplConfig, ReplState, run_repl};
 
 // Interactive components
 pub use interactive::{
-    display_agent_status, display_tool_call, prompt_recovery, AgentModeSwitcher, AgentSwitchResult,
-    MultiProgress, PermissionConfirm, PermissionResult, ProgressIndicator, RiskLevel,
-    StreamingDisplay,
+    AgentModeSwitcher, AgentSwitchResult, MultiProgress, PermissionConfirm, PermissionResult,
+    ProgressIndicator, RiskLevel, StreamingDisplay, display_agent_status, display_tool_call,
+    prompt_recovery,
 };
 
 #[cfg(feature = "grpc")]
-pub use grpc_client::{create_client, ClientConfig, ClientError, NdcClient};
+pub use grpc_client::{ClientConfig, ClientError, NdcClient, create_client};

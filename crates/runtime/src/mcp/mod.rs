@@ -268,11 +268,12 @@ impl McpManager {
 
         // Handle OAuth if needed
         if let Some(ref oauth) = config.oauth
-            && self.oauth_tokens.get(name).is_none() {
-                // Get new token
-                let token = self.obtain_oauth_token(name, oauth).await?;
-                self.oauth_tokens.insert(name.to_string(), token.clone());
-            }
+            && self.oauth_tokens.get(name).is_none()
+        {
+            // Get new token
+            let token = self.obtain_oauth_token(name, oauth).await?;
+            self.oauth_tokens.insert(name.to_string(), token.clone());
+        }
 
         // Create transport based on server type
         let transport: Option<Box<dyn McpTransport>> = match config.server_type {

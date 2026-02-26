@@ -12,8 +12,7 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 
 /// Working Memory context for agent injection
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WorkingMemoryContext {
     /// Abstract layer summary (historical failures/root cause)
     pub abstract_summary: Option<String>,
@@ -39,7 +38,6 @@ pub struct WorkingMemoryContext {
     /// Custom context data
     pub custom: HashMap<String, Value>,
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskContext {
@@ -269,18 +267,19 @@ impl WorkingMemoryInjector {
 
         // Task context
         if self.config.include_task_context
-            && let Some(ref task) = self.memory.current_task {
-                lines.push("\nCurrent Task:".to_string());
-                lines.push(format!("  ID: {}", task.task_id));
-                lines.push(format!("  Title: {}", task.task_title));
-                lines.push(format!("  Current Step: {}", task.current_step));
-                if !task.completed_steps.is_empty() {
-                    lines.push("\nCompleted Steps:".to_string());
-                    for step in &task.completed_steps {
-                        lines.push(format!("  - {}", step));
-                    }
+            && let Some(ref task) = self.memory.current_task
+        {
+            lines.push("\nCurrent Task:".to_string());
+            lines.push(format!("  ID: {}", task.task_id));
+            lines.push(format!("  Title: {}", task.task_title));
+            lines.push(format!("  Current Step: {}", task.current_step));
+            if !task.completed_steps.is_empty() {
+                lines.push("\nCompleted Steps:".to_string());
+                for step in &task.completed_steps {
+                    lines.push(format!("  - {}", step));
                 }
             }
+        }
 
         // Custom data
         if self.config.include_custom && !self.memory.custom.is_empty() {

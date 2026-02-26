@@ -10,7 +10,7 @@
 //! - Timeout limits
 //! - Environment variable filtering
 
-use super::{enforce_shell_command, Tool, ToolContext, ToolError, ToolResult};
+use super::{Tool, ToolContext, ToolError, ToolResult, enforce_shell_command};
 use std::collections::HashSet;
 use tokio::process::Command;
 use tracing::debug;

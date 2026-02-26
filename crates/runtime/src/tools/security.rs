@@ -9,8 +9,8 @@ use std::collections::HashSet;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 
-use super::bash_parsing::{BashDangerLevel, BashParser};
 use super::ToolError;
+use super::bash_parsing::{BashDangerLevel, BashParser};
 use std::cell::RefCell;
 
 pub const PERMISSION_EXTERNAL_DIRECTORY: &str = "external_directory";
@@ -151,12 +151,13 @@ fn canonicalize_lossy(path: &Path) -> PathBuf {
     }
 
     if let Some(parent) = path.parent()
-        && let Ok(parent_canonical) = std::fs::canonicalize(parent) {
-            if let Some(name) = path.file_name() {
-                return parent_canonical.join(name);
-            }
-            return parent_canonical;
+        && let Ok(parent_canonical) = std::fs::canonicalize(parent)
+    {
+        if let Some(name) = path.file_name() {
+            return parent_canonical.join(name);
         }
+        return parent_canonical;
+    }
 
     path.to_path_buf()
 }
@@ -329,50 +330,80 @@ mod tests {
     #[test]
     fn test_enforce_path_boundary_denies_external_when_policy_deny() {
         let _guard = test_env_lock();
-        unsafe { std::env::set_var("NDC_SECURITY_PERMISSION_ENFORCE_GATEWAY", "1"); }
-        unsafe { std::env::set_var("NDC_SECURITY_EXTERNAL_DIRECTORY_ACTION", "deny"); }
+        unsafe {
+            std::env::set_var("NDC_SECURITY_PERMISSION_ENFORCE_GATEWAY", "1");
+        }
+        unsafe {
+            std::env::set_var("NDC_SECURITY_EXTERNAL_DIRECTORY_ACTION", "deny");
+        }
         let root = std::env::temp_dir().join("ndc-security-root");
         let _ = std::fs::create_dir_all(&root);
-        unsafe { std::env::set_var("NDC_PROJECT_ROOT", root.to_string_lossy().to_string()); }
+        unsafe {
+            std::env::set_var("NDC_PROJECT_ROOT", root.to_string_lossy().to_string());
+        }
         let outside = std::env::temp_dir()
             .join("ndc-security-outside")
             .join("x.txt");
         let result = enforce_path_boundary(outside.as_path(), None, "write");
         assert!(matches!(result, Err(ToolError::PermissionDenied(_))));
-        unsafe { std::env::remove_var("NDC_PROJECT_ROOT"); }
-        unsafe { std::env::remove_var("NDC_SECURITY_EXTERNAL_DIRECTORY_ACTION"); }
-        unsafe { std::env::remove_var("NDC_SECURITY_PERMISSION_ENFORCE_GATEWAY"); }
+        unsafe {
+            std::env::remove_var("NDC_PROJECT_ROOT");
+        }
+        unsafe {
+            std::env::remove_var("NDC_SECURITY_EXTERNAL_DIRECTORY_ACTION");
+        }
+        unsafe {
+            std::env::remove_var("NDC_SECURITY_PERMISSION_ENFORCE_GATEWAY");
+        }
     }
 
     #[test]
     fn test_enforce_shell_command_denies_critical() {
         let _guard = test_env_lock();
-        unsafe { std::env::set_var("NDC_SECURITY_PERMISSION_ENFORCE_GATEWAY", "1"); }
+        unsafe {
+            std::env::set_var("NDC_SECURITY_PERMISSION_ENFORCE_GATEWAY", "1");
+        }
         let args = vec!["-rf".to_string(), "/".to_string()];
         let result = enforce_shell_command("rm", &args, None);
         assert!(matches!(result, Err(ToolError::PermissionDenied(_))));
-        unsafe { std::env::remove_var("NDC_SECURITY_PERMISSION_ENFORCE_GATEWAY"); }
+        unsafe {
+            std::env::remove_var("NDC_SECURITY_PERMISSION_ENFORCE_GATEWAY");
+        }
     }
 
     #[test]
     fn test_enforce_git_operation_ask_by_default() {
         let _guard = test_env_lock();
-        unsafe { std::env::set_var("NDC_SECURITY_PERMISSION_ENFORCE_GATEWAY", "1"); }
-        unsafe { std::env::set_var("NDC_SECURITY_GIT_COMMIT_ACTION", "ask"); }
+        unsafe {
+            std::env::set_var("NDC_SECURITY_PERMISSION_ENFORCE_GATEWAY", "1");
+        }
+        unsafe {
+            std::env::set_var("NDC_SECURITY_GIT_COMMIT_ACTION", "ask");
+        }
         let result = enforce_git_operation("commit");
         assert!(matches!(result, Err(ToolError::PermissionDenied(_))));
-        unsafe { std::env::remove_var("NDC_SECURITY_GIT_COMMIT_ACTION"); }
-        unsafe { std::env::remove_var("NDC_SECURITY_PERMISSION_ENFORCE_GATEWAY"); }
+        unsafe {
+            std::env::remove_var("NDC_SECURITY_GIT_COMMIT_ACTION");
+        }
+        unsafe {
+            std::env::remove_var("NDC_SECURITY_PERMISSION_ENFORCE_GATEWAY");
+        }
     }
 
     #[tokio::test]
     async fn test_with_security_overrides_allows_external_directory_once() {
         let _guard = test_env_lock();
-        unsafe { std::env::set_var("NDC_SECURITY_PERMISSION_ENFORCE_GATEWAY", "1"); }
-        unsafe { std::env::set_var("NDC_SECURITY_EXTERNAL_DIRECTORY_ACTION", "ask"); }
+        unsafe {
+            std::env::set_var("NDC_SECURITY_PERMISSION_ENFORCE_GATEWAY", "1");
+        }
+        unsafe {
+            std::env::set_var("NDC_SECURITY_EXTERNAL_DIRECTORY_ACTION", "ask");
+        }
         let root = std::env::temp_dir().join("ndc-security-root-once");
         let _ = std::fs::create_dir_all(&root);
-        unsafe { std::env::set_var("NDC_PROJECT_ROOT", root.to_string_lossy().to_string()); }
+        unsafe {
+            std::env::set_var("NDC_PROJECT_ROOT", root.to_string_lossy().to_string());
+        }
         let outside = std::env::temp_dir()
             .join("ndc-security-outside-once")
             .join("x.txt");
@@ -387,9 +418,15 @@ mod tests {
         .await;
         assert!(allowed.is_ok());
 
-        unsafe { std::env::remove_var("NDC_PROJECT_ROOT"); }
-        unsafe { std::env::remove_var("NDC_SECURITY_EXTERNAL_DIRECTORY_ACTION"); }
-        unsafe { std::env::remove_var("NDC_SECURITY_PERMISSION_ENFORCE_GATEWAY"); }
+        unsafe {
+            std::env::remove_var("NDC_PROJECT_ROOT");
+        }
+        unsafe {
+            std::env::remove_var("NDC_SECURITY_EXTERNAL_DIRECTORY_ACTION");
+        }
+        unsafe {
+            std::env::remove_var("NDC_SECURITY_PERMISSION_ENFORCE_GATEWAY");
+        }
     }
 
     #[test]
@@ -402,16 +439,24 @@ mod tests {
     #[test]
     fn test_gateway_enforced_by_default_without_env_override() {
         let _guard = test_env_lock();
-        unsafe { std::env::remove_var("NDC_SECURITY_PERMISSION_ENFORCE_GATEWAY"); }
+        unsafe {
+            std::env::remove_var("NDC_SECURITY_PERMISSION_ENFORCE_GATEWAY");
+        }
         assert!(should_enforce_gateway());
     }
 
     #[test]
     fn test_security_defaults_relaxed_in_tests_without_env_override() {
         let _guard = test_env_lock();
-        unsafe { std::env::remove_var("NDC_SECURITY_MEDIUM_RISK_ACTION"); }
-        unsafe { std::env::remove_var("NDC_SECURITY_EXTERNAL_DIRECTORY_ACTION"); }
-        unsafe { std::env::remove_var("NDC_SECURITY_GIT_COMMIT_ACTION"); }
+        unsafe {
+            std::env::remove_var("NDC_SECURITY_MEDIUM_RISK_ACTION");
+        }
+        unsafe {
+            std::env::remove_var("NDC_SECURITY_EXTERNAL_DIRECTORY_ACTION");
+        }
+        unsafe {
+            std::env::remove_var("NDC_SECURITY_GIT_COMMIT_ACTION");
+        }
         // NOTE: test builds intentionally relax policy defaults to allow
         // unless env vars explicitly request stricter behavior.
         assert_eq!(
@@ -444,6 +489,8 @@ mod tests {
         assert!(parsed.contains(PERMISSION_EXTERNAL_DIRECTORY));
         assert!(parsed.contains(PERMISSION_GIT_COMMIT));
         assert!(parsed.contains(PERMISSION_SHELL_HIGH_RISK));
-        unsafe { std::env::remove_var("NDC_SECURITY_OVERRIDE_PERMISSIONS"); }
+        unsafe {
+            std::env::remove_var("NDC_SECURITY_OVERRIDE_PERMISSIONS");
+        }
     }
 }

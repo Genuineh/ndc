@@ -7,7 +7,7 @@ use ndc_core::{AgentRole, Task, TaskPriority, TaskState};
 
 use super::super::schema::ToolSchemaBuilder;
 use super::super::{Tool, ToolError, ToolMetadata, ToolResult};
-use ndc_storage::{create_memory_storage, SharedStorage};
+use ndc_storage::{SharedStorage, create_memory_storage};
 
 /// Task List Tool - 列出任务
 #[derive(Clone)]
@@ -69,17 +69,20 @@ fn matches_filters(
     search_filter: Option<&str>,
 ) -> bool {
     if let Some(state) = state_filter
-        && &task.state != state {
-            return false;
-        }
+        && &task.state != state
+    {
+        return false;
+    }
     if let Some(priority) = priority_filter
-        && &task.metadata.priority != priority {
-            return false;
-        }
+        && &task.metadata.priority != priority
+    {
+        return false;
+    }
     if let Some(created_by) = created_by_filter
-        && &task.metadata.created_by != created_by {
-            return false;
-        }
+        && &task.metadata.created_by != created_by
+    {
+        return false;
+    }
     if let Some(query) = search_filter {
         let query = query.to_ascii_lowercase();
         let hay = format!("{} {}", task.title, task.description).to_ascii_lowercase();

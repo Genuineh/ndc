@@ -234,11 +234,12 @@ impl SagaPlan {
         // Roll back in reverse order
         for step in self.steps[..=start_idx].iter().rev() {
             if step.status == StepStatus::Completed
-                && let Some(ref undo) = step.undo_action {
-                    executor(undo.clone())
-                        .await
-                        .map_err(RollbackError::UndoFailed)?;
-                }
+                && let Some(ref undo) = step.undo_action
+            {
+                executor(undo.clone())
+                    .await
+                    .map_err(RollbackError::UndoFailed)?;
+            }
         }
 
         Ok(())

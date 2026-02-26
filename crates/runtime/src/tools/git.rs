@@ -5,7 +5,7 @@
 //! - Branch operations
 //! - Commit operations
 
-use super::{enforce_git_operation, Tool, ToolContext, ToolError, ToolResult};
+use super::{Tool, ToolContext, ToolError, ToolResult, enforce_git_operation};
 use tokio::process::Command;
 use tracing::debug;
 

@@ -412,22 +412,23 @@ impl KnowledgeUnderstandingService {
         let func_patterns = ["fn ", "function ", "def ", "method "];
         for pattern in &func_patterns {
             if text_lower.contains(pattern)
-                && let Some(pos) = text_lower.find(pattern) {
-                    // Use original text for case-preserving extraction
-                    let after = &text[pos + pattern.len()..];
-                    let func_name: String = after
-                        .chars()
-                        .take_while(|c| *c == '_' || c.is_alphanumeric())
-                        .collect();
-                    if !func_name.is_empty() {
-                        entities.push(Entity {
-                            name: func_name.to_string(),
-                            entity_type: EntityType::Function,
-                            location: None,
-                            confidence: 0.8,
-                        });
-                    }
+                && let Some(pos) = text_lower.find(pattern)
+            {
+                // Use original text for case-preserving extraction
+                let after = &text[pos + pattern.len()..];
+                let func_name: String = after
+                    .chars()
+                    .take_while(|c| *c == '_' || c.is_alphanumeric())
+                    .collect();
+                if !func_name.is_empty() {
+                    entities.push(Entity {
+                        name: func_name.to_string(),
+                        entity_type: EntityType::Function,
+                        location: None,
+                        confidence: 0.8,
+                    });
                 }
+            }
         }
 
         // Extract database mentions
@@ -464,14 +465,15 @@ impl KnowledgeUnderstandingService {
         for entity in entities {
             // Check for calls relationship
             if (text_lower.contains("calls") || text_lower.contains("uses"))
-                && entity.entity_type == EntityType::Function {
-                    relationships.push(Relationship {
-                        source: entity.name.clone(),
-                        target: "unknown".to_string(),
-                        relation_type: RelationType::Calls,
-                        confidence: 0.6,
-                    });
-                }
+                && entity.entity_type == EntityType::Function
+            {
+                relationships.push(Relationship {
+                    source: entity.name.clone(),
+                    target: "unknown".to_string(),
+                    relation_type: RelationType::Calls,
+                    confidence: 0.6,
+                });
+            }
 
             // Check for depends on relationship
             if text_lower.contains("depends") || text_lower.contains("requires") {

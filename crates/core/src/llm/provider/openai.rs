@@ -84,9 +84,10 @@ impl OpenAiProvider {
                 }
 
                 if let Some(calls) = &m.tool_calls
-                    && !calls.is_empty() {
-                        msg["tool_calls"] = serde_json::json!(calls);
-                    }
+                    && !calls.is_empty()
+                {
+                    msg["tool_calls"] = serde_json::json!(calls);
+                }
 
                 msg
             })

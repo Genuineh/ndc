@@ -544,12 +544,13 @@ impl SchemaValidator {
                 if let Some(value) = params_obj.get(name) {
                     // 验证类型
                     if let Some(type_) = &prop.type_
-                        && !Self::check_type(value, type_) {
-                            result.add_error(format!(
-                                "Field '{}' has wrong type, expected {:?}",
-                                name, type_
-                            ));
-                        }
+                        && !Self::check_type(value, type_)
+                    {
+                        result.add_error(format!(
+                            "Field '{}' has wrong type, expected {:?}",
+                            name, type_
+                        ));
+                    }
 
                     // 验证枚举
                     if let Some(enum_values) = &prop.enum_ {
@@ -569,45 +570,46 @@ impl SchemaValidator {
                     // 验证范围
                     if let Some(min) = prop.minimum
                         && let Some(num) = value.as_f64()
-                            && num < min {
-                                result.add_error(format!("Field '{}' must be >= {}", name, min));
-                            }
+                        && num < min
+                    {
+                        result.add_error(format!("Field '{}' must be >= {}", name, min));
+                    }
 
                     if let Some(max) = prop.maximum
                         && let Some(num) = value.as_f64()
-                            && num > max {
-                                result.add_error(format!("Field '{}' must be <= {}", name, max));
-                            }
+                        && num > max
+                    {
+                        result.add_error(format!("Field '{}' must be <= {}", name, max));
+                    }
 
                     // 验证字符串长度
                     if let Some(min_len) = prop.min_length
                         && let Some(s) = value.as_str()
-                            && s.len() < min_len {
-                                result.add_error(format!(
-                                    "Field '{}' must have length >= {}",
-                                    name, min_len
-                                ));
-                            }
+                        && s.len() < min_len
+                    {
+                        result
+                            .add_error(format!("Field '{}' must have length >= {}", name, min_len));
+                    }
 
                     if let Some(max_len) = prop.max_length
                         && let Some(s) = value.as_str()
-                            && s.len() > max_len {
-                                result.add_error(format!(
-                                    "Field '{}' must have length <= {}",
-                                    name, max_len
-                                ));
-                            }
+                        && s.len() > max_len
+                    {
+                        result
+                            .add_error(format!("Field '{}' must have length <= {}", name, max_len));
+                    }
 
                     // 验证正则表达式
                     if let Some(pattern) = &prop.pattern
                         && let Some(s) = value.as_str()
-                            && let Ok(regex) = regex::Regex::new(pattern)
-                                && !regex.is_match(s) {
-                                    result.add_error(format!(
-                                        "Field '{}' does not match pattern: {}",
-                                        name, pattern
-                                    ));
-                                }
+                        && let Ok(regex) = regex::Regex::new(pattern)
+                        && !regex.is_match(s)
+                    {
+                        result.add_error(format!(
+                            "Field '{}' does not match pattern: {}",
+                            name, pattern
+                        ));
+                    }
                 }
             }
         }
@@ -704,10 +706,12 @@ mod tests {
         let value = schema.to_value();
         assert_eq!(value["description"], "Test tool");
         assert!(value["required"].is_array());
-        assert!(value["required"]
-            .as_array()
-            .unwrap()
-            .contains(&serde_json::json!("filePath")));
+        assert!(
+            value["required"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("filePath"))
+        );
     }
 
     #[test]

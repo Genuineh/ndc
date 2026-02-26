@@ -2,11 +2,11 @@
 //!
 //! 使用 tonic 框架提供 gRPC 服务
 
+use axum::Router;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::routing::get;
-use axum::Router;
 use futures::stream::Stream;
 use serde::Deserialize;
 use std::convert::Infallible;
@@ -23,7 +23,7 @@ use ndc_runtime::{ExecutionContext, Executor};
 
 use crate::agent_mode::{AgentModeConfig, AgentModeManager};
 use crate::daemon::NdcDaemon;
-use crate::redaction::{sanitize_text, RedactionMode};
+use crate::redaction::{RedactionMode, sanitize_text};
 
 // Re-export generated types from the proto
 pub use super::generated;
@@ -483,16 +483,16 @@ impl generated::agent_service_server::AgentService for AgentGrpcService {
 
         tokio::spawn(async move {
             while let Ok(Some(chat_request)) = stream.message().await {
-                if let Some(generated::chat_request::RequestType::Message(msg)) = chat_request.request_type {
+                if let Some(generated::chat_request::RequestType::Message(msg)) =
+                    chat_request.request_type
+                {
                     let response = generated::ChatResponse {
-                        response_type: Some(
-                            generated::chat_response::ResponseType::ContentChunk(
-                                generated::ContentChunk {
-                                    content: format!("Agent: {}", msg.content),
-                                    is_complete: true,
-                                },
-                            ),
-                        ),
+                        response_type: Some(generated::chat_response::ResponseType::ContentChunk(
+                            generated::ContentChunk {
+                                content: format!("Agent: {}", msg.content),
+                                is_complete: true,
+                            },
+                        )),
                     };
                     let _ = tx.send(Ok(response)).await;
                 }
@@ -512,7 +512,9 @@ impl generated::agent_service_server::AgentService for AgentGrpcService {
 
         tokio::spawn(async move {
             while let Ok(Some(tool_request)) = stream.message().await {
-                if let Some(generated::tool_request::RequestType::Execute(exec)) = tool_request.request_type {
+                if let Some(generated::tool_request::RequestType::Execute(exec)) =
+                    tool_request.request_type
+                {
                     // 简单的工具执行响应
                     let response = generated::ToolResponse {
                         response_type: Some(generated::tool_response::ResponseType::Output(
@@ -1688,9 +1690,11 @@ mod tests {
                 .await
                 .unwrap();
         assert!(ok_head.starts_with("HTTP/1.1 200"));
-        assert!(ok_head
-            .to_ascii_lowercase()
-            .contains("content-type: text/event-stream"));
+        assert!(
+            ok_head
+                .to_ascii_lowercase()
+                .contains("content-type: text/event-stream")
+        );
 
         let inactive_same_project_head = read_http_response_head(
             sse_addr,
@@ -1949,22 +1953,30 @@ mod tests {
             .into_inner();
 
         assert_eq!(response.events.len(), 3);
-        assert!(response
-            .events
-            .iter()
-            .all(|event| event.kind == "PermissionAsked"));
-        assert!(response
-            .events
-            .iter()
-            .any(|event| event.message.contains("permission_asked:")));
-        assert!(response
-            .events
-            .iter()
-            .any(|event| event.message.contains("permission_approved:")));
-        assert!(response
-            .events
-            .iter()
-            .any(|event| event.message.contains("permission_rejected:")));
+        assert!(
+            response
+                .events
+                .iter()
+                .all(|event| event.kind == "PermissionAsked")
+        );
+        assert!(
+            response
+                .events
+                .iter()
+                .any(|event| event.message.contains("permission_asked:"))
+        );
+        assert!(
+            response
+                .events
+                .iter()
+                .any(|event| event.message.contains("permission_approved:"))
+        );
+        assert!(
+            response
+                .events
+                .iter()
+                .any(|event| event.message.contains("permission_rejected:"))
+        );
 
         unsafe {
             std::env::remove_var("NDC_PROJECT_INDEX_FILE");

@@ -390,21 +390,23 @@ impl GoldMemory {
                     return false;
                 }
                 if let Some(priority) = query.priority
-                    && inv.priority != priority {
-                        return false;
-                    }
+                    && inv.priority != priority
+                {
+                    return false;
+                }
                 if let Some(scope_type) = query.scope_type
-                    && inv.scope.scope_type != scope_type {
-                        return false;
-                    }
+                    && inv.scope.scope_type != scope_type
+                {
+                    return false;
+                }
                 if let Some(source_kind) = query.source_kind
-                    && inv.source.kind() != source_kind {
-                        return false;
-                    }
-                if !query.tags.is_empty()
-                    && !query.tags.iter().any(|t| inv.tags.contains(t)) {
-                        return false;
-                    }
+                    && inv.source.kind() != source_kind
+                {
+                    return false;
+                }
+                if !query.tags.is_empty() && !query.tags.iter().any(|t| inv.tags.contains(t)) {
+                    return false;
+                }
                 if inv.validation_count < query.min_validation_count {
                     return false;
                 }

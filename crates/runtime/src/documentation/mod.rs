@@ -180,10 +180,7 @@ impl DocUpdater {
         let content = self.build_narrative_content(actions, results, learnings);
 
         let narrative = Narrative {
-            id: format!(
-                "narrative-{}",
-                &uuid::Uuid::new_v4().to_string()[..8]
-            ),
+            id: format!("narrative-{}", &uuid::Uuid::new_v4().to_string()[..8]),
             task_id: task_id.to_string(),
             title: title.to_string(),
             content,
@@ -301,14 +298,15 @@ impl DocUpdater {
 
                 // Write back if changed
                 if content.len() != original_len
-                    && let Err(e) = std::fs::write(&request.file_path, &content) {
-                        return DocUpdateResult {
-                            success: false,
-                            file_path: request.file_path.clone(),
-                            changes,
-                            warnings: vec![format!("Failed to write file: {}", e)],
-                        };
-                    }
+                    && let Err(e) = std::fs::write(&request.file_path, &content)
+                {
+                    return DocUpdateResult {
+                        success: false,
+                        file_path: request.file_path.clone(),
+                        changes,
+                        warnings: vec![format!("Failed to write file: {}", e)],
+                    };
+                }
 
                 DocUpdateResult {
                     success: !changes.is_empty(),
@@ -338,9 +336,10 @@ impl DocUpdater {
 
         for (pattern, replacement) in &patterns {
             if let Ok(re) = regex::RegexBuilder::new(pattern).multi_line(true).build()
-                && re.is_match(content) {
-                    return Some(re.replace(content, *replacement).to_string());
-                }
+                && re.is_match(content)
+            {
+                return Some(re.replace(content, *replacement).to_string());
+            }
         }
 
         // If no existing docstring, try to add after function signature
@@ -373,18 +372,20 @@ impl DocUpdater {
         if let Ok(re) = regex::RegexBuilder::new(&comment_pattern)
             .multi_line(true)
             .build()
-            && re.is_match(content) {
-                let replacement = format!("// {}\n", new_comment);
-                return Some(re.replace(content, &replacement).to_string());
-            }
+            && re.is_match(content)
+        {
+            let replacement = format!("// {}\n", new_comment);
+            return Some(re.replace(content, &replacement).to_string());
+        }
 
         if let Ok(re) = regex::RegexBuilder::new(hash_pattern)
             .multi_line(true)
             .build()
-            && re.is_match(content) {
-                let replacement = format!("# {}\n", new_comment);
-                return Some(re.replace(content, &replacement).to_string());
-            }
+            && re.is_match(content)
+        {
+            let replacement = format!("# {}\n", new_comment);
+            return Some(re.replace(content, &replacement).to_string());
+        }
 
         None
     }
@@ -397,14 +398,15 @@ impl DocUpdater {
         let entry = format!("\n## [{}] - {}\n\n{}\n", date, date, new_entry);
 
         if header_pattern.is_match(content)
-            && let Some(pos) = content.find("## [Unreleased]") {
-                // Insert before unreleased section
-                let mut new_content = content[..pos].to_string();
-                new_content.push_str(&entry);
-                new_content.push_str("\n## [Unreleased]\n");
-                new_content.push_str(&content[pos + 15..]);
-                return Some(new_content);
-            }
+            && let Some(pos) = content.find("## [Unreleased]")
+        {
+            // Insert before unreleased section
+            let mut new_content = content[..pos].to_string();
+            new_content.push_str(&entry);
+            new_content.push_str("\n## [Unreleased]\n");
+            new_content.push_str(&content[pos + 15..]);
+            return Some(new_content);
+        }
 
         // If no unreleased section, append to top
         let mut new_content = entry;

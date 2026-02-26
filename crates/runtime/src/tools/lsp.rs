@@ -169,59 +169,56 @@ impl LspClient {
             if let Ok(message) = serde_json::from_str::<serde_json::Value>(line) {
                 // Only process messages for our target file
                 if let Some(spans) = message.get("spans")
-                    && let Some(spans_array) = spans.as_array() {
-                        for span in spans_array {
-                            if let Some(file_path) = span.get("file_name").and_then(|v| v.as_str())
-                            {
-                                // Check if this span is for our target file
-                                let span_file = PathBuf::from(file_path);
-                                if span_file == *target_file {
-                                    let message_text = message
-                                        .get("message")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("Unknown error")
-                                        .to_string();
+                    && let Some(spans_array) = spans.as_array()
+                {
+                    for span in spans_array {
+                        if let Some(file_path) = span.get("file_name").and_then(|v| v.as_str()) {
+                            // Check if this span is for our target file
+                            let span_file = PathBuf::from(file_path);
+                            if span_file == *target_file {
+                                let message_text = message
+                                    .get("message")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("Unknown error")
+                                    .to_string();
 
-                                    let line = span
-                                        .get("line_start")
-                                        .and_then(|v| v.as_u64())
-                                        .unwrap_or(1)
+                                let line =
+                                    span.get("line_start").and_then(|v| v.as_u64()).unwrap_or(1)
                                         as usize;
 
-                                    let column = span
-                                        .get("character_start")
+                                let column =
+                                    span.get("character_start")
                                         .and_then(|v| v.as_u64())
-                                        .unwrap_or(1)
-                                        as usize;
+                                        .unwrap_or(1) as usize;
 
-                                    let severity = message
-                                        .get("level")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("error");
+                                let severity = message
+                                    .get("level")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("error");
 
-                                    let diag_severity = match severity {
-                                        "error" => DiagnosticSeverity::Error,
-                                        "warning" => DiagnosticSeverity::Warning,
-                                        _ => DiagnosticSeverity::Information,
-                                    };
+                                let diag_severity = match severity {
+                                    "error" => DiagnosticSeverity::Error,
+                                    "warning" => DiagnosticSeverity::Warning,
+                                    _ => DiagnosticSeverity::Information,
+                                };
 
-                                    let code = message
-                                        .get("code")
-                                        .and_then(|v| v.as_str())
-                                        .map(|s| s.to_string());
+                                let code = message
+                                    .get("code")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string());
 
-                                    diagnostics.push(Diagnostic {
-                                        message: message_text,
-                                        severity: diag_severity,
-                                        file: span_file,
-                                        line,
-                                        column,
-                                        code,
-                                    });
-                                }
+                                diagnostics.push(Diagnostic {
+                                    message: message_text,
+                                    severity: diag_severity,
+                                    file: span_file,
+                                    line,
+                                    column,
+                                    code,
+                                });
                             }
                         }
                     }
+                }
             }
         }
 
@@ -266,52 +263,50 @@ impl LspClient {
         let mut diagnostics = Vec::new();
 
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(output)
-            && let Some(files) = json.as_array() {
-                for file in files {
-                    if let Some(file_path) = file.get("filePath").and_then(|v| v.as_str())
-                        && PathBuf::from(file_path) == *target_file
-                            && let Some(messages) = file.get("messages").and_then(|v| v.as_array())
-                            {
-                                for msg in messages {
-                                    let message = msg
-                                        .get("message")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("Unknown")
-                                        .to_string();
+            && let Some(files) = json.as_array()
+        {
+            for file in files {
+                if let Some(file_path) = file.get("filePath").and_then(|v| v.as_str())
+                    && PathBuf::from(file_path) == *target_file
+                    && let Some(messages) = file.get("messages").and_then(|v| v.as_array())
+                {
+                    for msg in messages {
+                        let message = msg
+                            .get("message")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Unknown")
+                            .to_string();
 
-                                    let line = msg.get("line").and_then(|v| v.as_u64()).unwrap_or(1)
-                                        as usize;
+                        let line = msg.get("line").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
 
-                                    let column =
-                                        msg.get("column").and_then(|v| v.as_u64()).unwrap_or(1)
-                                            as usize;
+                        let column =
+                            msg.get("column").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
 
-                                    let severity =
-                                        msg.get("severity").and_then(|v| v.as_u64()).unwrap_or(2);
+                        let severity = msg.get("severity").and_then(|v| v.as_u64()).unwrap_or(2);
 
-                                    let diag_severity = match severity {
-                                        1 => DiagnosticSeverity::Warning,
-                                        2 => DiagnosticSeverity::Error,
-                                        _ => DiagnosticSeverity::Information,
-                                    };
+                        let diag_severity = match severity {
+                            1 => DiagnosticSeverity::Warning,
+                            2 => DiagnosticSeverity::Error,
+                            _ => DiagnosticSeverity::Information,
+                        };
 
-                                    let rule_id = msg
-                                        .get("ruleId")
-                                        .and_then(|v| v.as_str())
-                                        .map(|s| s.to_string());
+                        let rule_id = msg
+                            .get("ruleId")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
 
-                                    diagnostics.push(Diagnostic {
-                                        message,
-                                        severity: diag_severity,
-                                        file: PathBuf::from(file_path),
-                                        line,
-                                        column,
-                                        code: rule_id,
-                                    });
-                                }
-                            }
+                        diagnostics.push(Diagnostic {
+                            message,
+                            severity: diag_severity,
+                            file: PathBuf::from(file_path),
+                            line,
+                            column,
+                            code: rule_id,
+                        });
+                    }
                 }
             }
+        }
 
         diagnostics
     }
@@ -341,59 +336,61 @@ impl LspClient {
         let mut diagnostics = Vec::new();
 
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(output)
-            && let Some(diags) = json.get("generalDiagnostics").and_then(|v| v.as_array()) {
-                for diag in diags {
-                    if let Some(file_path) = diag.get("file").and_then(|v| v.as_str())
-                        && PathBuf::from(file_path) == *target_file {
-                            let message = diag
-                                .get("message")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("Unknown")
-                                .to_string();
+            && let Some(diags) = json.get("generalDiagnostics").and_then(|v| v.as_array())
+        {
+            for diag in diags {
+                if let Some(file_path) = diag.get("file").and_then(|v| v.as_str())
+                    && PathBuf::from(file_path) == *target_file
+                {
+                    let message = diag
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Unknown")
+                        .to_string();
 
-                            let line = diag
-                                .get("range")
-                                .and_then(|r| r.get("start"))
-                                .and_then(|s| s.get("line"))
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(1) as usize;
+                    let line = diag
+                        .get("range")
+                        .and_then(|r| r.get("start"))
+                        .and_then(|s| s.get("line"))
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(1) as usize;
 
-                            let column = diag
-                                .get("range")
-                                .and_then(|r| r.get("start"))
-                                .and_then(|s| s.get("character"))
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(1) as usize;
+                    let column = diag
+                        .get("range")
+                        .and_then(|r| r.get("start"))
+                        .and_then(|s| s.get("character"))
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(1) as usize;
 
-                            let severity = diag
-                                .get("severity")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("error");
+                    let severity = diag
+                        .get("severity")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("error");
 
-                            let diag_severity = match severity {
-                                "error" => DiagnosticSeverity::Error,
-                                "warning" => DiagnosticSeverity::Warning,
-                                "information" => DiagnosticSeverity::Information,
-                                "hint" => DiagnosticSeverity::Hint,
-                                _ => DiagnosticSeverity::Information,
-                            };
+                    let diag_severity = match severity {
+                        "error" => DiagnosticSeverity::Error,
+                        "warning" => DiagnosticSeverity::Warning,
+                        "information" => DiagnosticSeverity::Information,
+                        "hint" => DiagnosticSeverity::Hint,
+                        _ => DiagnosticSeverity::Information,
+                    };
 
-                            let code = diag
-                                .get("rule")
-                                .and_then(|v| v.as_str())
-                                .map(|s| s.to_string());
+                    let code = diag
+                        .get("rule")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
 
-                            diagnostics.push(Diagnostic {
-                                message,
-                                severity: diag_severity,
-                                file: PathBuf::from(file_path),
-                                line,
-                                column,
-                                code,
-                            });
-                        }
+                    diagnostics.push(Diagnostic {
+                        message,
+                        severity: diag_severity,
+                        file: PathBuf::from(file_path),
+                        line,
+                        column,
+                        code,
+                    });
                 }
             }
+        }
 
         diagnostics
     }

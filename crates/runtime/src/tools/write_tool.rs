@@ -9,7 +9,7 @@ use tokio::fs;
 use tracing::debug;
 
 use super::schema::ToolSchemaBuilder;
-use super::{enforce_path_boundary, Tool, ToolError, ToolMetadata, ToolResult};
+use super::{Tool, ToolError, ToolMetadata, ToolResult, enforce_path_boundary};
 
 /// Write tool - 写入文件
 #[derive(Debug)]
@@ -62,11 +62,10 @@ impl Tool for WriteTool {
 
         // Create parent directories if they don't exist
         if let Some(parent) = path.parent()
-            && !parent.exists() {
-                fs::create_dir_all(parent)
-                    .await
-                    .map_err(ToolError::Io)?;
-            }
+            && !parent.exists()
+        {
+            fs::create_dir_all(parent).await.map_err(ToolError::Io)?;
+        }
 
         // Check if file exists and handle mode
         let append = params
@@ -77,18 +76,14 @@ impl Tool for WriteTool {
 
         if append && path.exists() {
             // Append to existing file
-            let existing = fs::read_to_string(&path)
-                .await
-                .map_err(ToolError::Io)?;
+            let existing = fs::read_to_string(&path).await.map_err(ToolError::Io)?;
             let new_content = existing + content;
             fs::write(&path, &new_content)
                 .await
                 .map_err(ToolError::Io)?;
         } else {
             // Write (or create) file
-            fs::write(&path, content)
-                .await
-                .map_err(ToolError::Io)?;
+            fs::write(&path, content).await.map_err(ToolError::Io)?;
         }
 
         let bytes_written = content.len();

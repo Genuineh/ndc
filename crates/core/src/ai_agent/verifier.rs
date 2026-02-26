@@ -202,19 +202,20 @@ impl TaskVerifier {
         // 3. 验证执行步骤
         for step in &task.steps {
             if let Some(ref result) = step.result
-                && !result.success {
-                    return Ok(VerificationResult::Incomplete {
-                        reason: format!(
-                            "Step {} ({}) failed: {}",
-                            step.step_id,
-                            format_action(&step.action),
-                            result
-                                .error
-                                .as_ref()
-                                .unwrap_or(&"Unknown error".to_string())
-                        ),
-                    });
-                }
+                && !result.success
+            {
+                return Ok(VerificationResult::Incomplete {
+                    reason: format!(
+                        "Step {} ({}) failed: {}",
+                        step.step_id,
+                        format_action(&step.action),
+                        result
+                            .error
+                            .as_ref()
+                            .unwrap_or(&"Unknown error".to_string())
+                    ),
+                });
+            }
         }
 
         // 4. 运行质量门禁 (如果配置了)
@@ -313,17 +314,18 @@ impl TaskVerifier {
             .get_memory(&entry_id)
             .await
             .map_err(|e| VerificationError::StorageError(e.to_string()))?
-            && let Some((service, migrated_from_v1)) = Self::decode_gold_memory_entry(&entry)? {
-                let mut gm = gold_memory
-                    .lock()
-                    .map_err(|e| VerificationError::ExecutionError(e.to_string()))?;
-                *gm = service;
-                let mut pending = self
-                    .migrate_from_v1_pending
-                    .lock()
-                    .map_err(|e| VerificationError::ExecutionError(e.to_string()))?;
-                *pending = migrated_from_v1;
-            }
+            && let Some((service, migrated_from_v1)) = Self::decode_gold_memory_entry(&entry)?
+        {
+            let mut gm = gold_memory
+                .lock()
+                .map_err(|e| VerificationError::ExecutionError(e.to_string()))?;
+            *gm = service;
+            let mut pending = self
+                .migrate_from_v1_pending
+                .lock()
+                .map_err(|e| VerificationError::ExecutionError(e.to_string()))?;
+            *pending = migrated_from_v1;
+        }
 
         let mut loaded = self
             .gold_memory_loaded

@@ -24,11 +24,11 @@ use tonic::transport::Channel;
 
 #[cfg(feature = "grpc")]
 use crate::generated::{
-    agent_service_client::AgentServiceClient, ndc_service_client::NdcServiceClient,
     CreateTaskRequest, ExecuteTaskRequest, ExecuteTaskResponse, ExecutionEvent,
     GetSystemStatusRequest, GetTaskRequest, HealthCheckRequest, HealthCheckResponse,
     ListTasksRequest, ListTasksResponse, RollbackTaskRequest, RollbackTaskResponse,
     SessionTimelineRequest, SessionTimelineResponse, SystemStatusResponse, TaskResponse,
+    agent_service_client::AgentServiceClient, ndc_service_client::NdcServiceClient,
 };
 
 #[cfg(feature = "grpc")]

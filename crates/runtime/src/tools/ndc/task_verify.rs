@@ -7,7 +7,7 @@ use ndc_core::TaskId;
 
 use super::super::schema::ToolSchemaBuilder;
 use super::super::{Tool, ToolError, ToolMetadata, ToolResult};
-use ndc_storage::{create_memory_storage, SharedStorage};
+use ndc_storage::{SharedStorage, create_memory_storage};
 
 /// Task Verify Tool - 验证任务完成状态
 #[derive(Clone)]

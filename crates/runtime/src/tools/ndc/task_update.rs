@@ -7,7 +7,7 @@ use ndc_core::{TaskId, TaskPriority, TaskState};
 
 use super::super::schema::{JsonSchema, JsonSchemaProperty, ToolSchemaBuilder};
 use super::super::{Tool, ToolError, ToolMetadata, ToolResult};
-use ndc_storage::{create_memory_storage, SharedStorage};
+use ndc_storage::{SharedStorage, create_memory_storage};
 
 /// Task Update Tool - 更新任务状态
 #[derive(Clone)]
@@ -139,17 +139,18 @@ impl Tool for TaskUpdateTool {
         }
 
         if let Some(notes) = params.get("notes").and_then(|v| v.as_str())
-            && !notes.trim().is_empty() {
-                if !task.description.is_empty() {
-                    task.description.push_str("\n\n");
-                }
-                task.description.push_str(&format!(
-                    "[note {}] {}",
-                    chrono::Utc::now().to_rfc3339(),
-                    notes.trim()
-                ));
-                updates.push(format!("notes: {} chars", notes.len()));
+            && !notes.trim().is_empty()
+        {
+            if !task.description.is_empty() {
+                task.description.push_str("\n\n");
             }
+            task.description.push_str(&format!(
+                "[note {}] {}",
+                chrono::Utc::now().to_rfc3339(),
+                notes.trim()
+            ));
+            updates.push(format!("notes: {} chars", notes.len()));
+        }
 
         if let Some(add_tags) = params.get("add_tags").and_then(|v| v.as_array()) {
             let tags: Vec<String> = add_tags
@@ -314,11 +315,13 @@ mod tests {
 
         let result = tool.execute(&params).await.unwrap();
         assert!(!result.success);
-        assert!(result
-            .error
-            .as_deref()
-            .unwrap_or_default()
-            .contains("Invalid state transition"));
+        assert!(
+            result
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Invalid state transition")
+        );
 
         let persisted = storage.get_task(&task.id).await.unwrap().unwrap();
         assert_eq!(persisted.state, TaskState::Pending);
@@ -348,11 +351,13 @@ mod tests {
 
         let result = tool.execute(&params).await.unwrap();
         assert!(!result.success);
-        assert!(result
-            .error
-            .as_ref()
-            .unwrap()
-            .contains("No updates specified"));
+        assert!(
+            result
+                .error
+                .as_ref()
+                .unwrap()
+                .contains("No updates specified")
+        );
     }
 
     #[tokio::test]

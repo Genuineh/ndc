@@ -204,8 +204,7 @@ fn default_timeout() -> u64 {
 }
 
 /// Saga step execution status
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub enum SagaStepStatus {
     #[default]
     Pending,
@@ -216,7 +215,6 @@ pub enum SagaStepStatus {
     Compensating,
     Compensated,
 }
-
 
 /// Saga definition - a distributed transaction with compensation
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -297,7 +295,6 @@ impl SagaOrchestrator {
 
     /// Create a new Saga
     pub fn create_saga(&mut self, name: String, task_id: Option<String>) -> Saga {
-        
         Saga {
             id: ulid::Ulid::new().to_string(),
             name,

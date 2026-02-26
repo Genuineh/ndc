@@ -259,17 +259,18 @@ impl VolatilityHeatmap {
         // Try to identify module structure
         // For Rust projects: parent directory often indicates module
         if let Some(parent) = path.parent()
-            && parent.file_name().is_some() {
-                // Use immediate parent as module
-                return ModuleId {
-                    name: parent
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| "root".to_string()),
-                    path: parent.to_path_buf(),
-                };
-            }
+            && parent.file_name().is_some()
+        {
+            // Use immediate parent as module
+            return ModuleId {
+                name: parent
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "root".to_string()),
+                path: parent.to_path_buf(),
+            };
+        }
 
         ModuleId::from_path(path)
     }

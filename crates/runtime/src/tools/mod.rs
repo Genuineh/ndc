@@ -16,8 +16,8 @@ pub use trait_mod::{Tool, ToolContext, ToolError, ToolManager, ToolMetadata, Too
 
 pub mod schema;
 pub use schema::{
-    generate_tool_description, JsonSchema, JsonSchemaProperty, SchemaValidator, ToolSchemaBuilder,
-    ValidationResult,
+    JsonSchema, JsonSchemaProperty, SchemaValidator, ToolSchemaBuilder, ValidationResult,
+    generate_tool_description,
 };
 
 pub mod registry;
@@ -61,7 +61,7 @@ pub use permission::{
 
 pub mod output_truncation;
 pub use output_truncation::{
-    read_partial_output, OutputTruncator, TruncatedOutput, TruncationConfig,
+    OutputTruncator, TruncatedOutput, TruncationConfig, read_partial_output,
 };
 
 pub mod lsp;
@@ -93,12 +93,12 @@ pub use bash_parsing::{
 
 pub mod security;
 pub use security::{
-    enforce_git_operation, enforce_path_boundary, enforce_shell_command,
-    extract_confirmation_permission, with_security_overrides, PERMISSION_EXTERNAL_DIRECTORY,
-    PERMISSION_GIT_COMMIT, PERMISSION_SHELL_HIGH_RISK, PERMISSION_SHELL_MEDIUM_RISK,
+    PERMISSION_EXTERNAL_DIRECTORY, PERMISSION_GIT_COMMIT, PERMISSION_SHELL_HIGH_RISK,
+    PERMISSION_SHELL_MEDIUM_RISK, enforce_git_operation, enforce_path_boundary,
+    enforce_shell_command, extract_confirmation_permission, with_security_overrides,
 };
 
-use ndc_storage::{create_memory_storage, SharedStorage};
+use ndc_storage::{SharedStorage, create_memory_storage};
 
 /// Create the default low-level tool manager used by runtime execution.
 ///
