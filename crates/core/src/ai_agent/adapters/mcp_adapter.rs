@@ -9,7 +9,7 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -122,11 +122,7 @@ impl McpAgentTool {
 #[async_trait]
 pub trait McpTransportAdapter: Send + Sync {
     /// Call an MCP tool
-    async fn call_tool(
-        &self,
-        tool_name: &str,
-        arguments: &str,
-    ) -> Result<String, String>;
+    async fn call_tool(&self, tool_name: &str, arguments: &str) -> Result<String, String>;
 }
 
 /// MCP Tool Registry - manages converted MCP tools
@@ -190,26 +186,26 @@ impl McpToolRegistry {
         let tools: Vec<Value> = self
             .tools
             .values()
-            .map(|t| json!({
-                "type": "function",
-                "function": {
-                    "name": t.agent_name,
-                    "description": t.description,
-                    "parameters": t.parameters,
-                }
-            }))
+            .map(|t| {
+                json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.agent_name,
+                        "description": t.description,
+                        "parameters": t.parameters,
+                    }
+                })
+            })
             .collect();
 
         json!(tools)
     }
 
     /// Invoke a tool
-    pub async fn invoke(
-        &self,
-        name: &str,
-        arguments: &str,
-    ) -> Result<String, String> {
-        let transport = self.transport.as_ref()
+    pub async fn invoke(&self, name: &str, arguments: &str) -> Result<String, String> {
+        let transport = self
+            .transport
+            .as_ref()
             .ok_or_else(|| "MCP transport not configured".to_string())?;
 
         transport.call_tool(name, arguments).await

@@ -356,11 +356,7 @@ impl ToolSchemaBuilder {
     }
 
     /// 添加字符串参数
-    pub fn param_string(
-        mut self,
-        name: impl Into<String>,
-        description: impl Into<String>,
-    ) -> Self {
+    pub fn param_string(mut self, name: impl Into<String>, description: impl Into<String>) -> Self {
         let name = name.into();
         let prop = JsonSchemaProperty::string(description);
         if self.schema.properties.is_none() {
@@ -547,14 +543,13 @@ impl SchemaValidator {
             for (name, prop) in properties {
                 if let Some(value) = params_obj.get(name) {
                     // 验证类型
-                    if let Some(type_) = &prop.type_ {
-                        if !Self::check_type(value, type_) {
+                    if let Some(type_) = &prop.type_
+                        && !Self::check_type(value, type_) {
                             result.add_error(format!(
                                 "Field '{}' has wrong type, expected {:?}",
                                 name, type_
                             ));
                         }
-                    }
 
                     // 验证枚举
                     if let Some(enum_values) = &prop.enum_ {
@@ -563,70 +558,56 @@ impl SchemaValidator {
                             result.add_error(format!(
                                 "Field '{}' must be one of: {:?}",
                                 name,
-                                enum_values.iter().map(|v| v.to_string()).collect::<Vec<_>>()
+                                enum_values
+                                    .iter()
+                                    .map(|v| v.to_string())
+                                    .collect::<Vec<_>>()
                             ));
                         }
                     }
 
                     // 验证范围
-                    if let Some(min) = prop.minimum {
-                        if let Some(num) = value.as_f64() {
-                            if num < min {
-                                result.add_error(format!(
-                                    "Field '{}' must be >= {}",
-                                    name, min
-                                ));
+                    if let Some(min) = prop.minimum
+                        && let Some(num) = value.as_f64()
+                            && num < min {
+                                result.add_error(format!("Field '{}' must be >= {}", name, min));
                             }
-                        }
-                    }
 
-                    if let Some(max) = prop.maximum {
-                        if let Some(num) = value.as_f64() {
-                            if num > max {
-                                result.add_error(format!(
-                                    "Field '{}' must be <= {}",
-                                    name, max
-                                ));
+                    if let Some(max) = prop.maximum
+                        && let Some(num) = value.as_f64()
+                            && num > max {
+                                result.add_error(format!("Field '{}' must be <= {}", name, max));
                             }
-                        }
-                    }
 
                     // 验证字符串长度
-                    if let Some(min_len) = prop.min_length {
-                        if let Some(s) = value.as_str() {
-                            if s.len() < min_len {
+                    if let Some(min_len) = prop.min_length
+                        && let Some(s) = value.as_str()
+                            && s.len() < min_len {
                                 result.add_error(format!(
                                     "Field '{}' must have length >= {}",
                                     name, min_len
                                 ));
                             }
-                        }
-                    }
 
-                    if let Some(max_len) = prop.max_length {
-                        if let Some(s) = value.as_str() {
-                            if s.len() > max_len {
+                    if let Some(max_len) = prop.max_length
+                        && let Some(s) = value.as_str()
+                            && s.len() > max_len {
                                 result.add_error(format!(
                                     "Field '{}' must have length <= {}",
                                     name, max_len
                                 ));
                             }
-                        }
-                    }
 
                     // 验证正则表达式
-                    if let Some(pattern) = &prop.pattern {
-                        if let Some(s) = value.as_str() {
-                            if let Ok(regex) = regex::Regex::new(pattern) {
-                                if !regex.is_match(s) {
+                    if let Some(pattern) = &prop.pattern
+                        && let Some(s) = value.as_str()
+                            && let Ok(regex) = regex::Regex::new(pattern)
+                                && !regex.is_match(s) {
                                     result.add_error(format!(
                                         "Field '{}' does not match pattern: {}",
                                         name, pattern
                                     ));
                                 }
-                            }
-                        }
-                    }
                 }
             }
         }
@@ -649,11 +630,7 @@ impl SchemaValidator {
 }
 
 /// 生成 LLM 友好的工具描述
-pub fn generate_tool_description(
-    name: &str,
-    description: &str,
-    schema: &JsonSchema,
-) -> String {
+pub fn generate_tool_description(name: &str, description: &str, schema: &JsonSchema) -> String {
     let mut lines: Vec<String> = Vec::new();
 
     lines.push(format!("Tool: {}", name));
@@ -727,7 +704,10 @@ mod tests {
         let value = schema.to_value();
         assert_eq!(value["description"], "Test tool");
         assert!(value["required"].is_array());
-        assert!(value["required"].as_array().unwrap().contains(&serde_json::json!("filePath")));
+        assert!(value["required"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("filePath")));
     }
 
     #[test]
@@ -783,7 +763,10 @@ mod tests {
     fn test_validation_range() {
         // Test with JsonSchema directly for range validation
         let mut schema = JsonSchema::object();
-        schema = schema.property("age", JsonSchemaProperty::integer("The age").range(0.0, 150.0));
+        schema = schema.property(
+            "age",
+            JsonSchemaProperty::integer("The age").range(0.0, 150.0),
+        );
 
         let params_valid = serde_json::json!({ "age": 30 });
         let result_valid = SchemaValidator::validate(&params_valid, &schema);
@@ -801,23 +784,24 @@ mod tests {
             .param_integer("offset", "Line number to start from")
             .build();
 
-        let desc = generate_tool_description(
-            "read_file",
-            "Read the contents of a file",
-            &schema,
-        );
+        let desc = generate_tool_description("read_file", "Read the contents of a file", &schema);
 
         assert!(desc.contains("read_file"));
         assert!(desc.contains("filePath (required)"));
         assert!(desc.contains("offset"));
         // offset is optional, so check it doesn't appear with (required)
         let lines_with_offset: Vec<&str> = desc.lines().filter(|l| l.contains("offset")).collect();
-        assert!(!lines_with_offset.iter().any(|l| l.contains("(required)")), "offset should not be marked as required");
+        assert!(
+            !lines_with_offset.iter().any(|l| l.contains("(required)")),
+            "offset should not be marked as required"
+        );
     }
 
     #[test]
     fn test_property_string() {
-        let prop = JsonSchemaProperty::string("A name").required(true).default(serde_json::json!("default"));
+        let prop = JsonSchemaProperty::string("A name")
+            .required(true)
+            .default(serde_json::json!("default"));
         let value = prop.to_value();
         // Check that type field exists
         let type_val = value.get("type").or(value.get("type_"));
@@ -829,8 +813,10 @@ mod tests {
 
     #[test]
     fn test_property_enum() {
-        let prop = JsonSchemaProperty::string("A status")
-            .enum_values(vec![serde_json::json!("active"), serde_json::json!("inactive")]);
+        let prop = JsonSchemaProperty::string("A status").enum_values(vec![
+            serde_json::json!("active"),
+            serde_json::json!("inactive"),
+        ]);
         let value = prop.to_value();
         // Check enum field exists
         let enum_val = value.get("enum").or(value.get("enum_"));

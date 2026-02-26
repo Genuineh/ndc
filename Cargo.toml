@@ -5,6 +5,7 @@ members = [
     "crates/decision",
     "crates/interface",
     "crates/runtime",
+    "crates/storage",
     "bin",
 ]
 

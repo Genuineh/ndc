@@ -137,7 +137,7 @@ impl LspClient {
     ) -> Result<DiagnosticSummary, String> {
         // Try cargo check --message-format=json for Rust
         let output = Command::new("cargo")
-            .args(&["check", "--message-format=json"])
+            .args(["check", "--message-format=json"])
             .current_dir(&self.root)
             .output()
             .map_err(|e| e.to_string())?;
@@ -168,8 +168,8 @@ impl LspClient {
         for line in output.lines() {
             if let Ok(message) = serde_json::from_str::<serde_json::Value>(line) {
                 // Only process messages for our target file
-                if let Some(spans) = message.get("spans") {
-                    if let Some(spans_array) = spans.as_array() {
+                if let Some(spans) = message.get("spans")
+                    && let Some(spans_array) = spans.as_array() {
                         for span in spans_array {
                             if let Some(file_path) = span.get("file_name").and_then(|v| v.as_str())
                             {
@@ -222,7 +222,6 @@ impl LspClient {
                             }
                         }
                     }
-                }
             }
         }
 
@@ -235,7 +234,7 @@ impl LspClient {
         file_path: &PathBuf,
     ) -> Result<DiagnosticSummary, String> {
         let output = Command::new("npx")
-            .args(&[
+            .args([
                 "eslint",
                 "--format",
                 "json",
@@ -266,12 +265,12 @@ impl LspClient {
     fn parse_eslint_json(output: &str, target_file: &PathBuf) -> Vec<Diagnostic> {
         let mut diagnostics = Vec::new();
 
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(output) {
-            if let Some(files) = json.as_array() {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(output)
+            && let Some(files) = json.as_array() {
                 for file in files {
-                    if let Some(file_path) = file.get("filePath").and_then(|v| v.as_str()) {
-                        if PathBuf::from(file_path) == *target_file {
-                            if let Some(messages) = file.get("messages").and_then(|v| v.as_array())
+                    if let Some(file_path) = file.get("filePath").and_then(|v| v.as_str())
+                        && PathBuf::from(file_path) == *target_file
+                            && let Some(messages) = file.get("messages").and_then(|v| v.as_array())
                             {
                                 for msg in messages {
                                     let message = msg
@@ -311,11 +310,8 @@ impl LspClient {
                                     });
                                 }
                             }
-                        }
-                    }
                 }
             }
-        }
 
         diagnostics
     }
@@ -326,7 +322,7 @@ impl LspClient {
         file_path: &PathBuf,
     ) -> Result<DiagnosticSummary, String> {
         let output = Command::new("npx")
-            .args(&[
+            .args([
                 "pyright",
                 "--outputjson",
                 file_path.to_string_lossy().as_ref(),
@@ -344,11 +340,11 @@ impl LspClient {
     fn parse_pyright_json(output: &str, target_file: &PathBuf) -> Vec<Diagnostic> {
         let mut diagnostics = Vec::new();
 
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(output) {
-            if let Some(diags) = json.get("generalDiagnostics").and_then(|v| v.as_array()) {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(output)
+            && let Some(diags) = json.get("generalDiagnostics").and_then(|v| v.as_array()) {
                 for diag in diags {
-                    if let Some(file_path) = diag.get("file").and_then(|v| v.as_str()) {
-                        if PathBuf::from(file_path) == *target_file {
+                    if let Some(file_path) = diag.get("file").and_then(|v| v.as_str())
+                        && PathBuf::from(file_path) == *target_file {
                             let message = diag
                                 .get("message")
                                 .and_then(|v| v.as_str())
@@ -396,10 +392,8 @@ impl LspClient {
                                 code,
                             });
                         }
-                    }
                 }
             }
-        }
 
         diagnostics
     }

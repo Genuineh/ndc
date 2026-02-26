@@ -166,7 +166,10 @@ impl BashParser {
             return CommandType::Redirect;
         }
 
-        if trimmed.starts_with("if ") || trimmed.starts_with("for ") || trimmed.starts_with("while ") {
+        if trimmed.starts_with("if ")
+            || trimmed.starts_with("for ")
+            || trimmed.starts_with("while ")
+        {
             return CommandType::ControlFlow;
         }
 
@@ -177,9 +180,9 @@ impl BashParser {
         let mut args = Vec::new();
         let mut current = String::new();
         let mut in_quotes = false;
-        let mut chars = command.chars().peekable();
+        let chars = command.chars().peekable();
 
-        while let Some(c) = chars.next() {
+        for c in chars {
             if c == '"' || c == '\'' {
                 in_quotes = !in_quotes;
                 continue;
@@ -208,10 +211,14 @@ impl BashParser {
         let mut ops = Vec::new();
 
         // Common file operation commands
-        let read_cmds = ["cat", "less", "more", "head", "tail", "grep", "rg", "find", "wc", "sort", "uniq"];
+        let read_cmds = [
+            "cat", "less", "more", "head", "tail", "grep", "rg", "find", "wc", "sort", "uniq",
+        ];
         let write_cmds = ["echo", "printf", "tee", "sed", "awk"];
         let delete_cmds = ["rm", "del", "unlink", "rmdir"];
-        let execute_cmds = [".", "source", "bash", "sh", "zsh", "python", "python3", "node", "cargo", "make"];
+        let execute_cmds = [
+            ".", "source", "bash", "sh", "zsh", "python", "python3", "node", "cargo", "make",
+        ];
         let move_cmds = ["mv", "rename", "cp", "rsync"];
         let chmod_cmds = ["chmod", "chown", "chgrp"];
 
@@ -246,9 +253,20 @@ impl BashParser {
             let starts_with_dot_slash = arg.starts_with("./");
             let starts_with_dot_dot_slash = arg.starts_with("../");
             let has_glob = arg.contains('*') || arg.contains('?');
-            let has_extension = arg.len() > 1 && arg.contains('.') && arg.chars().next().map(|c| c.is_alphabetic()).unwrap_or(false);
+            let has_extension = arg.len() > 1
+                && arg.contains('.')
+                && arg
+                    .chars()
+                    .next()
+                    .map(|c| c.is_alphabetic())
+                    .unwrap_or(false);
 
-            if starts_with_slash || starts_with_dot_slash || starts_with_dot_dot_slash || has_glob || has_extension {
+            if starts_with_slash
+                || starts_with_dot_slash
+                || starts_with_dot_dot_slash
+                || has_glob
+                || has_extension
+            {
                 let is_pattern = has_glob;
                 ops.push(FileOperation {
                     operation_type: op_type.clone(),
@@ -261,8 +279,12 @@ impl BashParser {
         // For execute commands, also check subsequent arguments for scripts
         if op_type == FileOpType::Execute && arguments.len() > 1 {
             for arg in &arguments[1..] {
-                if arg.ends_with(".sh") || arg.ends_with(".js") || arg.ends_with(".py") ||
-                   arg.ends_with(".rb") || arg.ends_with(".php") {
+                if arg.ends_with(".sh")
+                    || arg.ends_with(".js")
+                    || arg.ends_with(".py")
+                    || arg.ends_with(".rb")
+                    || arg.ends_with(".php")
+                {
                     ops.push(FileOperation {
                         operation_type: op_type.clone(),
                         path: PathBuf::from(arg),
@@ -337,7 +359,10 @@ impl BashParser {
         for op in file_ops {
             if op.operation_type == FileOpType::Delete {
                 let path_str = op.path.to_string_lossy();
-                if path_str.starts_with("/") && !path_str.starts_with("/tmp") && !path_str.starts_with("/var/tmp") {
+                if path_str.starts_with("/")
+                    && !path_str.starts_with("/tmp")
+                    && !path_str.starts_with("/var/tmp")
+                {
                     return BashDangerLevel::Medium;
                 }
             }
@@ -345,9 +370,10 @@ impl BashParser {
 
         // Low danger: write operations
         for op in file_ops {
-            if op.operation_type == FileOpType::Write ||
-               op.operation_type == FileOpType::Create ||
-               op.operation_type == FileOpType::Chmod {
+            if op.operation_type == FileOpType::Write
+                || op.operation_type == FileOpType::Create
+                || op.operation_type == FileOpType::Chmod
+            {
                 return BashDangerLevel::Low;
             }
         }
@@ -395,7 +421,9 @@ impl BashParser {
 
         let patterns = self.extract_permission_patterns(command);
 
-        let auto_allow = self.allowed_ops.iter()
+        let auto_allow = self
+            .allowed_ops
+            .iter()
             .any(|op| parsed.arguments.first().map(|a| a == op).unwrap_or(false));
 
         BashPermissionRequest {
@@ -574,7 +602,10 @@ mod tests {
         let result = parser.parse("python script.py").unwrap();
 
         assert!(!result.file_operations.is_empty());
-        assert_eq!(result.file_operations[0].operation_type, FileOpType::Execute);
+        assert_eq!(
+            result.file_operations[0].operation_type,
+            FileOpType::Execute
+        );
     }
 
     #[test]

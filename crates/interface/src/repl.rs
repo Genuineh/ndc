@@ -21,8 +21,7 @@ use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers, MouseEvent, MouseEventKind,
+    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
 };
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -282,6 +281,26 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         summary: "clear panel",
     },
     SlashCommandSpec {
+        command: "/copy",
+        summary: "save session to file",
+    },
+    SlashCommandSpec {
+        command: "/resume",
+        summary: "resume latest session",
+    },
+    SlashCommandSpec {
+        command: "/new",
+        summary: "start new session",
+    },
+    SlashCommandSpec {
+        command: "/session",
+        summary: "list sessions for current project",
+    },
+    SlashCommandSpec {
+        command: "/project",
+        summary: "list or switch project",
+    },
+    SlashCommandSpec {
         command: "/exit",
         summary: "exit repl",
     },
@@ -407,6 +426,7 @@ fn canonical_slash_command(command: &str) -> &str {
         "/help" | "/h" => "/help",
         "/cards" | "/toolcards" => "/cards",
         "/clear" | "/cls" => "/clear",
+        "/resume" | "/r" => "/resume",
         _ => command,
     }
 }
@@ -570,8 +590,8 @@ fn apply_slash_completion(
     completion: &mut Option<ReplCommandCompletionState>,
     reverse: bool,
 ) -> bool {
-    if let Some(state) = completion.as_mut() {
-        if !state.suggestions.is_empty()
+    if let Some(state) = completion.as_mut()
+        && !state.suggestions.is_empty()
             && state.selected_index < state.suggestions.len()
             && input.trim() == state.suggestions[state.selected_index]
         {
@@ -588,7 +608,6 @@ fn apply_slash_completion(
             *input = state.suggestions[state.selected_index].clone();
             return true;
         }
-    }
 
     let suggestions = completion_suggestions_for_input(input);
     if suggestions.is_empty() {
@@ -1159,7 +1178,7 @@ async fn run_repl_tui(
 ) -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
@@ -1170,6 +1189,7 @@ async fn run_repl_tui(
     ];
     let keymap = ReplTuiKeymap::from_env();
     logs.push(format!("Shortcuts: {}", keymap.hint()));
+
     let mut input = String::new();
     let mut completion_state: Option<ReplCommandCompletionState> = None;
     let mut processing_handle: Option<
@@ -1266,8 +1286,7 @@ async fn run_repl_tui(
                 if let Ok(events) = agent_manager
                     .session_timeline(Some(TIMELINE_CACHE_MAX_EVENTS))
                     .await
-                {
-                    if events.len() > streamed_count {
+                    && events.len() > streamed_count {
                         let new_events = &events[streamed_count..];
                         append_timeline_events(
                             &mut viz_state.timeline_cache,
@@ -1282,7 +1301,6 @@ async fn run_repl_tui(
                         streamed_count = events.len();
                         streamed_any = true;
                     }
-                }
                 last_poll = Instant::now();
             }
 
@@ -1448,11 +1466,7 @@ async fn run_repl_tui(
     }
 
     disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
     Ok(())
 }
@@ -1678,8 +1692,7 @@ async fn handle_agent_dialogue(
         if let Ok(events) = agent_manager
             .session_timeline(Some(TIMELINE_CACHE_MAX_EVENTS))
             .await
-        {
-            if events.len() > streamed_count {
+            && events.len() > streamed_count {
                 let new_events = &events[streamed_count..];
                 append_timeline_events(
                     &mut viz_state.timeline_cache,
@@ -1690,7 +1703,6 @@ async fn handle_agent_dialogue(
                 streamed_count = events.len();
                 streamed_any = true;
             }
-        }
 
         tokio::time::sleep(Duration::from_millis(120)).await;
     }
@@ -1698,8 +1710,7 @@ async fn handle_agent_dialogue(
     if let Ok(events) = agent_manager
         .session_timeline(Some(TIMELINE_CACHE_MAX_EVENTS))
         .await
-    {
-        if events.len() > streamed_count {
+        && events.len() > streamed_count {
             let new_events = &events[streamed_count..];
             append_timeline_events(
                 &mut viz_state.timeline_cache,
@@ -1709,7 +1720,6 @@ async fn handle_agent_dialogue(
             render_execution_events(new_events, viz_state);
             streamed_any = true;
         }
-    }
 
     match handle.await {
         Ok(Ok(response)) => {
@@ -2060,14 +2070,13 @@ fn event_to_lines(
                 event.round,
                 event.tool_name.as_deref().unwrap_or("unknown")
             )];
-            if viz_state.expand_tool_cards {
-                if let Some(args) = extract_tool_args_preview(&event.message) {
+            if viz_state.expand_tool_cards
+                && let Some(args) = extract_tool_args_preview(&event.message) {
                     lines.push(format!(
                         "  └─ input : {}",
                         sanitize_text(args, viz_state.redaction_mode)
                     ));
                 }
-            }
             lines
         }
         ndc_core::AgentExecutionEventKind::ToolCallEnd => {
@@ -2591,6 +2600,33 @@ fn render_execution_events(
     }
 }
 
+async fn restore_session_logs_to_panel(
+    agent_manager: &Arc<AgentModeManager>,
+    viz_state: &mut ReplVisualizationState,
+    logs: &mut Vec<String>,
+) {
+    match agent_manager
+        .session_timeline(Some(TIMELINE_CACHE_MAX_EVENTS))
+        .await
+    {
+        Ok(events) if !events.is_empty() => {
+            viz_state.timeline_cache = events.clone();
+            push_log_line(logs, "--- Restored session history ---");
+            for event in &events {
+                for line in event_to_lines(event, viz_state) {
+                    push_log_line(logs, &line);
+                }
+            }
+            push_log_line(logs, "---");
+        }
+        Ok(_) => {}
+        Err(e) => push_log_line(
+            logs,
+            &format!("[Warning] Could not restore session history: {}", e),
+        ),
+    }
+}
+
 async fn handle_tui_command(
     input: &str,
     viz_state: &mut ReplVisualizationState,
@@ -2602,7 +2638,7 @@ async fn handle_tui_command(
         "/help" | "/h" => {
             push_log_line(
                 logs,
-                "Commands: /help /provider /model /status /workflow [compact|verbose] /tokens /metrics /t /d /cards /stream /thinking show /timeline [N] /clear exit",
+                "Commands: /help /provider /model /status /workflow /tokens /metrics /t /d /cards /stream /thinking /timeline [N] /copy /resume [id] [--cross] /new /session [N] /project [dir] /clear /exit",
             );
             push_log_line(
                 logs,
@@ -2610,12 +2646,12 @@ async fn handle_tui_command(
             );
             push_log_line(
                 logs,
-                "Scroll: Up/Down line, PgUp/PgDn half-page, Home/End top-bottom, mouse wheel",
+                "Scroll: Up/Down line, PgUp/PgDn half-page, Home/End top-bottom, drag to select",
             );
         }
         "/thinking" | "/t" => {
             if parts.len() > 1 && (parts[1] == "show" || parts[1] == "now") {
-                append_recent_thinking_to_logs(logs.as_mut(), viz_state);
+                append_recent_thinking_to_logs(logs, viz_state);
             } else {
                 viz_state.show_thinking = !viz_state.show_thinking;
                 if viz_state.show_thinking {
@@ -2687,11 +2723,10 @@ async fn handle_tui_command(
             append_runtime_metrics_to_logs(logs, viz_state);
         }
         "/timeline" => {
-            if parts.len() > 1 {
-                if let Ok(parsed) = parts[1].parse::<usize>() {
+            if parts.len() > 1
+                && let Ok(parsed) = parts[1].parse::<usize>() {
                     viz_state.timeline_limit = parsed.max(1);
                 }
-            }
             match agent_manager
                 .session_timeline(Some(viz_state.timeline_limit))
                 .await
@@ -2779,6 +2814,122 @@ async fn handle_tui_command(
         }
         "/clear" | "/cls" => {
             logs.clear();
+        }
+        "/copy" => {
+            let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+            let path = format!("/tmp/ndc-session-{}.txt", timestamp);
+            match std::fs::write(&path, logs.join("\n")) {
+                Ok(()) => push_log_line(logs, &format!("[OK] Session saved to: {}", path)),
+                Err(e) => push_log_line(logs, &format!("[Error] Failed to save session: {}", e)),
+            }
+        }
+        "/resume" | "/r" => {
+            let has_cross = parts.iter().any(|p| *p == "--cross");
+            let session_id = parts.iter().skip(1).find(|p| !p.starts_with("--")).copied();
+            let result = if let Some(sid) = session_id {
+                agent_manager.use_session(sid, has_cross).await
+            } else {
+                agent_manager.resume_latest_project_session().await
+            };
+            match result {
+                Ok(sid) => {
+                    push_log_line(logs, &format!("[OK] Session resumed: {}", sid));
+                    restore_session_logs_to_panel(&agent_manager, viz_state, logs).await;
+                }
+                Err(e) => push_log_line(logs, &format!("[Error] {}", e)),
+            }
+        }
+        "/new" => {
+            match agent_manager.start_new_session().await {
+                Ok(sid) => {
+                    logs.clear();
+                    push_log_line(logs, &format!("[OK] New session started: {}", sid));
+                }
+                Err(e) => push_log_line(logs, &format!("[Error] {}", e)),
+            }
+        }
+        "/session" | "/sessions" => {
+            let limit = parts
+                .get(1)
+                .and_then(|p| p.parse::<usize>().ok())
+                .unwrap_or(10)
+                .max(1);
+            match agent_manager.list_project_session_ids(None, limit).await {
+                Ok(ids) if ids.is_empty() => {
+                    push_log_line(logs, "[Info] No sessions for current project.");
+                }
+                Ok(ids) => {
+                    push_log_line(logs, "Sessions (newest first):");
+                    for id in &ids {
+                        push_log_line(logs, &format!("  {}", id));
+                    }
+                    push_log_line(
+                        logs,
+                        "Use /resume <id> to restore, or /resume for latest.",
+                    );
+                }
+                Err(e) => push_log_line(logs, &format!("[Error] {}", e)),
+            }
+        }
+        "/project" | "/projects" => {
+            if parts.len() > 1 {
+                // Switch to a project directory
+                let dir = std::path::PathBuf::from(parts[1]);
+                match agent_manager.switch_project_context(dir).await {
+                    Ok(outcome) => {
+                        logs.clear();
+                        push_log_line(
+                            logs,
+                            &format!(
+                                "[OK] Switched to project '{}' ({})",
+                                outcome.project_id,
+                                outcome.project_root.display()
+                            ),
+                        );
+                        push_log_line(
+                            logs,
+                            &format!(
+                                "Session: {} ({})",
+                                outcome.session_id,
+                                if outcome.resumed_existing_session {
+                                    "resumed"
+                                } else {
+                                    "new"
+                                }
+                            ),
+                        );
+                        if outcome.resumed_existing_session {
+                            push_log_line(
+                                logs,
+                                "Use /resume to restore session history into this panel.",
+                            );
+                        }
+                    }
+                    Err(e) => push_log_line(logs, &format!("[Error] {}", e)),
+                }
+            } else {
+                // List known projects
+                match agent_manager.discover_projects(10).await {
+                    Ok(candidates) if candidates.is_empty() => {
+                        push_log_line(logs, "[Info] No projects discovered.");
+                    }
+                    Ok(candidates) => {
+                        push_log_line(logs, "Known projects:");
+                        for c in &candidates {
+                            push_log_line(
+                                logs,
+                                &format!(
+                                    "  {} — {}",
+                                    c.project_id,
+                                    c.project_root.display()
+                                ),
+                            );
+                        }
+                        push_log_line(logs, "Use /project <dir> to switch.");
+                    }
+                    Err(e) => push_log_line(logs, &format!("[Error] {}", e)),
+                }
+            }
         }
         "/exit" => return Ok(true),
         _ => push_log_line(logs, "[Tip] Unknown command. Use /help."),
@@ -3060,15 +3211,15 @@ mod tests {
             .collect::<Vec<_>>();
         for (key, value) in updates {
             match value {
-                Some(v) => std::env::set_var(key, v),
-                None => std::env::remove_var(key),
+                Some(v) => unsafe { std::env::set_var(key, v) },
+                None => unsafe { std::env::remove_var(key) },
             }
         }
         let result = f();
         for (key, old) in previous {
             match old {
-                Some(v) => std::env::set_var(&key, v),
-                None => std::env::remove_var(&key),
+                Some(v) => unsafe { std::env::set_var(&key, v) },
+                None => unsafe { std::env::remove_var(&key) },
             }
         }
         result
@@ -3799,7 +3950,7 @@ mod tests {
     fn test_env_char_default_and_override() {
         with_env_overrides(&[("NDC_REPL_KEY_TOGGLE_THINKING", None)], || {
             assert_eq!(env_char("NDC_REPL_KEY_TOGGLE_THINKING", 't'), 't');
-            std::env::set_var("NDC_REPL_KEY_TOGGLE_THINKING", "X");
+            unsafe { std::env::set_var("NDC_REPL_KEY_TOGGLE_THINKING", "X"); }
             assert_eq!(env_char("NDC_REPL_KEY_TOGGLE_THINKING", 't'), 'x');
         });
     }
@@ -4021,6 +4172,9 @@ mod tests {
             model: "gpt-4o".to_string(),
             session_id: Some("agent-1234567890abcdef".to_string()),
             active_task_id: None,
+            project_id: None,
+            project_root: None,
+            worktree: None,
         };
         let viz = ReplVisualizationState::new(false);
         let view = TuiSessionViewState::default();
@@ -4045,6 +4199,9 @@ mod tests {
             model: "gpt-4o".to_string(),
             session_id: Some("agent-1".to_string()),
             active_task_id: None,
+            project_id: None,
+            project_root: None,
+            worktree: None,
         };
         let viz = ReplVisualizationState::new(false);
         let view = TuiSessionViewState {

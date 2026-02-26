@@ -14,6 +14,7 @@ use tracing::debug;
 use super::trait_mod::{Tool, ToolError, ToolParams, ToolResult};
 
 /// 工具注册表
+#[derive(Default)]
 pub struct ToolRegistry {
     /// 工具映射
     tools: HashMap<String, Arc<dyn Tool>>,
@@ -25,15 +26,6 @@ pub struct ToolRegistry {
     categories: HashMap<String, Vec<String>>,
 }
 
-impl Default for ToolRegistry {
-    fn default() -> Self {
-        Self {
-            tools: HashMap::new(),
-            metadata: HashMap::new(),
-            categories: HashMap::new(),
-        }
-    }
-}
 
 impl ToolRegistry {
     /// 创建新的注册表
@@ -157,7 +149,7 @@ impl ToolRegistry {
     pub fn add_to_category(&mut self, category: &str, tool_name: &str) {
         self.categories
             .entry(category.to_string())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(tool_name.to_string());
     }
 
@@ -165,7 +157,7 @@ impl ToolRegistry {
     pub fn create_category(&mut self, category: &str) {
         self.categories
             .entry(category.to_string())
-            .or_insert_with(Vec::new);
+            .or_default();
     }
 
     /// 执行工具
@@ -174,7 +166,8 @@ impl ToolRegistry {
         name: &str,
         params: &ToolParams,
     ) -> Result<ToolResult, ToolError> {
-        let tool = self.tools
+        let tool = self
+            .tools
             .get(name)
             .ok_or_else(|| ToolError::NotFound(name.to_string()))?;
 

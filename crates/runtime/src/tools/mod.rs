@@ -12,20 +12,18 @@
 //! - JSON Schema: LLM-friendly parameter definitions
 
 mod trait_mod;
-pub use trait_mod::{Tool, ToolResult, ToolError, ToolContext, ToolManager, ToolMetadata};
+pub use trait_mod::{Tool, ToolContext, ToolError, ToolManager, ToolMetadata, ToolResult};
 
 pub mod schema;
 pub use schema::{
-    JsonSchema,
-    JsonSchemaProperty,
-    ToolSchemaBuilder,
-    SchemaValidator,
+    generate_tool_description, JsonSchema, JsonSchemaProperty, SchemaValidator, ToolSchemaBuilder,
     ValidationResult,
-    generate_tool_description,
 };
 
 pub mod registry;
-pub use registry::{ToolRegistry, ToolMetadata as RegistryToolMetadata, RegistrySummary, PredefinedCategories};
+pub use registry::{
+    PredefinedCategories, RegistrySummary, ToolMetadata as RegistryToolMetadata, ToolRegistry,
+};
 
 pub mod fs;
 pub use fs::FsTool;
@@ -56,13 +54,18 @@ pub mod glob_tool;
 pub use glob_tool::GlobTool;
 
 pub mod permission;
-pub use permission::{PermissionSystem, PermissionRequest, PermissionResponse, PermissionConfig, PermissionError, PermissionType, DangerLevel, PermissionSystemBuilder};
+pub use permission::{
+    DangerLevel, PermissionConfig, PermissionError, PermissionRequest, PermissionResponse,
+    PermissionSystem, PermissionSystemBuilder, PermissionType,
+};
 
 pub mod output_truncation;
-pub use output_truncation::{OutputTruncator, TruncatedOutput, TruncationConfig, read_partial_output};
+pub use output_truncation::{
+    read_partial_output, OutputTruncator, TruncatedOutput, TruncationConfig,
+};
 
 pub mod lsp;
-pub use lsp::{LspClient, LspDiagnostics, Diagnostic, DiagnosticSeverity, DiagnosticSummary};
+pub use lsp::{Diagnostic, DiagnosticSeverity, DiagnosticSummary, LspClient, LspDiagnostics};
 
 pub mod webfetch;
 pub use webfetch::WebFetchTool;
@@ -72,50 +75,154 @@ pub use websearch::WebSearchTool;
 
 // P7 NDC Task Tools (AI-callable tools)
 pub mod ndc;
-pub use ndc::{
-    TaskCreateTool,
-    TaskUpdateTool,
-    TaskListTool,
-    TaskVerifyTool,
-};
+pub use ndc::{MemoryQueryTool, TaskCreateTool, TaskListTool, TaskUpdateTool, TaskVerifyTool};
 
 // P6 File Locking
 pub mod locking;
 pub use locking::{
-    FileLockManager,
-    FileLock,
-    LockOwner,
+    EditToolWithLocking, FileLock, FileLockManager, LockError, LockOwner, LockRequest, LockResult,
     LockType,
-    LockError,
-    LockRequest,
-    LockResult,
-    EditToolWithLocking,
 };
 
 // P4.3 Bash Parsing
 pub mod bash_parsing;
 pub use bash_parsing::{
-    BashParser,
-    BashPermissionRequest,
+    BashDangerLevel, BashParser, BashPermissionRequest, CommandType, FileOpType, FileOperation,
     ParsedBashCommand,
-    CommandType,
-    FileOperation,
-    FileOpType,
-    BashDangerLevel,
 };
+
+pub mod security;
+pub use security::{
+    enforce_git_operation, enforce_path_boundary, enforce_shell_command,
+    extract_confirmation_permission, with_security_overrides, PERMISSION_EXTERNAL_DIRECTORY,
+    PERMISSION_GIT_COMMIT, PERMISSION_SHELL_HIGH_RISK, PERMISSION_SHELL_MEDIUM_RISK,
+};
+
+use ndc_storage::{create_memory_storage, SharedStorage};
+
+/// Create the default low-level tool manager used by runtime execution.
+///
+/// This manager is consumed by `Executor` and other non-LLM callers.
+pub fn create_default_tool_manager_with_storage(storage: SharedStorage) -> ToolManager {
+    let mut manager = ToolManager::new();
+
+    // Compatibility tool used by existing executor actions.
+    manager.register("fs", FsTool::new());
+    manager.register("shell", ShellTool::new());
+    manager.register("git", GitTool::new());
+
+    // OpenCode-style granular tools.
+    manager.register("list", ListTool::new());
+    manager.register("read", ReadTool::new());
+    manager.register("write", WriteTool::new());
+    manager.register("edit", EditTool::new());
+    manager.register("grep", GrepTool::new());
+    manager.register("glob", GlobTool::new());
+
+    // Optional web tools.
+    manager.register("webfetch", WebFetchTool::new());
+    manager.register("websearch", WebSearchTool::new());
+
+    // NDC task tools.
+    manager.register(
+        "ndc_task_create",
+        TaskCreateTool::with_storage(storage.clone()),
+    );
+    manager.register(
+        "ndc_task_update",
+        TaskUpdateTool::with_storage(storage.clone()),
+    );
+    manager.register("ndc_task_list", TaskListTool::with_storage(storage.clone()));
+    manager.register(
+        "ndc_task_verify",
+        TaskVerifyTool::with_storage(storage.clone()),
+    );
+    manager.register("ndc_memory_query", MemoryQueryTool::with_storage(storage));
+
+    manager
+}
+
+/// Create the default low-level tool manager used by runtime execution.
+///
+/// This manager is consumed by `Executor` and other non-LLM callers.
+pub fn create_default_tool_manager() -> ToolManager {
+    create_default_tool_manager_with_storage(create_memory_storage())
+}
+
+/// Create the default LLM-facing tool registry with explicit storage injection.
+pub fn create_default_tool_registry_with_storage(storage: SharedStorage) -> ToolRegistry {
+    let mut registry = ToolRegistry::new();
+
+    registry.register(FsTool::new());
+    registry.register(ShellTool::new());
+    registry.register(GitTool::new());
+
+    registry.register(ListTool::new());
+    registry.register(ReadTool::new());
+    registry.register(WriteTool::new());
+    registry.register(EditTool::new());
+    registry.register(GrepTool::new());
+    registry.register(GlobTool::new());
+
+    registry.register(WebFetchTool::new());
+    registry.register(WebSearchTool::new());
+
+    registry.register(TaskCreateTool::with_storage(storage.clone()));
+    registry.register(TaskUpdateTool::with_storage(storage.clone()));
+    registry.register(TaskListTool::with_storage(storage.clone()));
+    registry.register(TaskVerifyTool::with_storage(storage.clone()));
+    registry.register(MemoryQueryTool::with_storage(storage));
+
+    registry
+}
+
+/// Create the default LLM-facing tool registry.
+///
+/// This registry is consumed by Agent mode and is the source of tool schemas.
+pub fn create_default_tool_registry() -> ToolRegistry {
+    create_default_tool_registry_with_storage(create_memory_storage())
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs::File;
     use std::io::Write;
-    use tempfile::TempDir;
     use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    fn scoped_temp_dir() -> TempDir {
+        if let Ok(root) = std::env::var("NDC_PROJECT_ROOT") {
+            let root = PathBuf::from(root);
+            if root.is_dir() {
+                if let Ok(temp_dir) = tempfile::Builder::new()
+                    .prefix("ndc-tools-")
+                    .tempdir_in(root)
+                {
+                    return temp_dir;
+                }
+            }
+        }
+        if let Ok(cwd) = std::env::current_dir() {
+            if let Ok(temp_dir) = tempfile::Builder::new()
+                .prefix("ndc-tools-")
+                .tempdir_in(cwd)
+            {
+                return temp_dir;
+            }
+        }
+        TempDir::new().expect("create temp dir")
+    }
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        super::security::test_env_lock()
+    }
 
     // ===== FsTool Tests =====
 
     #[tokio::test]
     async fn test_fs_tool_new() {
+        let _env_guard = env_lock();
         let tool = FsTool::new();
         assert_eq!(tool.name(), "fs");
         assert!(tool.description().contains("read"));
@@ -123,7 +230,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_fs_read_file() {
-        let temp_dir = TempDir::new().unwrap();
+        let _env_guard = env_lock();
+        let temp_dir = scoped_temp_dir();
         let file_path = temp_dir.path().join("test.txt");
         let mut file = File::create(&file_path).unwrap();
         file.write_all(b"Hello, World!").unwrap();
@@ -142,7 +250,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_fs_write_file() {
-        let temp_dir = TempDir::new().unwrap();
+        let _env_guard = env_lock();
+        let temp_dir = scoped_temp_dir();
         let file_path = temp_dir.path().join("output.txt");
 
         let tool = FsTool::new();
@@ -164,7 +273,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_fs_create_file() {
-        let temp_dir = TempDir::new().unwrap();
+        let _env_guard = env_lock();
+        let temp_dir = scoped_temp_dir();
         let file_path = temp_dir.path().join("new_file.txt");
 
         let tool = FsTool::new();
@@ -180,7 +290,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_fs_create_directory() {
-        let temp_dir = TempDir::new().unwrap();
+        let _env_guard = env_lock();
+        let temp_dir = scoped_temp_dir();
         let dir_path = temp_dir.path().join("new_dir");
 
         let tool = FsTool::new();
@@ -196,7 +307,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_fs_delete_file() {
-        let temp_dir = TempDir::new().unwrap();
+        let _env_guard = env_lock();
+        let temp_dir = scoped_temp_dir();
         let file_path = temp_dir.path().join("to_delete.txt");
         File::create(&file_path).unwrap();
 
@@ -213,7 +325,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_fs_list_directory() {
-        let temp_dir = TempDir::new().unwrap();
+        let _env_guard = env_lock();
+        let temp_dir = scoped_temp_dir();
         let _ = File::create(temp_dir.path().join("file1.txt")).unwrap();
         let _ = File::create(temp_dir.path().join("file2.txt")).unwrap();
 
@@ -231,7 +344,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_fs_exists() {
-        let temp_dir = TempDir::new().unwrap();
+        let _env_guard = env_lock();
+        let temp_dir = scoped_temp_dir();
         let file_path = temp_dir.path().join("exists.txt");
         File::create(&file_path).unwrap();
 
@@ -256,10 +370,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_fs_invalid_operation() {
+        let _env_guard = env_lock();
+        let temp_dir = scoped_temp_dir();
         let tool = FsTool::new();
         let params = serde_json::json!({
             "operation": "invalid_op",
-            "path": "/some/path"
+            "path": temp_dir.path().join("some-path").to_string_lossy()
         });
 
         let result = tool.execute(&params).await;
@@ -274,6 +390,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fs_missing_path() {
+        let _env_guard = env_lock();
         let tool = FsTool::new();
         let params = serde_json::json!({
             "operation": "read"
@@ -287,12 +404,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_shell_tool_new() {
+        let _env_guard = env_lock();
         let tool = ShellTool::new();
         assert_eq!(tool.name(), "shell");
     }
 
     #[tokio::test]
     async fn test_shell_echo() {
+        let _env_guard = env_lock();
         let tool = ShellTool::new();
         let params = serde_json::json!({
             "command": "echo",
@@ -306,6 +425,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_shell_pwd() {
+        let _env_guard = env_lock();
         let tool = ShellTool::new();
         let params = serde_json::json!({
             "command": "pwd"
@@ -320,6 +440,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_shell_ls() {
+        let _env_guard = env_lock();
         let tool = ShellTool::new();
         let params = serde_json::json!({
             "command": "ls",
@@ -332,6 +453,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_shell_blocked_command() {
+        let _env_guard = env_lock();
         let tool = ShellTool::new();
         let params = serde_json::json!({
             "command": "rm",
@@ -349,7 +471,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_shell_cat_file() {
-        let temp_dir = TempDir::new().unwrap();
+        let _env_guard = env_lock();
+        let temp_dir = scoped_temp_dir();
         let file_path = temp_dir.path().join("test.txt");
         std::fs::write(&file_path, "cat test content").unwrap();
 
@@ -366,6 +489,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_shell_missing_command() {
+        let _env_guard = env_lock();
         let tool = ShellTool::new();
         let params = serde_json::json!({
             "args": ["test"]
@@ -377,11 +501,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_shell_failed_command() {
+        let _env_guard = env_lock();
         let tool = ShellTool::new();
-        // cat a non-existent file will fail
+        let temp_dir = scoped_temp_dir();
+        // cat a non-existent file under the scoped temp root will fail.
         let params = serde_json::json!({
             "command": "cat",
-            "args": ["/path/does/not/exist"]
+            "args": [temp_dir.path().join("does-not-exist").to_string_lossy()]
         });
 
         let result = tool.execute(&params).await.unwrap();
@@ -393,12 +519,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_git_tool_new() {
+        let _env_guard = env_lock();
         let tool = GitTool::new();
         assert_eq!(tool.name(), "git");
     }
 
     #[tokio::test]
     async fn test_git_status() {
+        let _env_guard = env_lock();
         let tool = GitTool::new();
         let params = serde_json::json!({
             "operation": "status"
@@ -411,6 +539,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_git_branch() {
+        let _env_guard = env_lock();
         let tool = GitTool::new();
         let params = serde_json::json!({
             "operation": "branch"
@@ -423,6 +552,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_git_branch_current() {
+        let _env_guard = env_lock();
         let tool = GitTool::new();
         let params = serde_json::json!({
             "operation": "branch_current"
@@ -435,6 +565,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_git_log() {
+        let _env_guard = env_lock();
         let tool = GitTool::new();
         let params = serde_json::json!({
             "operation": "log"
@@ -446,6 +577,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_git_remote() {
+        let _env_guard = env_lock();
         let tool = GitTool::new();
         let params = serde_json::json!({
             "operation": "remote"
@@ -458,6 +590,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_git_invalid_operation() {
+        let _env_guard = env_lock();
         let tool = GitTool::new();
         let params = serde_json::json!({
             "operation": "invalid_op"
@@ -469,6 +602,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_git_missing_operation() {
+        let _env_guard = env_lock();
         let tool = GitTool::new();
         let params = serde_json::json!({
             "message": "test"
@@ -482,6 +616,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tool_manager_new() {
+        let _env_guard = env_lock();
         let manager = ToolManager::new();
         // ToolManager created successfully
         let tool = manager.get("nonexistent");
@@ -490,6 +625,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tool_manager_register() {
+        let _env_guard = env_lock();
         let mut manager = ToolManager::new();
         let fs_tool = FsTool::new();
         manager.register("fs", fs_tool);
@@ -501,7 +637,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_tool_manager_execute() {
-        let temp_dir = TempDir::new().unwrap();
+        let _env_guard = env_lock();
+        let temp_dir = scoped_temp_dir();
         let file_path = temp_dir.path().join("test.txt");
         std::fs::write(&file_path, "manager test").unwrap();
 
@@ -521,6 +658,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tool_manager_not_found() {
+        let _env_guard = env_lock();
         let manager = ToolManager::new();
         let params = serde_json::json!({});
 
@@ -537,6 +675,7 @@ mod tests {
 
     #[test]
     fn test_tool_context_default() {
+        let _env_guard = env_lock();
         let context = ToolContext::default();
         assert!(context.working_dir.exists() || context.working_dir.to_string_lossy() == ".");
         assert!(!context.read_only);
@@ -545,6 +684,7 @@ mod tests {
 
     #[test]
     fn test_tool_context_custom() {
+        let _env_guard = env_lock();
         let context = ToolContext {
             working_dir: PathBuf::from("/tmp"),
             env_vars: std::collections::HashMap::new(),
@@ -562,6 +702,7 @@ mod tests {
 
     #[test]
     fn test_tool_result_success() {
+        let _env_guard = env_lock();
         let result = ToolResult {
             success: true,
             output: "test output".to_string(),
@@ -582,6 +723,7 @@ mod tests {
 
     #[test]
     fn test_tool_result_failure() {
+        let _env_guard = env_lock();
         let result = ToolResult {
             success: false,
             output: "".to_string(),
@@ -603,6 +745,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fs_tool_schema() {
+        let _env_guard = env_lock();
         let tool = FsTool::new();
         let schema = tool.schema();
         assert!(schema.is_object());
@@ -613,6 +756,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_shell_tool_schema() {
+        let _env_guard = env_lock();
         let tool = ShellTool::new();
         let schema = tool.schema();
         assert!(schema.is_object());
@@ -620,6 +764,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_git_tool_schema() {
+        let _env_guard = env_lock();
         let tool = GitTool::new();
         let schema = tool.schema();
         assert!(schema.is_object());

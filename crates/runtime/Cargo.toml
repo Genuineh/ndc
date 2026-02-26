@@ -1,13 +1,14 @@
 [package]
 name = "ndc-runtime"
-version = "0.1.0"
-edition = "2021"
-license = "MIT"
-authors = ["Jerry"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
 
 [features]
 default = []
-sqlite = ["rusqlite"]
+sqlite = ["ndc-storage/sqlite"]
 
 [dependencies]
 # Async runtime
@@ -42,9 +43,7 @@ chrono = { version = "0.4", features = ["serde"] }
 # Core types
 ndc-core = { path = "../core" }
 ndc-decision = { path = "../decision" }
-
-# SQLite (optional)
-rusqlite = { version = "0.32", optional = true, features = ["bundled"] }
+ndc-storage = { path = "../storage" }
 
 # Utilities
 tempfile = "3"

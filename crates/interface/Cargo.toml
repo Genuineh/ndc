@@ -1,9 +1,10 @@
 [package]
 name = "ndc-interface"
-version = "0.1.0"
-edition = "2021"
-license = "MIT"
-authors = ["Jerry"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
 
 [build-dependencies]
 tonic-build = "0.12"
@@ -17,6 +18,7 @@ async-trait = "0.1"
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+regex = "1"
 
 # Error handling
 thiserror = "1"
@@ -51,10 +53,12 @@ ndc-runtime = { path = "../runtime" }
 # gRPC (optional)
 tonic = { version = "0.12", optional = true }
 prost = { version = "0.13", optional = true }
+axum = { version = "0.7", optional = true }
+async-stream = { version = "0.3", optional = true }
 
 [features]
 default = []
-grpc = ["tonic", "prost"]
+grpc = ["tonic", "prost", "axum", "async-stream"]
 
 [dev-dependencies]
 tempfile = "3"

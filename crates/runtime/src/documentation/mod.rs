@@ -115,7 +115,6 @@ pub struct DocUpdater {
     /// Narratives storage
     narratives: Arc<RwLock<Vec<Narrative>>>,
     /// Configuration
-    #[allow(dead_code)]
     _config: DocUpdaterConfig,
 }
 
@@ -123,13 +122,10 @@ pub struct DocUpdater {
 #[derive(Debug, Clone)]
 pub struct DocUpdaterConfig {
     /// Maximum narrative length
-    #[allow(dead_code)]
     _max_narrative_length: usize,
     /// Auto-generate narratives
-    #[allow(dead_code)]
     _auto_narrative: bool,
     /// Update docstrings automatically
-    #[allow(dead_code)]
     _auto_docstring: bool,
 }
 
@@ -184,7 +180,10 @@ impl DocUpdater {
         let content = self.build_narrative_content(actions, results, learnings);
 
         let narrative = Narrative {
-            id: format!("narrative-{}", uuid::Uuid::new_v4().to_string()[..8].to_string()),
+            id: format!(
+                "narrative-{}",
+                &uuid::Uuid::new_v4().to_string()[..8]
+            ),
             task_id: task_id.to_string(),
             title: title.to_string(),
             content,
@@ -285,7 +284,9 @@ impl DocUpdater {
                         }
                     }
                     DocUpdateType::Readme => {
-                        if let Some(updated) = self.update_readme(&content, &request.context, &request.content) {
+                        if let Some(updated) =
+                            self.update_readme(&content, &request.context, &request.content)
+                        {
                             content = updated;
                             changes.push("Updated README section".to_string());
                         }
@@ -299,8 +300,8 @@ impl DocUpdater {
                 }
 
                 // Write back if changed
-                if content.len() != original_len {
-                    if let Err(e) = std::fs::write(&request.file_path, &content) {
+                if content.len() != original_len
+                    && let Err(e) = std::fs::write(&request.file_path, &content) {
                         return DocUpdateResult {
                             success: false,
                             file_path: request.file_path.clone(),
@@ -308,7 +309,6 @@ impl DocUpdater {
                             warnings: vec![format!("Failed to write file: {}", e)],
                         };
                     }
-                }
 
                 DocUpdateResult {
                     success: !changes.is_empty(),
@@ -337,11 +337,10 @@ impl DocUpdater {
         ];
 
         for (pattern, replacement) in &patterns {
-            if let Ok(re) = regex::RegexBuilder::new(pattern).multi_line(true).build() {
-                if re.is_match(content) {
+            if let Ok(re) = regex::RegexBuilder::new(pattern).multi_line(true).build()
+                && re.is_match(content) {
                     return Some(re.replace(content, *replacement).to_string());
                 }
-            }
         }
 
         // If no existing docstring, try to add after function signature
@@ -355,7 +354,7 @@ impl DocUpdater {
                     let mut new_content = content[..insertion_point].to_string();
                     new_content.push_str("\n    ");
                     new_content.push_str(new_docstring);
-                    new_content.push_str("\n");
+                    new_content.push('\n');
                     new_content.push_str(&content[insertion_point..]);
                     return Some(new_content);
                 }
@@ -368,22 +367,24 @@ impl DocUpdater {
     /// Update inline comment
     fn update_comment(&self, content: &str, new_comment: &str) -> Option<String> {
         // Try to find and replace existing comments
-        let comment_pattern = format!(r"//[^\n]*\n");
+        let comment_pattern = r"//[^\n]*\n".to_string();
         let hash_pattern = r"# [^\n]*\n";
 
-        if let Ok(re) = regex::RegexBuilder::new(&comment_pattern).multi_line(true).build() {
-            if re.is_match(content) {
+        if let Ok(re) = regex::RegexBuilder::new(&comment_pattern)
+            .multi_line(true)
+            .build()
+            && re.is_match(content) {
                 let replacement = format!("// {}\n", new_comment);
                 return Some(re.replace(content, &replacement).to_string());
             }
-        }
 
-        if let Ok(re) = regex::RegexBuilder::new(hash_pattern).multi_line(true).build() {
-            if re.is_match(content) {
+        if let Ok(re) = regex::RegexBuilder::new(hash_pattern)
+            .multi_line(true)
+            .build()
+            && re.is_match(content) {
                 let replacement = format!("# {}\n", new_comment);
                 return Some(re.replace(content, &replacement).to_string());
             }
-        }
 
         None
     }
@@ -395,8 +396,8 @@ impl DocUpdater {
 
         let entry = format!("\n## [{}] - {}\n\n{}\n", date, date, new_entry);
 
-        if header_pattern.is_match(content) {
-            if let Some(pos) = content.find("## [Unreleased]") {
+        if header_pattern.is_match(content)
+            && let Some(pos) = content.find("## [Unreleased]") {
                 // Insert before unreleased section
                 let mut new_content = content[..pos].to_string();
                 new_content.push_str(&entry);
@@ -404,7 +405,6 @@ impl DocUpdater {
                 new_content.push_str(&content[pos + 15..]);
                 return Some(new_content);
             }
-        }
 
         // If no unreleased section, append to top
         let mut new_content = entry;
@@ -414,7 +414,8 @@ impl DocUpdater {
 
     /// Update README section
     fn update_readme(&self, content: &str, section: &str, new_content: &str) -> Option<String> {
-        let section_pattern = regex::Regex::new(&format!(r"## {}\s*\n([^\n]*(?:\n(?!## ))*)", section)).ok()?;
+        let section_pattern =
+            regex::Regex::new(&format!(r"## {}\s*\n([^\n]*(?:\n(?!## ))*)", section)).ok()?;
         let replacement = format!("## {}\n\n{}\n", section, new_content);
 
         if section_pattern.is_match(content) {
@@ -436,7 +437,11 @@ impl DocUpdater {
         let code_block_pattern = regex::Regex::new(r"```rust\s*\n([^\n]*)```").ok()?;
 
         if code_block_pattern.is_match(content) {
-            return Some(code_block_pattern.replace(content, format!("```rust\n{}\n{}\n```", example, "$1")).to_string());
+            return Some(
+                code_block_pattern
+                    .replace(content, format!("```rust\n{}\n{}\n```", example, "$1"))
+                    .to_string(),
+            );
         }
 
         None

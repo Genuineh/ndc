@@ -6,11 +6,11 @@
 //! - Lock timeout and automatic release
 //! - Integration with edit tool
 
+use serde::Serialize;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use serde::Serialize;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use tracing::debug;
@@ -297,11 +297,7 @@ impl FileLockManager {
     }
 
     /// Release a lock
-    pub async fn release_lock(
-        &self,
-        path: &PathBuf,
-        owner_id: &str,
-    ) -> Result<(), LockError> {
+    pub async fn release_lock(&self, path: &PathBuf, owner_id: &str) -> Result<(), LockError> {
         let path = self.normalize_path(path);
 
         let mut locks = self.locks.write().await;
@@ -391,7 +387,7 @@ impl FileLockManager {
         // Find expired locks
         let expired_paths: Vec<PathBuf> = locks
             .iter()
-            .filter(|(_, lock)| lock.expires_at.map_or(false, |e| now > e))
+            .filter(|(_, lock)| lock.expires_at.is_some_and(|e| now > e))
             .map(|(path, _)| path.clone())
             .collect();
 
@@ -410,12 +406,12 @@ impl FileLockManager {
     }
 
     /// Normalize path
-    fn normalize_path(&self, path: &PathBuf) -> PathBuf {
-        path.canonicalize().unwrap_or_else(|_| path.clone())
+    fn normalize_path(&self, path: &Path) -> PathBuf {
+        path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
     }
 
     /// Write lock to dotfile
-    async fn write_lock_file(&self, path: &PathBuf, lock: &FileLock) {
+    async fn write_lock_file(&self, path: &Path, lock: &FileLock) {
         let lock_file = self.lock_file_path(path);
 
         // Create serializable version
@@ -450,12 +446,12 @@ impl FileLockManager {
     }
 
     /// Get lock file path
-    fn lock_file_path(&self, path: &PathBuf) -> PathBuf {
+    fn lock_file_path(&self, path: &Path) -> PathBuf {
         // Create a safe filename from the path
-        let mut components = path.components().peekable();
+        let components = path.components().peekable();
         let mut filename = String::new();
 
-        while let Some(comp) = components.next() {
+        for comp in components {
             if !filename.is_empty() {
                 filename.push('_');
             }
@@ -548,9 +544,9 @@ impl EditToolWithLocking {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use std::fs::File;
     use std::io::Write;
+    use tempfile::TempDir;
 
     fn create_test_file(temp_dir: &TempDir, name: &str, content: &str) -> PathBuf {
         let file_path = temp_dir.path().join(name);
@@ -674,7 +670,11 @@ mod tests {
         let owner = FileLockManager::create_owner("owner-1", "Owner 1");
 
         let result = manager
-            .try_acquire_lock(&PathBuf::from("/nonexistent/file.txt"), &owner, LockType::Write)
+            .try_acquire_lock(
+                &PathBuf::from("/nonexistent/file.txt"),
+                &owner,
+                LockType::Write,
+            )
             .await;
 
         assert!(!result.success);

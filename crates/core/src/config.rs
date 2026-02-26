@@ -7,9 +7,9 @@
 //! - 统一类型定义 (使用 llm/provider 中的 ProviderType)
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 use std::collections::HashMap;
 use std::env;
+use std::path::PathBuf;
 use thiserror::Error;
 
 // Re-export from llm/provider
@@ -114,12 +114,24 @@ pub struct YamlLlmConfig {
     pub providers: HashMap<String, YamlProviderConfig>,
 }
 
-fn default_true() -> bool { true }
-fn default_provider() -> String { "openai".to_string() }
-fn default_model() -> String { "gpt-4o".to_string() }
-fn default_temperature() -> f32 { 0.1 }
-fn default_max_tokens() -> u32 { 4096 }
-fn default_timeout() -> u64 { 60 }
+fn default_true() -> bool {
+    true
+}
+fn default_provider() -> String {
+    "openai".to_string()
+}
+fn default_model() -> String {
+    "gpt-4o".to_string()
+}
+fn default_temperature() -> f32 {
+    0.1
+}
+fn default_max_tokens() -> u32 {
+    4096
+}
+fn default_timeout() -> u64 {
+    60
+}
 
 impl Default for YamlLlmConfig {
     fn default() -> Self {
@@ -174,10 +186,18 @@ pub struct YamlReplConfig {
     pub confirmation_mode: bool,
 }
 
-fn default_prompt() -> String { "ndc> ".to_string() }
-fn default_max_history() -> usize { 1000 }
-fn default_session_timeout() -> u64 { 3600 }
-fn default_confirmation() -> bool { true }
+fn default_prompt() -> String {
+    "ndc> ".to_string()
+}
+fn default_max_history() -> usize {
+    1000
+}
+fn default_session_timeout() -> u64 {
+    3600
+}
+fn default_confirmation() -> bool {
+    true
+}
 
 impl Default for YamlReplConfig {
     fn default() -> Self {
@@ -203,10 +223,20 @@ pub struct YamlRuntimeConfig {
     pub execution_timeout: u64,
     pub working_dir: Option<PathBuf>,
     pub quality_gates: Option<Vec<String>>,
+    /// Discovery failure strategy: "degrade" (default) or "block"
+    #[serde(default = "default_discovery_failure_mode")]
+    pub discovery_failure_mode: String,
 }
 
-fn default_max_concurrent() -> usize { 4 }
-fn default_execution_timeout() -> u64 { 300 }
+fn default_max_concurrent() -> usize {
+    4
+}
+fn default_execution_timeout() -> u64 {
+    300
+}
+fn default_discovery_failure_mode() -> String {
+    "degrade".to_string()
+}
 
 impl Default for YamlRuntimeConfig {
     fn default() -> Self {
@@ -215,6 +245,7 @@ impl Default for YamlRuntimeConfig {
             execution_timeout: default_execution_timeout(),
             working_dir: None,
             quality_gates: None,
+            discovery_failure_mode: default_discovery_failure_mode(),
         }
     }
 }
@@ -229,7 +260,9 @@ pub struct YamlStorageConfig {
     pub in_memory: bool,
 }
 
-fn default_storage_type() -> String { "memory".to_string() }
+fn default_storage_type() -> String {
+    "memory".to_string()
+}
 
 impl Default for YamlStorageConfig {
     fn default() -> Self {
@@ -290,7 +323,9 @@ pub struct YamlToolPermissions {
     pub tools: HashMap<String, String>,
 }
 
-fn default_permission_rule() -> String { "ask".to_string() }
+fn default_permission_rule() -> String {
+    "ask".to_string()
+}
 
 // ============================================================================
 // OpenCode 风格配置加载器
@@ -299,9 +334,9 @@ fn default_permission_rule() -> String { "ask".to_string() }
 /// 配置分层枚举
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigLayer {
-    Global,    // /etc/ndc/
-    User,      // ~/.config/ndc/
-    Project,   // ./.ndc/
+    Global,  // /etc/ndc/
+    User,    // ~/.config/ndc/
+    Project, // ./.ndc/
 }
 
 impl ConfigLayer {
@@ -413,11 +448,20 @@ impl NdcConfigLoader {
         }
 
         // Runtime 配置
-        if let Ok(v) = env::var("NDC_MAX_CONCURRENT_TASKS") {
-            if let Ok(n) = v.parse() {
-                let runtime = self.config.runtime.get_or_insert_with(YamlRuntimeConfig::default);
+        if let Ok(v) = env::var("NDC_MAX_CONCURRENT_TASKS")
+            && let Ok(n) = v.parse() {
+                let runtime = self
+                    .config
+                    .runtime
+                    .get_or_insert_with(YamlRuntimeConfig::default);
                 runtime.max_concurrent_tasks = n;
             }
+        if let Ok(v) = env::var("NDC_DISCOVERY_FAILURE_MODE") {
+            let runtime = self
+                .config
+                .runtime
+                .get_or_insert_with(YamlRuntimeConfig::default);
+            runtime.discovery_failure_mode = v;
         }
     }
 
@@ -432,12 +476,21 @@ impl NdcConfigLoader {
         Some(ProviderConfig {
             name: llm.provider.clone(),
             provider_type,
-            api_key: llm.api_key.clone()
+            api_key: llm
+                .api_key
+                .as_deref()
+                .and_then(parse_env_ref)
                 .or_else(|| env::var("NDC_LLM_API_KEY").ok())
                 .unwrap_or_default(),
-            base_url: llm.base_url.clone()
+            base_url: llm
+                .base_url
+                .as_deref()
+                .and_then(parse_env_ref)
                 .or_else(|| env::var("NDC_LLM_BASE_URL").ok()),
-            organization: llm.organization.clone()
+            organization: llm
+                .organization
+                .as_deref()
+                .and_then(parse_env_ref)
                 .or_else(|| env::var("NDC_ORGANIZATION").ok()),
             default_model: llm.model.clone(),
             models: Vec::new(),
@@ -455,8 +508,7 @@ impl Default for NdcConfigLoader {
 
 /// 解析 env:// 前缀
 fn parse_env_ref(value: &str) -> Option<String> {
-    if value.starts_with("env://") {
-        let env_var = &value[6..];
+    if let Some(env_var) = value.strip_prefix("env://") {
         env::var(env_var).ok()
     } else {
         Some(value.to_string())
@@ -477,17 +529,14 @@ pub struct ToolPermissions {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum PermissionRule {
     Allow,
+    #[default]
     Ask,
     Deny,
 }
 
-impl Default for PermissionRule {
-    fn default() -> Self {
-        Self::Ask
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentProfile {
@@ -514,8 +563,12 @@ pub struct AgentProfile {
     pub priority: i32,
 }
 
-fn default_max_tool_calls() -> usize { 50 }
-fn default_priority() -> i32 { 0 }
+fn default_max_tool_calls() -> usize {
+    50
+}
+fn default_priority() -> i32 {
+    0
+}
 
 impl Default for AgentProfile {
     fn default() -> Self {
@@ -540,7 +593,7 @@ impl Default for AgentProfile {
 pub struct PredefinedProfiles;
 
 impl PredefinedProfiles {
-    pub fn default() -> AgentProfile {
+    pub fn base() -> AgentProfile {
         AgentProfile::default()
     }
 
@@ -581,7 +634,7 @@ impl PredefinedProfiles {
     }
 
     pub fn all() -> Vec<AgentProfile> {
-        vec![Self::default(), Self::implementer(), Self::verifier()]
+        vec![Self::base(), Self::implementer(), Self::verifier()]
     }
 }
 
@@ -603,13 +656,19 @@ impl AgentRoleSelector {
         self.profiles
             .iter()
             .filter(|p| {
-                p.task_types.iter().any(|t| t == "*" || t == task_type || task_type.contains(t.as_str()))
+                p.task_types
+                    .iter()
+                    .any(|t| t == "*" || t == task_type || task_type.contains(t.as_str()))
             })
             .max_by_key(|p| p.priority)
     }
 
     pub fn select_by_name(&self, name: &str) -> Option<&AgentProfile> {
         self.profiles.iter().find(|p| p.name == name)
+    }
+
+    pub fn default_profile(&self) -> Option<&AgentProfile> {
+        self.select_by_name(&self.default_profile)
     }
 }
 
@@ -636,7 +695,12 @@ mod config_tests {
     #[test]
     fn test_config_layer_paths() {
         assert_eq!(ConfigLayer::Global.path(), PathBuf::from("/etc/ndc"));
-        assert!(ConfigLayer::User.path().to_string_lossy().contains(".config/ndc"));
+        assert!(
+            ConfigLayer::User
+                .path()
+                .to_string_lossy()
+                .contains(".config/ndc")
+        );
         assert_eq!(ConfigLayer::Project.path(), PathBuf::from(".ndc"));
     }
 

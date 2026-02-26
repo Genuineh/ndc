@@ -39,10 +39,7 @@ impl std::fmt::Debug for OpenRouterProvider {
 
 impl OpenRouterProvider {
     /// Create a new OpenRouter provider
-    pub fn new(
-        config: ProviderConfig,
-        token_counter: Arc<dyn TokenCounter>,
-    ) -> Self {
+    pub fn new(config: ProviderConfig, token_counter: Arc<dyn TokenCounter>) -> Self {
         let client = Client::builder()
             .timeout(std::time::Duration::from_millis(config.timeout_ms))
             .build()
@@ -87,8 +84,16 @@ impl OpenRouterProvider {
     /// Build request headers for OpenRouter
     fn build_request_headers(&self) -> Vec<(&'static str, String)> {
         let mut headers = vec![
-            ("HTTP-Referer", self.site_url.clone().unwrap_or_else(|| "https://github.com/Genuineh/ndc".to_string())),
-            ("X-Title", self.app_name.clone().unwrap_or_else(|| "NDC".to_string())),
+            (
+                "HTTP-Referer",
+                self.site_url
+                    .clone()
+                    .unwrap_or_else(|| "https://github.com/Genuineh/ndc".to_string()),
+            ),
+            (
+                "X-Title",
+                self.app_name.clone().unwrap_or_else(|| "NDC".to_string()),
+            ),
         ];
 
         // Add custom headers from organization if provided
@@ -99,8 +104,46 @@ impl OpenRouterProvider {
         headers
     }
 
+    fn serialize_messages(&self, request: &CompletionRequest) -> Vec<serde_json::Value> {
+        request
+            .messages
+            .iter()
+            .map(|m| {
+                let mut msg = serde_json::json!({
+                    "role": m.role,
+                    "content": m.content,
+                });
+
+                if let Some(name) = &m.name {
+                    if m.role == MessageRole::Tool {
+                        msg["tool_call_id"] = serde_json::json!(name);
+                    } else {
+                        msg["name"] = serde_json::json!(name);
+                    }
+                }
+
+                if let Some(calls) = &m.tool_calls
+                    && !calls.is_empty() {
+                        msg["tool_calls"] = serde_json::json!(calls);
+                    }
+
+                msg
+            })
+            .collect()
+    }
+
+    fn apply_tools(&self, body: &mut serde_json::Value, request: &CompletionRequest) {
+        if let Some(tools) = request.tools.as_ref().filter(|t| !t.is_empty()) {
+            body["tools"] = serde_json::json!(tools);
+            body["tool_choice"] = serde_json::json!("auto");
+        }
+    }
+
     /// Parse OpenRouter response to CompletionResponse
-    fn parse_response(&self, response_value: serde_json::Value) -> Result<CompletionResponse, ProviderError> {
+    fn parse_response(
+        &self,
+        response_value: serde_json::Value,
+    ) -> Result<CompletionResponse, ProviderError> {
         let choices = response_value["choices"]
             .as_array()
             .ok_or_else(|| ProviderError::Api {
@@ -108,12 +151,10 @@ impl OpenRouterProvider {
                 status_code: None,
             })?;
 
-        let first_choice = choices
-            .first()
-            .ok_or_else(|| ProviderError::Api {
-                message: "Empty choices array".to_string(),
-                status_code: None,
-            })?;
+        let first_choice = choices.first().ok_or_else(|| ProviderError::Api {
+            message: "Empty choices array".to_string(),
+            status_code: None,
+        })?;
 
         let message = first_choice["message"]
             .as_object()
@@ -122,26 +163,28 @@ impl OpenRouterProvider {
                 status_code: None,
             })?;
 
-        let content = message.get("content")
+        let content = message
+            .get("content")
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        let role = message.get("role")
+        let role = message
+            .get("role")
             .and_then(|v| v.as_str())
             .unwrap_or("assistant");
+        let tool_calls = message
+            .get("tool_calls")
+            .and_then(|v| serde_json::from_value::<Vec<ToolCall>>(v.clone()).ok());
 
         // Parse usage if available
-        let usage = if let Some(u) = response_value.get("usage") {
-            Some(Usage {
+        let usage = response_value.get("usage").map(|u| Usage {
                 prompt_tokens: u["prompt_tokens"].as_u64().unwrap_or(0) as u32,
                 completion_tokens: u["completion_tokens"].as_u64().unwrap_or(0) as u32,
                 total_tokens: u["total_tokens"].as_u64().unwrap_or(0) as u32,
-            })
-        } else {
-            None
-        };
+            });
 
-        let finish_reason = first_choice.get("finish_reason")
+        let finish_reason = first_choice
+            .get("finish_reason")
             .and_then(|v| v.as_str())
             .unwrap_or("stop")
             .to_string();
@@ -175,7 +218,7 @@ impl OpenRouterProvider {
                     role: message_role,
                     content: content.to_string(),
                     name: None,
-                    tool_calls: None,
+                    tool_calls,
                 },
                 finish_reason: Some(finish_reason),
                 logprobs: None,
@@ -220,20 +263,18 @@ impl LlmProvider for OpenRouterProvider {
             });
         }
 
-        let data: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| ProviderError::Api {
-                message: format!("Failed to parse models response: {}", e),
-                status_code: None,
-            })?;
+        let data: serde_json::Value = response.json().await.map_err(|e| ProviderError::Api {
+            message: format!("Failed to parse models response: {}", e),
+            status_code: None,
+        })?;
 
-        let models_array = data.get("data")
-            .and_then(|v| v.as_array())
-            .ok_or_else(|| ProviderError::Api {
-                message: "Missing data array in models response".to_string(),
-                status_code: None,
-            })?;
+        let models_array =
+            data.get("data")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| ProviderError::Api {
+                    message: "Missing data array in models response".to_string(),
+                    status_code: None,
+                })?;
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -245,14 +286,14 @@ impl LlmProvider for OpenRouterProvider {
             .filter_map(|m| {
                 Some(ModelInfo {
                     id: m.get("id")?.as_str()?.to_string(),
-                    object: m.get("object")
+                    object: m
+                        .get("object")
                         .and_then(|v| v.as_str())
                         .unwrap_or("model")
                         .to_string(),
-                    created: m.get("created")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(now),
-                    owned_by: m.get("owned_by")
+                    created: m.get("created").and_then(|v| v.as_u64()).unwrap_or(now),
+                    owned_by: m
+                        .get("owned_by")
                         .and_then(|v| v.as_str())
                         .unwrap_or("openrouter")
                         .to_string(),
@@ -270,13 +311,9 @@ impl LlmProvider for OpenRouterProvider {
     ) -> Result<CompletionResponse, ProviderError> {
         let url = format!("{}/chat/completions", self.get_base_url());
 
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "model": request.model,
-            "messages": request.messages.iter().map(|m| serde_json::json!({
-                "role": m.role,
-                "content": m.content,
-                "name": m.name,
-            })).collect::<Vec<_>>(),
+            "messages": self.serialize_messages(request),
             "temperature": request.temperature.unwrap_or(0.7),
             "max_tokens": request.max_tokens,
             "top_p": request.top_p,
@@ -285,6 +322,7 @@ impl LlmProvider for OpenRouterProvider {
             "stop": request.stop,
             "stream": false,
         });
+        self.apply_tools(&mut body, request);
 
         let mut req_builder = self
             .client
@@ -312,9 +350,7 @@ impl LlmProvider for OpenRouterProvider {
         }
 
         if status.as_u16() == 429 {
-            return Err(ProviderError::RateLimited {
-                retry_after: 60,
-            });
+            return Err(ProviderError::RateLimited { retry_after: 60 });
         }
 
         if !status.is_success() {
@@ -329,10 +365,8 @@ impl LlmProvider for OpenRouterProvider {
             });
         }
 
-        let response_value: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| ProviderError::Api {
+        let response_value: serde_json::Value =
+            response.json().await.map_err(|e| ProviderError::Api {
                 message: format!("Failed to parse response: {}", e),
                 status_code: None,
             })?;
@@ -347,13 +381,9 @@ impl LlmProvider for OpenRouterProvider {
     ) -> Result<(), ProviderError> {
         let url = format!("{}/chat/completions", self.get_base_url());
 
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "model": request.model,
-            "messages": request.messages.iter().map(|m| serde_json::json!({
-                "role": m.role,
-                "content": m.content,
-                "name": m.name,
-            })).collect::<Vec<_>>(),
+            "messages": self.serialize_messages(request),
             "temperature": request.temperature.unwrap_or(0.7),
             "max_tokens": request.max_tokens,
             "top_p": request.top_p,
@@ -362,6 +392,7 @@ impl LlmProvider for OpenRouterProvider {
             "stop": request.stop,
             "stream": true,
         });
+        self.apply_tools(&mut body, request);
 
         let mut req_builder = self
             .client
@@ -406,16 +437,16 @@ impl LlmProvider for OpenRouterProvider {
 
         while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result.map_err(|e| ProviderError::Network { source: e })?;
-            let text = std::str::from_utf8(&chunk)
-                .map_err(|e| ProviderError::Api { message: e.to_string(), status_code: None })?;
+            let text = std::str::from_utf8(&chunk).map_err(|e| ProviderError::Api {
+                message: e.to_string(),
+                status_code: None,
+            })?;
 
             buffer.push_str(text);
 
             // OpenRouter SSE format: data: {...}
             for line in buffer.lines() {
-                if line.starts_with("data: ") {
-                    let data = &line[6..];
-
+                if let Some(data) = line.strip_prefix("data: ") {
                     if data == "[DONE]" {
                         if let Some(ref response) = full_response {
                             handler.on_complete(response).await?;
@@ -425,31 +456,38 @@ impl LlmProvider for OpenRouterProvider {
 
                     if let Ok(value) = serde_json::from_str::<serde_json::Value>(data) {
                         // OpenRouter streaming format follows OpenAI format
-                        let delta = value["choices"]
-                            .get(0)
-                            .and_then(|c| c.get("delta"));
+                        let delta = value["choices"].get(0).and_then(|c| c.get("delta"));
 
                         if let Some(delta_obj) = delta {
-                            let chunk_content = delta_obj.get("content")
+                            let chunk_content = delta_obj
+                                .get("content")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("");
 
                             if !chunk_content.is_empty() {
-                                let chunk_role = delta_obj.get("role")
+                                let chunk_role = delta_obj
+                                    .get("role")
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("assistant");
 
                                 let stream_chunk = StreamChunk {
                                     id: value["id"].as_str().unwrap_or("").to_string(),
-                                    object: value["object"].as_str().unwrap_or("chat.completion.chunk").to_string(),
+                                    object: value["object"]
+                                        .as_str()
+                                        .unwrap_or("chat.completion.chunk")
+                                        .to_string(),
                                     created: value["created"].as_u64().unwrap_or(0),
-                                    model: value["model"].as_str().unwrap_or(&self.config.default_model).to_string(),
+                                    model: value["model"]
+                                        .as_str()
+                                        .unwrap_or(&self.config.default_model)
+                                        .to_string(),
                                     choices: vec![StreamChoice {
                                         index: value["choices"]
                                             .get(0)
                                             .and_then(|c| c.get("index"))
                                             .and_then(|v| v.as_u64())
-                                            .unwrap_or(0) as usize,
+                                            .unwrap_or(0)
+                                            as usize,
                                         delta: Some(Message {
                                             role: match chunk_role {
                                                 "system" => MessageRole::System,
@@ -472,9 +510,15 @@ impl LlmProvider for OpenRouterProvider {
                                 if full_response.is_none() {
                                     full_response = Some(CompletionResponse {
                                         id: value["id"].as_str().unwrap_or("").to_string(),
-                                        object: value["object"].as_str().unwrap_or("chat.completion").to_string(),
+                                        object: value["object"]
+                                            .as_str()
+                                            .unwrap_or("chat.completion")
+                                            .to_string(),
                                         created: value["created"].as_u64().unwrap_or(0),
-                                        model: value["model"].as_str().unwrap_or(&self.config.default_model).to_string(),
+                                        model: value["model"]
+                                            .as_str()
+                                            .unwrap_or(&self.config.default_model)
+                                            .to_string(),
                                         choices: vec![Choice {
                                             index: 0,
                                             message: Message {

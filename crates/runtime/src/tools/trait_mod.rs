@@ -126,7 +126,6 @@ impl std::fmt::Debug for ToolManager {
 }
 
 impl ToolManager {
-
     pub fn new() -> Self {
         Self::default()
     }
@@ -135,8 +134,14 @@ impl ToolManager {
         self.registry.insert(name.into(), Arc::new(tool));
     }
 
-    pub async fn execute(&self, tool_name: &str, params: &ToolParams) -> Result<ToolResult, ToolError> {
-        let tool = self.registry.get(tool_name)
+    pub async fn execute(
+        &self,
+        tool_name: &str,
+        params: &ToolParams,
+    ) -> Result<ToolResult, ToolError> {
+        let tool = self
+            .registry
+            .get(tool_name)
             .ok_or_else(|| ToolError::NotFound(tool_name.to_string()))?;
 
         let start = std::time::Instant::now();

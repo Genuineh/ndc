@@ -4,16 +4,22 @@
 //! Design参考 OpenCode glob.ts
 
 use async_trait::async_trait;
-use std::path::PathBuf;
 use glob::glob;
+use std::path::PathBuf;
 use tracing::debug;
 
-use super::{Tool, ToolResult, ToolError, ToolMetadata};
 use super::schema::ToolSchemaBuilder;
+use super::{enforce_path_boundary, Tool, ToolError, ToolMetadata, ToolResult};
 
 /// Glob tool - 文件模式匹配
 #[derive(Debug)]
 pub struct GlobTool;
+
+impl Default for GlobTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl GlobTool {
     pub fn new() -> Self {
@@ -32,29 +38,30 @@ impl Tool for GlobTool {
     }
 
     async fn execute(&self, params: &serde_json::Value) -> Result<ToolResult, ToolError> {
-        let pattern = params.get("pattern")
+        let pattern = params
+            .get("pattern")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArgument("Missing 'pattern' parameter".to_string()))?;
 
-        let path_str = params.get("path")
-            .and_then(|v| v.as_str())
-            .unwrap_or(".");
+        let path_str = params.get("path").and_then(|v| v.as_str()).unwrap_or(".");
 
         let path = PathBuf::from(path_str);
         let base_dir = if path.is_absolute() {
             path
         } else {
             std::env::current_dir()
-                .map_err(|e| ToolError::Io(e))?
+                .map_err(ToolError::Io)?
                 .join(path)
         };
+
+        enforce_path_boundary(base_dir.as_path(), None, "glob")?;
 
         let start = std::time::Instant::now();
 
         // Build full pattern
         let full_pattern = if pattern.starts_with('/') {
             // Absolute pattern
-            format!("{}", pattern)
+            pattern.to_string()
         } else {
             // Relative to path
             format!("{}/{}", base_dir.display(), pattern)
@@ -66,8 +73,8 @@ impl Tool for GlobTool {
         let mut files = Vec::new();
 
         for entry in glob(&full_pattern)
-            .map_err(|e| ToolError::InvalidArgument(format!("Invalid glob pattern: {}", e)))? {
-
+            .map_err(|e| ToolError::InvalidArgument(format!("Invalid glob pattern: {}", e)))?
+        {
             match entry {
                 Ok(path) => {
                     if path.is_dir() {
@@ -99,7 +106,11 @@ impl Tool for GlobTool {
         };
 
         let bytes = output.len();
-        debug!("Glob found {} matches for pattern '{}'", results.len(), full_pattern);
+        debug!(
+            "Glob found {} matches for pattern '{}'",
+            results.len(),
+            full_pattern
+        );
 
         Ok(ToolResult {
             success: true,
@@ -117,8 +128,14 @@ impl Tool for GlobTool {
     fn schema(&self) -> serde_json::Value {
         ToolSchemaBuilder::new()
             .description("Find files matching glob patterns")
-            .required_string("pattern", "The glob pattern (e.g., \"**/*.rs\", \"src/**/*.ts\")")
-            .param_string("path", "Base directory for search (defaults to current directory)")
+            .required_string(
+                "pattern",
+                "The glob pattern (e.g., \"**/*.rs\", \"src/**/*.ts\")",
+            )
+            .param_string(
+                "path",
+                "Base directory for search (defaults to current directory)",
+            )
             .build()
             .to_value()
     }
@@ -127,9 +144,8 @@ impl Tool for GlobTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use std::fs::File;
-    use std::io::Write;
+    use tempfile::TempDir;
 
     #[tokio::test]
     async fn test_glob_single_file() {

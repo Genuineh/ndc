@@ -8,7 +8,7 @@
 //! - Support context inheritance
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 
 /// Task lineage entry
@@ -162,17 +162,12 @@ impl LineageInjector {
         }
     }
 
-    /// Create with default config
-    pub fn default() -> Self {
-        Self::new(LineageInjectorConfig::default())
-    }
-
     /// Add a lineage entry
     pub fn add_lineage(&mut self, entry: LineageEntry) {
         // Track in root lineage
         self.root_lineage
             .entry(entry.root_task_id.clone())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(entry.current_task_id.clone());
 
         self.lineage.insert(entry.current_task_id.clone(), entry);
@@ -259,7 +254,10 @@ impl LineageInjector {
     pub fn inject(&self, task_id: &str) -> String {
         let entry = match self.lineage.get(task_id) {
             Some(e) => e,
-            None => return "=== TASK LINEAGE ===\n(no lineage information)\n=== END LINEAGE ===".to_string(),
+            None => {
+                return "=== TASK LINEAGE ===\n(no lineage information)\n=== END LINEAGE ==="
+                    .to_string();
+            }
         };
 
         let mut lines = Vec::new();
@@ -296,14 +294,17 @@ impl LineageInjector {
         if self.config.include_failures && !entry.inherited_failures.is_empty() {
             lines.push("\nInherited Failures (learned from lineage):".to_string());
             for failure in &entry.inherited_failures {
-                lines.push(format!("  • {}: {}", failure.description, failure.root_cause));
+                lines.push(format!(
+                    "  • {}: {}",
+                    failure.description, failure.root_cause
+                ));
                 lines.push(format!("    Solution: {}", failure.solution));
             }
         }
 
         // Inherited context
-        if self.config.include_context {
-            if let Some(ref ctx) = entry.inherited_context {
+        if self.config.include_context
+            && let Some(ref ctx) = entry.inherited_context {
                 lines.push("\nInherited Context:".to_string());
                 lines.push(format!("  {}", ctx.summary));
                 if !ctx.key_decisions.is_empty() {
@@ -313,12 +314,13 @@ impl LineageInjector {
                     }
                 }
             }
-        }
 
         // Inherited invariants count
         if !entry.inherited_invariants.is_empty() {
-            lines.push(format!("\nInherited Invariants: {}",
-                entry.inherited_invariants.len()));
+            lines.push(format!(
+                "\nInherited Invariants: {}",
+                entry.inherited_invariants.len()
+            ));
         }
 
         lines.push("=== END LINEAGE ===".to_string());
@@ -355,6 +357,6 @@ impl LineageInjector {
 
 impl Default for LineageInjector {
     fn default() -> Self {
-        Self::default()
+        Self::new(LineageInjectorConfig::default())
     }
 }

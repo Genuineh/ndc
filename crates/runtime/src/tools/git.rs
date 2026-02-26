@@ -5,15 +5,21 @@
 //! - Branch operations
 //! - Commit operations
 
-use super::{Tool, ToolResult, ToolError, ToolContext};
-use tracing::debug;
+use super::{enforce_git_operation, Tool, ToolContext, ToolError, ToolResult};
 use tokio::process::Command;
+use tracing::debug;
 
 /// Git tool using shell commands
 #[derive(Debug)]
 pub struct GitTool {
     #[allow(dead_code)]
     context: ToolContext,
+}
+
+impl Default for GitTool {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl GitTool {
@@ -27,7 +33,9 @@ impl GitTool {
         let mut cmd = Command::new("git");
         cmd.args(args);
 
-        let output = cmd.output().await
+        let output = cmd
+            .output()
+            .await
             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -52,9 +60,12 @@ impl Tool for GitTool {
     }
 
     async fn execute(&self, params: &serde_json::Value) -> Result<ToolResult, ToolError> {
-        let operation = params.get("operation")
+        let operation = params
+            .get("operation")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArgument("Missing operation".to_string()))?;
+
+        enforce_git_operation(operation)?;
 
         debug!("GitTool executing: {}", operation);
 
@@ -85,9 +96,12 @@ impl Tool for GitTool {
                 (out.clone(), out.len())
             }
             "commit" => {
-                let message = params.get("message")
+                let message = params
+                    .get("message")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| ToolError::InvalidArgument("Missing commit message".to_string()))?;
+                    .ok_or_else(|| {
+                        ToolError::InvalidArgument("Missing commit message".to_string())
+                    })?;
                 let out = self.git(&["commit", "-m", message]).await?;
                 (out.clone(), out.len())
             }
@@ -107,7 +121,12 @@ impl Tool for GitTool {
                 let out = self.git(&["fetch"]).await?;
                 (out.clone(), out.len())
             }
-            _ => return Err(ToolError::InvalidArgument(format!("Unknown git operation: {}", operation)))
+            _ => {
+                return Err(ToolError::InvalidArgument(format!(
+                    "Unknown git operation: {}",
+                    operation
+                )));
+            }
         };
 
         let duration = start.elapsed().as_millis() as u64;

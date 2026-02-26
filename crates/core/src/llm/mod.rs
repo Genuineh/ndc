@@ -1,25 +1,16 @@
 //! LLM integration module
 
 pub mod decomposition;
-pub mod selector;
 pub mod provider;
+pub mod selector;
 pub mod understanding;
 
 pub use decomposition::*;
-pub use selector::ModelSelector;
 pub use provider::*;
+pub use selector::ModelSelector;
 // Exclude RelationType to avoid conflict with memory::RelationType
 pub use understanding::{
-    KnowledgeUnderstandingService,
-    UnderstandingConfig,
+    Constraint, ConstraintType, Entity, EntityType, KnowledgeItem, KnowledgeUnderstandingService,
+    Relationship, Requirement, RequirementIntent, RequirementQuality, UnderstandingConfig,
     UnderstandingContext,
-    Requirement,
-    RequirementIntent,
-    Entity,
-    EntityType,
-    Relationship,
-    Constraint,
-    ConstraintType,
-    RequirementQuality,
-    KnowledgeItem,
 };

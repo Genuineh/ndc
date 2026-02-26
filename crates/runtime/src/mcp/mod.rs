@@ -120,8 +120,8 @@ pub struct StdioTransport {
 #[async_trait::async_trait]
 impl McpTransport for StdioTransport {
     async fn send(&mut self, message: &serde_json::Value) -> Result<serde_json::Value, String> {
-        let json = serde_json::to_string(message)
-            .map_err(|e| format!("Serialize failed: {}", e))?;
+        let json =
+            serde_json::to_string(message).map_err(|e| format!("Serialize failed: {}", e))?;
 
         let payload = format!("Content-Length: {}\n\n{}", json.len(), json);
 
@@ -166,14 +166,18 @@ impl McpTransport for HttpTransport {
             request = request.bearer_auth(token);
         }
 
-        let response = request.send().await
+        let response = request
+            .send()
+            .await
             .map_err(|e| format!("Request failed: {}", e))?;
 
         if !response.status().is_success() {
             return Err(format!("HTTP error: {}", response.status()));
         }
 
-        response.json().await
+        response
+            .json()
+            .await
             .map_err(|e| format!("Parse failed: {}", e))
     }
 
@@ -222,8 +226,8 @@ impl McpManager {
         let content = std::fs::read_to_string(config_path)
             .map_err(|e| format!("Failed to read config: {}", e))?;
 
-        let configs: Vec<McpServerConfig> = serde_yaml::from_str(&content)
-            .map_err(|e| format!("Failed to parse config: {}", e))?;
+        let configs: Vec<McpServerConfig> =
+            serde_yaml::from_str(&content).map_err(|e| format!("Failed to parse config: {}", e))?;
 
         for config in configs {
             self.add_server(config);
@@ -256,18 +260,19 @@ impl McpManager {
 
     /// Connect to a specific server
     pub async fn connect_server(&mut self, name: &str) -> Result<(), String> {
-        let config = self.servers.get(name)
+        let config = self
+            .servers
+            .get(name)
             .ok_or_else(|| format!("Unknown server: {}", name))?
             .clone();
 
         // Handle OAuth if needed
-        if let Some(ref oauth) = config.oauth {
-            if self.oauth_tokens.get(name).is_none() {
+        if let Some(ref oauth) = config.oauth
+            && self.oauth_tokens.get(name).is_none() {
                 // Get new token
                 let token = self.obtain_oauth_token(name, oauth).await?;
                 self.oauth_tokens.insert(name.to_string(), token.clone());
             }
-        }
 
         // Create transport based on server type
         let transport: Option<Box<dyn McpTransport>> = match config.server_type {
@@ -308,7 +313,11 @@ impl McpManager {
     }
 
     /// Create stdio transport for local server
-    async fn create_stdio_transport(&mut self, name: &str, command: &[String]) -> Result<StdioTransport, String> {
+    async fn create_stdio_transport(
+        &mut self,
+        name: &str,
+        command: &[String],
+    ) -> Result<StdioTransport, String> {
         if command.is_empty() {
             return Err("Empty command".to_string());
         }
@@ -321,7 +330,8 @@ impl McpManager {
         cmd.stdin(std::process::Stdio::piped());
         cmd.stdout(std::process::Stdio::piped());
 
-        let mut child = cmd.spawn()
+        let mut child = cmd
+            .spawn()
             .map_err(|e| format!("Failed to spawn MCP server {}: {}", name, e))?;
 
         let stdin = child.stdin.take();
@@ -331,7 +341,11 @@ impl McpManager {
     }
 
     /// Obtain OAuth token
-    async fn obtain_oauth_token(&self, _name: &str, _oauth: &McpOAuthConfig) -> Result<String, String> {
+    async fn obtain_oauth_token(
+        &self,
+        _name: &str,
+        _oauth: &McpOAuthConfig,
+    ) -> Result<String, String> {
         // In a real implementation, this would:
         // 1. Check for cached token
         // 2. If expired, refresh using client_id + client_secret
@@ -370,9 +384,12 @@ impl McpManager {
         }
 
         // Remove discovered resources
-        self.tools.retain(|k, _| !k.starts_with(&format!("{}_", name)));
-        self.prompts.retain(|k, _| !k.starts_with(&format!("{}_", name)));
-        self.resources.retain(|k, _| !k.starts_with(&format!("{}_", name)));
+        self.tools
+            .retain(|k, _| !k.starts_with(&format!("{}_", name)));
+        self.prompts
+            .retain(|k, _| !k.starts_with(&format!("{}_", name)));
+        self.resources
+            .retain(|k, _| !k.starts_with(&format!("{}_", name)));
 
         Ok(())
     }
@@ -401,11 +418,20 @@ impl McpManager {
     }
 
     /// Call a tool on a specific server
-    pub async fn call_tool(&mut self, server_name: &str, tool_name: &str, args: serde_json::Value) -> Result<McpResult, String> {
-        let connection = self.connections.get_mut(server_name)
+    pub async fn call_tool(
+        &mut self,
+        server_name: &str,
+        tool_name: &str,
+        args: serde_json::Value,
+    ) -> Result<McpResult, String> {
+        let connection = self
+            .connections
+            .get_mut(server_name)
             .ok_or_else(|| format!("Not connected to server: {}", server_name))?;
 
-        let transport = connection.transport.as_mut()
+        let transport = connection
+            .transport
+            .as_mut()
             .ok_or_else(|| format!("No transport for server: {}", server_name))?;
 
         // Build JSON-RPC request
@@ -439,10 +465,11 @@ impl McpManager {
     /// Search tools by name or description
     pub fn search_tools(&self, query: &str) -> Vec<&McpTool> {
         let query = query.to_lowercase();
-        self.tools.values()
+        self.tools
+            .values()
             .filter(|tool| {
-                tool.name.to_lowercase().contains(&query) ||
-                tool.description.to_lowercase().contains(&query)
+                tool.name.to_lowercase().contains(&query)
+                    || tool.description.to_lowercase().contains(&query)
             })
             .collect()
     }
@@ -468,7 +495,10 @@ mod tests {
         let config = McpServerConfig {
             name: "filesystem".to_string(),
             server_type: McpServerType::Local,
-            command: Some(vec!["npx".to_string(), "@modelcontextplugin/server-filesystem".to_string()]),
+            command: Some(vec![
+                "npx".to_string(),
+                "@modelcontextplugin/server-filesystem".to_string(),
+            ]),
             url: None,
             enabled: true,
             timeout_ms: 30000,
@@ -536,17 +566,23 @@ mod tests {
     fn test_search_tools() {
         let mut manager = McpManager::new();
 
-        manager.tools.insert("fs_read".to_string(), McpTool {
-            name: "read".to_string(),
-            description: "Read files".to_string(),
-            input_schema: serde_json::json!({}),
-        });
+        manager.tools.insert(
+            "fs_read".to_string(),
+            McpTool {
+                name: "read".to_string(),
+                description: "Read files".to_string(),
+                input_schema: serde_json::json!({}),
+            },
+        );
 
-        manager.tools.insert("fs_write".to_string(), McpTool {
-            name: "write".to_string(),
-            description: "Write files".to_string(),
-            input_schema: serde_json::json!({}),
-        });
+        manager.tools.insert(
+            "fs_write".to_string(),
+            McpTool {
+                name: "write".to_string(),
+                description: "Write files".to_string(),
+                input_schema: serde_json::json!({}),
+            },
+        );
 
         let results = manager.search_tools("read");
         assert_eq!(results.len(), 1);

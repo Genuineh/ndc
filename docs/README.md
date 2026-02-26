@@ -6,8 +6,8 @@
 
 当前执行状态：
 
-- `P0-C`（Workflow-Native REPL 与实时可观测）已完成
-- `P1`（核心自治能力与治理）为当前最高优先级
+- `P0-D`（安全边界与项目级会话隔离）进行中
+- `P1`（核心自治能力与治理）为下一优先级
 
 ## 快速链接
 
@@ -51,8 +51,10 @@ docs/
 | ai_agent | crates/core/src/ai_agent/ | Agent Orchestrator, Session, Verifier, Prompts |
 | core/task | crates/core/src/task.rs | Task, TaskState, ExecutionStep |
 | core/llm | crates/core/src/llm/ | LLM Provider 系统 (OpenAI/Anthropic/Ollama/MiniMax/OpenRouter) |
+| storage | crates/storage/src/ | 存储抽象层 (Storage trait, MemoryStorage, SqliteStorage) |
 | runtime/tools | crates/runtime/src/tools/ | MCP, Skills, File, Git, Shell |
 | interface | crates/interface/src/ | CLI, REPL, gRPC, Interactive |
+| decision | crates/decision/src/ | 决策引擎 |
 | bin | bin/main.rs | 二进制入口 |
 
 ## 快速开始

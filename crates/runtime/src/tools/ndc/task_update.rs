@@ -7,7 +7,7 @@ use ndc_core::{TaskId, TaskPriority, TaskState};
 
 use super::super::schema::{JsonSchema, JsonSchemaProperty, ToolSchemaBuilder};
 use super::super::{Tool, ToolError, ToolMetadata, ToolResult};
-use crate::storage::{create_memory_storage, SharedStorage};
+use ndc_storage::{create_memory_storage, SharedStorage};
 
 /// Task Update Tool - 更新任务状态
 #[derive(Clone)]
@@ -138,8 +138,8 @@ impl Tool for TaskUpdateTool {
             updates.push(format!("priority: {:?}", priority));
         }
 
-        if let Some(notes) = params.get("notes").and_then(|v| v.as_str()) {
-            if !notes.trim().is_empty() {
+        if let Some(notes) = params.get("notes").and_then(|v| v.as_str())
+            && !notes.trim().is_empty() {
                 if !task.description.is_empty() {
                     task.description.push_str("\n\n");
                 }
@@ -150,7 +150,6 @@ impl Tool for TaskUpdateTool {
                 ));
                 updates.push(format!("notes: {} chars", notes.len()));
             }
-        }
 
         if let Some(add_tags) = params.get("add_tags").and_then(|v| v.as_array()) {
             let tags: Vec<String> = add_tags

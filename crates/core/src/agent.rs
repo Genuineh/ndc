@@ -7,6 +7,12 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AgentId(pub Uuid);
 
+impl Default for AgentId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AgentId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())

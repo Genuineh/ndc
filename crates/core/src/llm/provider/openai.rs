@@ -32,10 +32,7 @@ impl std::fmt::Debug for OpenAiProvider {
 
 impl OpenAiProvider {
     /// Create a new OpenAI provider
-    pub fn new(
-        config: ProviderConfig,
-        token_counter: Arc<dyn TokenCounter>,
-    ) -> Self {
+    pub fn new(config: ProviderConfig, token_counter: Arc<dyn TokenCounter>) -> Self {
         let client = Client::builder()
             .timeout(std::time::Duration::from_millis(config.timeout_ms))
             .build()
@@ -66,6 +63,42 @@ impl OpenAiProvider {
     fn map_model_name(&self, model: &str) -> String {
         model.to_string()
     }
+
+    fn serialize_messages(&self, request: &CompletionRequest) -> Vec<serde_json::Value> {
+        request
+            .messages
+            .iter()
+            .map(|m| {
+                let mut msg = serde_json::json!({
+                    "role": m.role,
+                    "content": m.content,
+                });
+
+                if let Some(name) = &m.name {
+                    // For tool role, this carries tool_call_id.
+                    if m.role == MessageRole::Tool {
+                        msg["tool_call_id"] = serde_json::json!(name);
+                    } else {
+                        msg["name"] = serde_json::json!(name);
+                    }
+                }
+
+                if let Some(calls) = &m.tool_calls
+                    && !calls.is_empty() {
+                        msg["tool_calls"] = serde_json::json!(calls);
+                    }
+
+                msg
+            })
+            .collect()
+    }
+
+    fn apply_tools(&self, body: &mut serde_json::Value, request: &CompletionRequest) {
+        if let Some(tools) = request.tools.as_ref().filter(|t| !t.is_empty()) {
+            body["tools"] = serde_json::json!(tools);
+            body["tool_choice"] = serde_json::json!("auto");
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -90,14 +123,19 @@ impl LlmProvider for OpenAiProvider {
             .map_err(|e| ProviderError::Network { source: e })?;
 
         if !response.status().is_success() {
-            return Err(map_provider_error(response.error_for_status().unwrap_err().into(), "openai"));
+            return Err(map_provider_error(
+                response.error_for_status().unwrap_err(),
+                "openai",
+            ));
         }
 
-        let data: serde_json::Value = response.json().await
-            .map_err(|e| ProviderError::Api { message: e.to_string(), status_code: None })?;
+        let data: serde_json::Value = response.json().await.map_err(|e| ProviderError::Api {
+            message: e.to_string(),
+            status_code: None,
+        })?;
 
-        let models: Vec<ModelInfo> = serde_json::from_value(data["data"].clone())
-            .map_err(|e| ProviderError::Api {
+        let models: Vec<ModelInfo> =
+            serde_json::from_value(data["data"].clone()).map_err(|e| ProviderError::Api {
                 message: format!("Failed to parse models: {}", e),
                 status_code: None,
             })?;
@@ -120,13 +158,9 @@ impl LlmProvider for OpenAiProvider {
             });
         }
 
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "model": self.map_model_name(&request.model),
-            "messages": request.messages.iter().map(|m| serde_json::json!({
-                "role": m.role,
-                "content": m.content,
-                "name": m.name,
-            })).collect::<Vec<_>>(),
+            "messages": self.serialize_messages(request),
             "temperature": request.temperature.unwrap_or(0.7),
             "max_tokens": request.max_tokens,
             "top_p": request.top_p,
@@ -135,6 +169,7 @@ impl LlmProvider for OpenAiProvider {
             "stop": request.stop,
             "stream": false,
         });
+        self.apply_tools(&mut body, request);
 
         let response = self
             .client
@@ -154,7 +189,9 @@ impl LlmProvider for OpenAiProvider {
         } else if status == StatusCode::TOO_MANY_REQUESTS {
             return Err(ProviderError::RateLimited { retry_after: 60 });
         } else if status == StatusCode::BAD_REQUEST {
-            let error: serde_json::Value = response.json().await
+            let error: serde_json::Value = response
+                .json()
+                .await
                 .unwrap_or_else(|_| serde_json::json!({}));
             let message = error["error"]["message"]
                 .as_str()
@@ -168,8 +205,8 @@ impl LlmProvider for OpenAiProvider {
             });
         }
 
-        let response: CompletionResponse = response.json().await
-            .map_err(|e| ProviderError::Api {
+        let response: CompletionResponse =
+            response.json().await.map_err(|e| ProviderError::Api {
                 message: format!("Failed to parse response: {}", e),
                 status_code: None,
             })?;
@@ -184,17 +221,14 @@ impl LlmProvider for OpenAiProvider {
     ) -> Result<(), ProviderError> {
         let url = format!("{}/chat/completions", self.get_base_url());
 
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "model": self.map_model_name(&request.model),
-            "messages": request.messages.iter().map(|m| serde_json::json!({
-                "role": m.role,
-                "content": m.content,
-                "name": m.name,
-            })).collect::<Vec<_>>(),
+            "messages": self.serialize_messages(request),
             "temperature": request.temperature.unwrap_or(0.7),
             "max_tokens": request.max_tokens,
             "stream": true,
         });
+        self.apply_tools(&mut body, request);
 
         let mut stream = self
             .client
@@ -211,12 +245,13 @@ impl LlmProvider for OpenAiProvider {
 
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|e| ProviderError::Network { source: e })?;
-            let lines = std::str::from_utf8(&chunk)
-                .map_err(|e| ProviderError::Api { message: e.to_string(), status_code: None })?;
+            let lines = std::str::from_utf8(&chunk).map_err(|e| ProviderError::Api {
+                message: e.to_string(),
+                status_code: None,
+            })?;
 
             for line in lines.lines() {
-                if line.starts_with("data: ") {
-                    let data = &line[6..];
+                if let Some(data) = line.strip_prefix("data: ") {
                     if data == "[DONE]" {
                         if let Some(ref response) = full_response {
                             handler.on_complete(response).await?;
@@ -246,7 +281,9 @@ impl LlmProvider for OpenAiProvider {
     }
 
     fn estimate_tokens(&self, request: &CompletionRequest) -> Usage {
-        let prompt_tokens = self.token_counter.count_messages(&request.messages, &request.model);
+        let prompt_tokens = self
+            .token_counter
+            .count_messages(&request.messages, &request.model);
         let completion_tokens = request.max_tokens.unwrap_or(1024) as usize;
         Usage {
             prompt_tokens: prompt_tokens as u32,
@@ -266,11 +303,7 @@ impl LlmProvider for OpenAiProvider {
 }
 
 /// Create a basic OpenAI configuration
-pub fn create_openai_config(
-    name: &str,
-    api_key: &str,
-    default_model: &str,
-) -> ProviderConfig {
+pub fn create_openai_config(name: &str, api_key: &str, default_model: &str) -> ProviderConfig {
     ProviderConfig {
         name: name.to_string(),
         provider_type: ProviderType::OpenAi,
@@ -301,7 +334,10 @@ pub fn create_azure_config(
         name: name.to_string(),
         provider_type: ProviderType::Azure,
         api_key: api_key.to_string(),
-        base_url: Some(format!("{}/openai/deployments/{}", base_url, deployment_name)),
+        base_url: Some(format!(
+            "{}/openai/deployments/{}",
+            base_url, deployment_name
+        )),
         organization: None,
         default_model: deployment_name.to_string(),
         models: vec![deployment_name.to_string()],

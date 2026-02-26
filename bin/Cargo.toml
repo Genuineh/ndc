@@ -1,9 +1,10 @@
 [package]
 name = "ndc"
-version = "0.1.0"
-edition = "2021"
-license = "MIT"
-authors = ["Jerry"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
 
 [[bin]]
 path = "main.rs"

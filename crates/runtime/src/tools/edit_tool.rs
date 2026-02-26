@@ -13,8 +13,8 @@ use async_trait::async_trait;
 use std::path::PathBuf;
 use tracing::debug;
 
-use super::{Tool, ToolResult, ToolError, ToolMetadata};
 use super::schema::ToolSchemaBuilder;
+use super::{enforce_path_boundary, Tool, ToolError, ToolMetadata, ToolResult};
 
 /// 编辑错误类型
 #[derive(Debug, thiserror::Error)]
@@ -35,15 +35,21 @@ pub enum EditError {
 /// 匹配策略
 #[derive(Debug, Clone, PartialEq)]
 enum MatchingStrategy {
-    Simple,                    // 精确匹配
-    LineTrimmed,               // 行尾空白trim
-    BlockAnchor,               // 块锚点匹配
-    WhitespaceNormalized,      // 空白字符标准化
+    Simple,               // 精确匹配
+    LineTrimmed,          // 行尾空白trim
+    BlockAnchor,          // 块锚点匹配
+    WhitespaceNormalized, // 空白字符标准化
 }
 
 /// Edit tool - 智能文件编辑
 #[derive(Debug)]
 pub struct EditTool;
+
+impl Default for EditTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl EditTool {
     pub fn new() -> Self {
@@ -90,11 +96,20 @@ impl EditTool {
             // 多行: 检查每行是否匹配
             if let Some(start_idx) = content.lines().position(|l| l.trim_end() == old_lines[0]) {
                 let _end_idx = start_idx + old_lines.len();
-                let matched_lines: Vec<&str> = content.lines().skip(start_idx).take(old_lines.len()).collect();
+                let matched_lines: Vec<&str> = content
+                    .lines()
+                    .skip(start_idx)
+                    .take(old_lines.len())
+                    .collect();
 
-                if matched_lines.len() == old_lines.len() &&
-                   matched_lines.iter().zip(old_lines.iter()).all(|(a, b)| a.trim_end() == b.trim_end()) {
-                    let line_start: usize = content.lines().take(start_idx).map(|l| l.len() + 1).sum();
+                if matched_lines.len() == old_lines.len()
+                    && matched_lines
+                        .iter()
+                        .zip(old_lines.iter())
+                        .all(|(a, b)| a.trim_end() == b.trim_end())
+                {
+                    let line_start: usize =
+                        content.lines().take(start_idx).map(|l| l.len() + 1).sum();
                     let matched_text: String = matched_lines.join("\n");
                     let line_end = line_start + matched_text.len();
                     return Some((line_start, line_end));
@@ -120,18 +135,24 @@ impl EditTool {
         if let Some(start_idx) = content.lines().position(|l| l.trim() == first_line) {
             // 从末尾向前找匹配的尾行
             for end_idx in (start_idx + 1..content.lines().count()).rev() {
-                let lines_between: Vec<&str> = content.lines().skip(start_idx).take(end_idx - start_idx).collect();
-                if lines_between.first().map(|l| l.trim()) == Some(first_line) &&
-                   lines_between.last().map(|l| l.trim()) == Some(last_line) &&
-                   lines_between.len() == old_lines.len() {
+                let lines_between: Vec<&str> = content
+                    .lines()
+                    .skip(start_idx)
+                    .take(end_idx - start_idx)
+                    .collect();
+                if lines_between.first().map(|l| l.trim()) == Some(first_line)
+                    && lines_between.last().map(|l| l.trim()) == Some(last_line)
+                    && lines_between.len() == old_lines.len()
+                {
                     // 检查中间行
-                    let middle_matched = lines_between[1..lines_between.len()-1]
+                    let middle_matched = lines_between[1..lines_between.len() - 1]
                         .iter()
-                        .zip(old_lines[1..old_lines.len()-1].iter())
+                        .zip(old_lines[1..old_lines.len() - 1].iter())
                         .all(|(a, b)| a.trim() == b.trim());
 
                     if middle_matched {
-                        let line_start: usize = content.lines().take(start_idx).map(|l| l.len() + 1).sum();
+                        let line_start: usize =
+                            content.lines().take(start_idx).map(|l| l.len() + 1).sum();
                         let matched_text: String = lines_between.join("\n");
                         return Some((line_start, line_start + matched_text.len()));
                     }
@@ -154,7 +175,10 @@ impl EditTool {
             ("Simple", MatchingStrategy::Simple),
             ("LineTrimmed", MatchingStrategy::LineTrimmed),
             ("BlockAnchor", MatchingStrategy::BlockAnchor),
-            ("WhitespaceNormalized", MatchingStrategy::WhitespaceNormalized),
+            (
+                "WhitespaceNormalized",
+                MatchingStrategy::WhitespaceNormalized,
+            ),
         ];
 
         let mut matches = None;
@@ -165,7 +189,9 @@ impl EditTool {
                 MatchingStrategy::Simple => self.match_simple(content, old),
                 MatchingStrategy::LineTrimmed => self.match_line_trimmed(content, old),
                 MatchingStrategy::BlockAnchor => self.match_block_anchor(content, old),
-                MatchingStrategy::WhitespaceNormalized => self.match_whitespace_normalized(content, old),
+                MatchingStrategy::WhitespaceNormalized => {
+                    self.match_whitespace_normalized(content, old)
+                }
             };
 
             if let Some(range) = result {
@@ -185,7 +211,10 @@ impl EditTool {
 
         let result = content[..start].to_string() + new + &content[end..];
 
-        debug!("Edit applied using {} strategy", used_strategy.unwrap_or("unknown"));
+        debug!(
+            "Edit applied using {} strategy",
+            used_strategy.unwrap_or("unknown")
+        );
 
         Ok(result)
     }
@@ -202,14 +231,15 @@ impl Tool for EditTool {
     }
 
     async fn execute(&self, params: &serde_json::Value) -> Result<ToolResult, ToolError> {
-        let path_str = params.get("path")
+        let path_str = params
+            .get("path")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArgument("Missing 'path' parameter".to_string()))?;
 
         let path = PathBuf::from(path_str);
         if !path.is_absolute() {
             return Err(ToolError::InvalidArgument(
-                "path must be an absolute path, not relative".to_string()
+                "path must be an absolute path, not relative".to_string(),
             ));
         }
 
@@ -217,22 +247,32 @@ impl Tool for EditTool {
             return Err(ToolError::InvalidPath(path));
         }
 
-        let old_string = params.get("oldString")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidArgument("Missing 'oldString' parameter".to_string()))?;
+        enforce_path_boundary(path.as_path(), None, "edit")?;
 
-        let new_string = params.get("newString")
+        let old_string = params
+            .get("oldString")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                ToolError::InvalidArgument("Missing 'oldString' parameter".to_string())
+            })?;
+
+        let new_string = params
+            .get("newString")
             .ok_or_else(|| ToolError::InvalidArgument("Missing 'newString' parameter".to_string()))?
             .as_str()
             .unwrap_or("");
 
-        let replace_all = params.get("replaceAll").and_then(|v| v.as_bool()).unwrap_or(false);
+        let replace_all = params
+            .get("replaceAll")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         let start = std::time::Instant::now();
 
         // Read file
-        let content = fs::read_to_string(&path).await
-            .map_err(|e| ToolError::Io(e))?;
+        let content = fs::read_to_string(&path)
+            .await
+            .map_err(ToolError::Io)?;
 
         let result = if replace_all {
             // 替换所有匹配
@@ -244,17 +284,19 @@ impl Tool for EditTool {
             match self.smart_replace(&content, old_string, new_string) {
                 Ok(new_content) => (new_content, 1),
                 Err(EditError::MultipleMatches(old)) => {
-                    return Err(ToolError::ExecutionFailed(
-                        format!("Multiple matches found for '{}'. Use replaceAll=true to replace all occurrences.", old)
-                    ));
+                    return Err(ToolError::ExecutionFailed(format!(
+                        "Multiple matches found for '{}'. Use replaceAll=true to replace all occurrences.",
+                        old
+                    )));
                 }
                 Err(e) => return Err(ToolError::ExecutionFailed(e.to_string())),
             }
         };
 
         // Write back
-        fs::write(&path, &result.0).await
-            .map_err(|e| ToolError::Io(e))?;
+        fs::write(&path, &result.0)
+            .await
+            .map_err(ToolError::Io)?;
 
         let duration = start.elapsed().as_millis() as u64;
 

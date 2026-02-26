@@ -6,6 +6,10 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+default = []
+sqlite = ["rusqlite"]
+
 [dependencies]
 ndc-core = { path = "../core" }
 tokio = { workspace = true }
@@ -13,4 +17,13 @@ async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-sqlx = { workspace = true, optional = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+ulid = { workspace = true }
+
+# SQLite (optional)
+rusqlite = { version = "0.32", optional = true, features = ["bundled"] }
+
+[dev-dependencies]
+tempfile = "3"

@@ -99,7 +99,10 @@ pub enum EventData {
     /// Task data
     Task { title: String, state: String },
     /// Step data
-    Step { step_number: u32, description: String },
+    Step {
+        step_number: u32,
+        description: String,
+    },
     /// Tool data
     Tool { name: String, args: Vec<String> },
     /// Error data
@@ -149,6 +152,12 @@ impl EventListener {
 pub struct EventEmitter {
     /// Registered listeners
     listeners: Vec<EventListener>,
+}
+
+impl Default for EventEmitter {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl EventEmitter {
@@ -330,7 +339,10 @@ impl Workflow {
 #[derive(Debug, thiserror::Error)]
 pub enum TransitionError {
     #[error("Invalid transition from {from:?} to {to:?}")]
-    Invalid { from: WorkflowState, to: WorkflowState },
+    Invalid {
+        from: WorkflowState,
+        to: WorkflowState,
+    },
 }
 
 /// Event-Driven Engine
@@ -375,7 +387,9 @@ impl EventEngine {
         workflow_id: &str,
         to: WorkflowState,
     ) -> Result<(), TransitionError> {
-        let workflow = self.workflows.get_mut(workflow_id)
+        let workflow = self
+            .workflows
+            .get_mut(workflow_id)
             .ok_or(TransitionError::Invalid {
                 from: WorkflowState::Initial,
                 to,
@@ -391,12 +405,7 @@ impl EventEngine {
     }
 
     /// Emit state change event
-    fn emit_state_change(
-        &self,
-        workflow_id: &str,
-        from: WorkflowState,
-        to: WorkflowState,
-    ) {
+    fn emit_state_change(&self, workflow_id: &str, from: WorkflowState, to: WorkflowState) {
         let event = Event {
             id: EventId::default(),
             event_type: EventType::TaskStateChanged,

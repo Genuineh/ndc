@@ -174,7 +174,8 @@ impl LineageService {
         let created_at = chrono::Utc::now();
         let depth = if let Some(ref parent) = parent_task_id {
             // Find parent depth
-            let parent_depth = self.lineage_store
+            let parent_depth = self
+                .lineage_store
                 .iter()
                 .find(|l| &l.task_id == parent)
                 .map(|l| l.depth)
@@ -182,7 +183,10 @@ impl LineageService {
 
             // Check max depth
             if self.config.max_depth > 0 && parent_depth + 1 > self.config.max_depth {
-                return Err(LineageError::DepthExceeded(parent_depth + 1, self.config.max_depth));
+                return Err(LineageError::DepthExceeded(
+                    parent_depth + 1,
+                    self.config.max_depth,
+                ));
             }
 
             // Add child to parent's children
@@ -214,12 +218,12 @@ impl LineageService {
     }
 
     /// Add inherited invariant
-    pub fn add_inherited_invariant(
-        &mut self,
-        task_id: &str,
-        invariant: InheritedInvariant,
-    ) {
-        if let Some(lineage) = self.lineage_store.iter_mut().find(|l| &l.task_id == task_id) {
+    pub fn add_inherited_invariant(&mut self, task_id: &str, invariant: InheritedInvariant) {
+        if let Some(lineage) = self
+            .lineage_store
+            .iter_mut()
+            .find(|l| l.task_id == task_id)
+        {
             lineage.inherited_invariants.push(invariant);
         }
     }
@@ -228,26 +232,26 @@ impl LineageService {
     pub fn get_inherited_invariants(&self, task_id: &str) -> Vec<&InheritedInvariant> {
         self.lineage_store
             .iter()
-            .find(|l| &l.task_id == task_id)
+            .find(|l| l.task_id == task_id)
             .map(|l| l.inherited_invariants.iter())
             .unwrap_or_default()
             .collect()
     }
 
     /// Archive context from completed task
-    pub fn archive_context(
-        &mut self,
-        task_id: &str,
-        context: ArchivedContext,
-    ) {
-        if let Some(lineage) = self.lineage_store.iter_mut().find(|l| &l.task_id == task_id) {
+    pub fn archive_context(&mut self, task_id: &str, context: ArchivedContext) {
+        if let Some(lineage) = self
+            .lineage_store
+            .iter_mut()
+            .find(|l| l.task_id == task_id)
+        {
             lineage.inherited_context = Some(context);
         }
     }
 
     /// Get lineage for a task
     pub fn get_lineage(&self, task_id: &str) -> Option<&TaskLineage> {
-        self.lineage_store.iter().find(|l| &l.task_id == task_id)
+        self.lineage_store.iter().find(|l| l.task_id == task_id)
     }
 
     /// Get summary
@@ -295,7 +299,9 @@ mod tests {
     fn test_create_child_lineage() {
         let mut service = LineageService::new(None);
         service.create_lineage("parent".to_string(), None).unwrap();
-        service.create_lineage("child".to_string(), Some("parent".to_string())).unwrap();
+        service
+            .create_lineage("child".to_string(), Some("parent".to_string()))
+            .unwrap();
 
         let parent = service.get_lineage("parent").unwrap();
         assert_eq!(parent.children, vec!["child"]);
@@ -354,8 +360,12 @@ mod tests {
         }));
 
         service.create_lineage("task-0".to_string(), None).unwrap();
-        service.create_lineage("task-1".to_string(), Some("task-0".to_string())).unwrap();
-        service.create_lineage("task-2".to_string(), Some("task-1".to_string())).unwrap();
+        service
+            .create_lineage("task-1".to_string(), Some("task-0".to_string()))
+            .unwrap();
+        service
+            .create_lineage("task-2".to_string(), Some("task-1".to_string()))
+            .unwrap();
 
         let result = service.create_lineage("task-3".to_string(), Some("task-2".to_string()));
 

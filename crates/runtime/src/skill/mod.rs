@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use tracing::{debug, info, warn};
 
 pub mod executor;
-pub use executor::{SkillExecutor, SkillExecutionContext, SkillResult};
+pub use executor::{SkillExecutionContext, SkillExecutor, SkillResult};
 
 /// Skill definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,11 +70,7 @@ impl SkillRegistry {
     }
 
     pub fn set_default_paths(&mut self) {
-        let default_paths = [
-            ".claude/skills/",
-            ".opencode/skills/",
-            ".agents/",
-        ];
+        let default_paths = [".claude/skills/", ".opencode/skills/", ".agents/"];
 
         for dir in &default_paths {
             self.add_discovery_path(PathBuf::from(dir));
@@ -90,8 +86,7 @@ impl SkillRegistry {
         for base_path in paths {
             let pattern = format!("{}/**/SKILL.md", base_path.display());
 
-            for entry in glob(&pattern)
-                .map_err(|e| format!("Glob error: {}", e))? {
+            for entry in glob(&pattern).map_err(|e| format!("Glob error: {}", e))? {
                 match entry {
                     Ok(file_path) => {
                         if let Some(1) = self.load_skill(&file_path).await? {
@@ -114,8 +109,7 @@ impl SkillRegistry {
             return Ok(None);
         }
 
-        let content = fs::read_to_string(path)
-            .map_err(|e| format!("Read failed: {}", e))?;
+        let content = fs::read_to_string(path).map_err(|e| format!("Read failed: {}", e))?;
 
         let skill = Self::parse_skill(&content, path)?;
 
@@ -127,14 +121,16 @@ impl SkillRegistry {
         self.skills.insert(skill.name.clone(), skill.clone());
 
         if let Some(ref cat) = skill.category {
-            self.categories.entry(cat.clone())
-                .or_insert_with(Vec::new)
+            self.categories
+                .entry(cat.clone())
+                .or_default()
                 .push(skill.name.clone());
         }
 
         for tag in &skill.tags {
-            self.tags_index.entry(tag.clone())
-                .or_insert_with(Vec::new)
+            self.tags_index
+                .entry(tag.clone())
+                .or_default()
                 .push(skill.name.clone());
         }
 
@@ -146,8 +142,7 @@ impl SkillRegistry {
         let (frontmatter, body) = Self::extract_frontmatter(content)?;
 
         let metadata: SkillMetadata = if !frontmatter.is_empty() {
-            serde_yaml::from_str(&frontmatter)
-                .map_err(|e| format!("YAML parse failed: {}", e))?
+            serde_yaml::from_str(&frontmatter).map_err(|e| format!("YAML parse failed: {}", e))?
         } else {
             SkillMetadata::default()
         };
@@ -187,7 +182,8 @@ impl SkillRegistry {
 
         let start = body_start.ok_or_else(|| "Unclosed frontmatter".to_string())?;
 
-        let body = content.lines()
+        let body = content
+            .lines()
             .skip(start)
             .collect::<Vec<&str>>()
             .join("\n");
@@ -246,9 +242,7 @@ impl SkillRegistry {
 
     pub fn get_by_category(&self, category: &str) -> Vec<&Skill> {
         if let Some(names) = self.categories.get(category) {
-            names.iter()
-                .filter_map(|n| self.skills.get(n))
-                .collect()
+            names.iter().filter_map(|n| self.skills.get(n)).collect()
         } else {
             Vec::new()
         }
@@ -256,9 +250,7 @@ impl SkillRegistry {
 
     pub fn get_by_tag(&self, tag: &str) -> Vec<&Skill> {
         if let Some(names) = self.tags_index.get(tag) {
-            names.iter()
-                .filter_map(|n| self.skills.get(n))
-                .collect()
+            names.iter().filter_map(|n| self.skills.get(n)).collect()
         } else {
             Vec::new()
         }
@@ -266,10 +258,11 @@ impl SkillRegistry {
 
     pub fn search(&self, query: &str) -> Vec<&Skill> {
         let query = query.to_lowercase();
-        self.skills.values()
+        self.skills
+            .values()
             .filter(|skill| {
-                skill.name.to_lowercase().contains(&query) ||
-                skill.description.to_lowercase().contains(&query)
+                skill.name.to_lowercase().contains(&query)
+                    || skill.description.to_lowercase().contains(&query)
             })
             .collect()
     }

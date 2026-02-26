@@ -8,12 +8,18 @@ use std::path::PathBuf;
 use tokio::fs;
 use tracing::debug;
 
-use super::{Tool, ToolResult, ToolError, ToolMetadata};
 use super::schema::ToolSchemaBuilder;
+use super::{enforce_path_boundary, Tool, ToolError, ToolMetadata, ToolResult};
 
 /// Write tool - 写入文件
 #[derive(Debug)]
 pub struct WriteTool;
+
+impl Default for WriteTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl WriteTool {
     pub fn new() -> Self {
@@ -32,7 +38,8 @@ impl Tool for WriteTool {
     }
 
     async fn execute(&self, params: &serde_json::Value) -> Result<ToolResult, ToolError> {
-        let path_str = params.get("path")
+        let path_str = params
+            .get("path")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArgument("Missing 'path' parameter".to_string()))?;
 
@@ -40,39 +47,48 @@ impl Tool for WriteTool {
         let path = PathBuf::from(path_str);
         if !path.is_absolute() {
             return Err(ToolError::InvalidArgument(
-                "path must be an absolute path, not relative".to_string()
+                "path must be an absolute path, not relative".to_string(),
             ));
         }
 
-        let content = params.get("content")
+        let content = params
+            .get("content")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArgument("Missing 'content' parameter".to_string()))?;
+
+        enforce_path_boundary(path.as_path(), None, "write")?;
 
         let start = std::time::Instant::now();
 
         // Create parent directories if they don't exist
-        if let Some(parent) = path.parent() {
-            if !parent.exists() {
-                fs::create_dir_all(parent).await
-                    .map_err(|e| ToolError::Io(e))?;
+        if let Some(parent) = path.parent()
+            && !parent.exists() {
+                fs::create_dir_all(parent)
+                    .await
+                    .map_err(ToolError::Io)?;
             }
-        }
 
         // Check if file exists and handle mode
-        let append = params.get("append").and_then(|v| v.as_bool()).unwrap_or(false);
+        let append = params
+            .get("append")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let mode = if append { "appended to" } else { "written to" };
 
         if append && path.exists() {
             // Append to existing file
-            let existing = fs::read_to_string(&path).await
-                .map_err(|e| ToolError::Io(e))?;
+            let existing = fs::read_to_string(&path)
+                .await
+                .map_err(ToolError::Io)?;
             let new_content = existing + content;
-            fs::write(&path, &new_content).await
-                .map_err(|e| ToolError::Io(e))?;
+            fs::write(&path, &new_content)
+                .await
+                .map_err(ToolError::Io)?;
         } else {
             // Write (or create) file
-            fs::write(&path, content).await
-                .map_err(|e| ToolError::Io(e))?;
+            fs::write(&path, content)
+                .await
+                .map_err(ToolError::Io)?;
         }
 
         let bytes_written = content.len();
@@ -98,7 +114,10 @@ impl Tool for WriteTool {
             .description("Write content to a file")
             .required_string("path", "The absolute path to the file to write")
             .required_string("content", "The content to write to the file")
-            .param_boolean("append", "Whether to append to existing file instead of overwriting")
+            .param_boolean(
+                "append",
+                "Whether to append to existing file instead of overwriting",
+            )
             .build()
             .to_value()
     }
@@ -108,8 +127,6 @@ impl Tool for WriteTool {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use std::fs::File;
-    use std::io::Write;
 
     #[tokio::test]
     async fn test_write_file() {

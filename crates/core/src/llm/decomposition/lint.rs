@@ -162,6 +162,12 @@ pub enum DependencyType {
     CanRunAfter,
 }
 
+impl Default for DecompositionLint {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DecompositionLint {
     /// Create with default rules
     pub fn new() -> Self {
@@ -190,11 +196,20 @@ impl DecompositionLint {
             .iter()
             .all(|v| v.severity != LintSeverity::Error && v.severity != LintSeverity::Critical);
 
-        let severity = if all_violations.iter().any(|v| v.severity == LintSeverity::Critical) {
+        let severity = if all_violations
+            .iter()
+            .any(|v| v.severity == LintSeverity::Critical)
+        {
             LintSeverity::Critical
-        } else if all_violations.iter().any(|v| v.severity == LintSeverity::Error) {
+        } else if all_violations
+            .iter()
+            .any(|v| v.severity == LintSeverity::Error)
+        {
             LintSeverity::Error
-        } else if all_violations.iter().any(|v| v.severity == LintSeverity::Warning) {
+        } else if all_violations
+            .iter()
+            .any(|v| v.severity == LintSeverity::Warning)
+        {
             LintSeverity::Warning
         } else {
             LintSeverity::Info
@@ -256,7 +271,8 @@ impl LintRule for CyclicDependencyRule {
         let mut violations = Vec::new();
 
         // Build adjacency list
-        let adj: std::collections::HashMap<String, Vec<String>> = decomposition.dependencies
+        let adj: std::collections::HashMap<String, Vec<String>> = decomposition
+            .dependencies
             .iter()
             .fold(std::collections::HashMap::new(), |mut acc, d| {
                 acc.entry(d.from.clone()).or_default().push(d.to.clone());
@@ -264,7 +280,8 @@ impl LintRule for CyclicDependencyRule {
             });
 
         // Get all unique nodes
-        let nodes: std::collections::HashSet<String> = decomposition.dependencies
+        let nodes: std::collections::HashSet<String> = decomposition
+            .dependencies
             .iter()
             .flat_map(|d| vec![d.from.clone(), d.to.clone()])
             .collect();
@@ -297,7 +314,8 @@ impl LintRule for MissingVerificationRule {
     }
 
     fn check(&self, decomposition: &TaskDecomposition) -> Vec<LintViolation> {
-        decomposition.subtasks
+        decomposition
+            .subtasks
             .iter()
             .filter(|t| t.verification.is_empty())
             .map(|task| LintViolation {
@@ -305,7 +323,9 @@ impl LintRule for MissingVerificationRule {
                 message: format!("Subtask '{}' has no verification criteria", task.title),
                 severity: LintSeverity::Warning,
                 affected_subtasks: vec![task.id.clone()],
-                suggestion: "Add verification criteria (e.g., 'cargo test passes', 'code compiles')".to_string(),
+                suggestion:
+                    "Add verification criteria (e.g., 'cargo test passes', 'code compiles')"
+                        .to_string(),
             })
             .collect()
     }
@@ -325,7 +345,8 @@ impl LintRule for TooComplexRule {
     }
 
     fn check(&self, decomposition: &TaskDecomposition) -> Vec<LintViolation> {
-        decomposition.subtasks
+        decomposition
+            .subtasks
             .iter()
             .filter(|t| matches!(t.complexity, Complexity::VeryComplex))
             .map(|task| LintViolation {
@@ -356,7 +377,8 @@ impl LintRule for OrphanedTaskRule {
         let mut violations = Vec::new();
 
         // Group tasks by file
-        let mut file_groups: std::collections::HashMap<&PathBuf, Vec<&str>> = std::collections::HashMap::new();
+        let mut file_groups: std::collections::HashMap<&PathBuf, Vec<&str>> =
+            std::collections::HashMap::new();
         for task in &decomposition.subtasks {
             for file in &task.expected_files {
                 file_groups.entry(file).or_default().push(task.id.as_str());
@@ -369,18 +391,24 @@ impl LintRule for OrphanedTaskRule {
             if task_ids.len() > 1 {
                 for (i, task1_id) in task_ids.iter().enumerate() {
                     for task2_id in task_ids.iter().skip(i + 1) {
-                        let has_dep = decomposition.dependencies.iter().any(|d|
-                            (d.from == *task1_id && d.to == *task2_id) ||
-                            (d.from == *task2_id && d.to == *task1_id)
-                        );
+                        let has_dep = decomposition.dependencies.iter().any(|d| {
+                            (d.from == *task1_id && d.to == *task2_id)
+                                || (d.from == *task2_id && d.to == *task1_id)
+                        });
 
                         if !has_dep {
                             violations.push(LintViolation {
                                 rule: self.name().to_string(),
-                                message: format!("Tasks '{}' and '{}' modify same file '{}' without dependency", task1_id, task2_id, file.display()),
+                                message: format!(
+                                    "Tasks '{}' and '{}' modify same file '{}' without dependency",
+                                    task1_id,
+                                    task2_id,
+                                    file.display()
+                                ),
                                 severity: LintSeverity::Info,
                                 affected_subtasks: vec![task1_id.to_string(), task2_id.to_string()],
-                                suggestion: "Consider adding dependency between these tasks".to_string(),
+                                suggestion: "Consider adding dependency between these tasks"
+                                    .to_string(),
                             });
                         }
                     }
@@ -406,7 +434,8 @@ impl LintRule for MissingFilesRule {
     }
 
     fn check(&self, decomposition: &TaskDecomposition) -> Vec<LintViolation> {
-        decomposition.subtasks
+        decomposition
+            .subtasks
             .iter()
             .filter(|t| !matches!(t.action_type, ActionType::Review | ActionType::Config))
             .filter(|t| t.expected_files.is_empty())
@@ -440,10 +469,17 @@ impl LintRule for TooManySubtasksRule {
         if decomposition.subtasks.len() > max_subtasks {
             vec![LintViolation {
                 rule: self.name().to_string(),
-                message: format!("Decomposition has {} subtasks (max: {})",
-                    decomposition.subtasks.len(), max_subtasks),
+                message: format!(
+                    "Decomposition has {} subtasks (max: {})",
+                    decomposition.subtasks.len(),
+                    max_subtasks
+                ),
                 severity: LintSeverity::Warning,
-                affected_subtasks: decomposition.subtasks.iter().map(|t| t.id.clone()).collect(),
+                affected_subtasks: decomposition
+                    .subtasks
+                    .iter()
+                    .map(|t| t.id.clone())
+                    .collect(),
                 suggestion: "Consider if this could be split into multiple tasks".to_string(),
             }]
         } else {
@@ -484,8 +520,16 @@ mod tests {
                 },
             ],
             dependencies: vec![
-                TaskDependency { from: "a".to_string(), to: "b".to_string(), dependency_type: DependencyType::MustCompleteBefore },
-                TaskDependency { from: "b".to_string(), to: "a".to_string(), dependency_type: DependencyType::MustCompleteBefore },
+                TaskDependency {
+                    from: "a".to_string(),
+                    to: "b".to_string(),
+                    dependency_type: DependencyType::MustCompleteBefore,
+                },
+                TaskDependency {
+                    from: "b".to_string(),
+                    to: "a".to_string(),
+                    dependency_type: DependencyType::MustCompleteBefore,
+                },
             ],
         };
 
@@ -529,7 +573,8 @@ mod tests {
         let lint = DecompositionLint::new();
         let result = lint.check(&decomposition);
 
-        let missing_verification = result.violations
+        let missing_verification = result
+            .violations
             .iter()
             .any(|v| v.rule == "missing-verification");
 
@@ -541,27 +586,23 @@ mod tests {
         let decomposition = TaskDecomposition {
             task_id: "task-1".to_string(),
             root_todo_id: None,
-            subtasks: vec![
-                SubTask {
-                    id: "a".to_string(),
-                    title: "Complex Task".to_string(),
-                    description: "Very complex".to_string(),
-                    action_type: ActionType::Refactor,
-                    complexity: Complexity::VeryComplex,
-                    depends_on: vec![],
-                    expected_files: vec![],
-                    verification: vec!["all tests pass".to_string()],
-                },
-            ],
+            subtasks: vec![SubTask {
+                id: "a".to_string(),
+                title: "Complex Task".to_string(),
+                description: "Very complex".to_string(),
+                action_type: ActionType::Refactor,
+                complexity: Complexity::VeryComplex,
+                depends_on: vec![],
+                expected_files: vec![],
+                verification: vec!["all tests pass".to_string()],
+            }],
             dependencies: Vec::new(),
         };
 
         let lint = DecompositionLint::new();
         let result = lint.check(&decomposition);
 
-        let too_complex = result.violations
-            .iter()
-            .any(|v| v.rule == "too-complex");
+        let too_complex = result.violations.iter().any(|v| v.rule == "too-complex");
 
         assert!(too_complex);
     }
@@ -593,9 +634,11 @@ mod tests {
                     verification: vec!["tests pass".to_string()],
                 },
             ],
-            dependencies: vec![
-                TaskDependency { from: "b".to_string(), to: "a".to_string(), dependency_type: DependencyType::MustCompleteBefore },
-            ],
+            dependencies: vec![TaskDependency {
+                from: "b".to_string(),
+                to: "a".to_string(),
+                dependency_type: DependencyType::MustCompleteBefore,
+            }],
         };
 
         let lint = DecompositionLint::new();
@@ -609,23 +652,26 @@ mod tests {
         let decomposition = TaskDecomposition {
             task_id: "task-1".to_string(),
             root_todo_id: None,
-            subtasks: (0..25).map(|i| SubTask {
-                id: format!("task-{}", i),
-                title: format!("Task {}", i),
-                description: "Description".to_string(),
-                action_type: ActionType::CreateFile,
-                complexity: Complexity::Simple,
-                depends_on: vec![],
-                expected_files: vec![],
-                verification: vec!["test".to_string()],
-            }).collect(),
+            subtasks: (0..25)
+                .map(|i| SubTask {
+                    id: format!("task-{}", i),
+                    title: format!("Task {}", i),
+                    description: "Description".to_string(),
+                    action_type: ActionType::CreateFile,
+                    complexity: Complexity::Simple,
+                    depends_on: vec![],
+                    expected_files: vec![],
+                    verification: vec!["test".to_string()],
+                })
+                .collect(),
             dependencies: Vec::new(),
         };
 
         let lint = DecompositionLint::new();
         let result = lint.check(&decomposition);
 
-        let too_many = result.violations
+        let too_many = result
+            .violations
             .iter()
             .any(|v| v.rule == "too-many-subtasks");
 

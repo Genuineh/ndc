@@ -24,20 +24,11 @@ use tonic::transport::Channel;
 
 #[cfg(feature = "grpc")]
 use crate::generated::{
-    HealthCheckRequest,
-    HealthCheckResponse,
-    CreateTaskRequest,
-    GetTaskRequest,
-    ListTasksRequest,
-    TaskResponse,
-    ListTasksResponse,
-    ExecuteTaskRequest,
-    ExecuteTaskResponse,
-    RollbackTaskRequest,
-    RollbackTaskResponse,
-    GetSystemStatusRequest,
-    SystemStatusResponse,
-    ndc_service_client::NdcServiceClient,
+    agent_service_client::AgentServiceClient, ndc_service_client::NdcServiceClient,
+    CreateTaskRequest, ExecuteTaskRequest, ExecuteTaskResponse, ExecutionEvent,
+    GetSystemStatusRequest, GetTaskRequest, HealthCheckRequest, HealthCheckResponse,
+    ListTasksRequest, ListTasksResponse, RollbackTaskRequest, RollbackTaskResponse,
+    SessionTimelineRequest, SessionTimelineResponse, SystemStatusResponse, TaskResponse,
 };
 
 #[cfg(feature = "grpc")]
@@ -84,7 +75,11 @@ impl Default for ClientConfig {
 #[cfg(feature = "grpc")]
 impl fmt::Display for ClientConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "NdcClient(address={}, timeout={:?})", self.address, self.request_timeout)
+        write!(
+            f,
+            "NdcClient(address={}, timeout={:?})",
+            self.address, self.request_timeout
+        )
     }
 }
 
@@ -321,6 +316,67 @@ impl NdcClient {
         }
     }
 
+    fn build_timeline_request(
+        session_id: Option<&str>,
+        limit: Option<u32>,
+    ) -> SessionTimelineRequest {
+        SessionTimelineRequest {
+            session_id: session_id.unwrap_or_default().to_string(),
+            limit: limit.unwrap_or(0),
+        }
+    }
+
+    fn build_timeline_sse_subscribe_path(session_id: Option<&str>, limit: Option<u32>) -> String {
+        let session_id = session_id.unwrap_or_default();
+        let limit = limit.unwrap_or(0);
+        format!(
+            "/agent/session_timeline/subscribe?session_id={}&limit={}",
+            session_id, limit
+        )
+    }
+
+    /// Fetch execution timeline for a session (or current active session if omitted).
+    pub async fn get_session_timeline(
+        &self,
+        session_id: Option<&str>,
+        limit: Option<u32>,
+    ) -> Result<SessionTimelineResponse, ClientError> {
+        let channel = self.get_channel().await?;
+        let mut client = AgentServiceClient::new(channel);
+        let request = Self::build_timeline_request(session_id, limit);
+        match client.get_session_timeline(request).await {
+            Ok(response) => Ok(response.into_inner()),
+            Err(e) => Err(map_error(&e.to_string())),
+        }
+    }
+
+    /// Subscribe to execution timeline stream for a session (or current active session).
+    /// `limit` controls initial backlog replay count; `None`/`0` means subscribe from now.
+    pub async fn subscribe_session_timeline(
+        &self,
+        session_id: Option<&str>,
+        limit: Option<u32>,
+    ) -> Result<tonic::Streaming<ExecutionEvent>, ClientError> {
+        let channel = self.get_channel().await?;
+        let mut client = AgentServiceClient::new(channel);
+        let request = Self::build_timeline_request(session_id, limit);
+        match client.subscribe_session_timeline(request).await {
+            Ok(response) => Ok(response.into_inner()),
+            Err(e) => Err(map_error(&e.to_string())),
+        }
+    }
+
+    /// Build SSE subscription URL for execution timeline.
+    /// This URL can be consumed by EventSource-compatible clients.
+    pub fn timeline_sse_subscribe_url(
+        &self,
+        session_id: Option<&str>,
+        limit: Option<u32>,
+    ) -> String {
+        let path = Self::build_timeline_sse_subscribe_path(session_id, limit);
+        format!("http://{}{}", self.config.address, path)
+    }
+
     /// Check if client is healthy
     pub async fn is_healthy(&self) -> bool {
         self.health_check().await.is_ok()
@@ -424,7 +480,10 @@ mod tests {
         let err = ClientError::Timeout;
         assert_eq!(format!("{}", err), "Request timeout");
 
-        let err = ClientError::MaxRetriesExceeded { attempts: 3, last_error: "test".to_string() };
+        let err = ClientError::MaxRetriesExceeded {
+            attempts: 3,
+            last_error: "test".to_string(),
+        };
         assert_eq!(format!("{}", err), "Max retries exceeded: 3 attempts");
     }
 
@@ -466,5 +525,47 @@ mod tests {
             Err(ClientError::ConnectionFailed(_)) => {} // Expected for non-running server
             Err(_) => panic!("Unexpected error"),
         }
+    }
+
+    #[test]
+    fn test_build_timeline_request_defaults() {
+        let req = NdcClient::build_timeline_request(None, None);
+        assert_eq!(req.session_id, "");
+        assert_eq!(req.limit, 0);
+    }
+
+    #[test]
+    fn test_build_timeline_request_custom() {
+        let req = NdcClient::build_timeline_request(Some("session-1"), Some(50));
+        assert_eq!(req.session_id, "session-1");
+        assert_eq!(req.limit, 50);
+    }
+
+    #[test]
+    fn test_build_timeline_sse_subscribe_path_defaults() {
+        let path = NdcClient::build_timeline_sse_subscribe_path(None, None);
+        assert_eq!(
+            path,
+            "/agent/session_timeline/subscribe?session_id=&limit=0"
+        );
+    }
+
+    #[test]
+    fn test_build_timeline_sse_subscribe_path_custom() {
+        let path = NdcClient::build_timeline_sse_subscribe_path(Some("session-1"), Some(80));
+        assert_eq!(
+            path,
+            "/agent/session_timeline/subscribe?session_id=session-1&limit=80"
+        );
+    }
+
+    #[test]
+    fn test_timeline_sse_subscribe_url() {
+        let client = NdcClient::new("127.0.0.1:4097");
+        let url = client.timeline_sse_subscribe_url(Some("abc"), Some(20));
+        assert_eq!(
+            url,
+            "http://127.0.0.1:4097/agent/session_timeline/subscribe?session_id=abc&limit=20"
+        );
     }
 }

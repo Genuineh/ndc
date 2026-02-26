@@ -88,7 +88,8 @@ impl OutputTruncator {
         let byte_count = output.len();
 
         // Check if truncation is needed
-        let needs_truncation = line_count > self.config.max_lines || byte_count > self.config.max_bytes;
+        let needs_truncation =
+            line_count > self.config.max_lines || byte_count > self.config.max_bytes;
 
         if !needs_truncation {
             return TruncatedOutput {
@@ -105,13 +106,19 @@ impl OutputTruncator {
     }
 
     /// Truncate output and optionally save to disk
-    fn truncate_output(&mut self, output: &str, line_count: usize, byte_count: usize) -> TruncatedOutput {
+    fn truncate_output(
+        &mut self,
+        output: &str,
+        line_count: usize,
+        byte_count: usize,
+    ) -> TruncatedOutput {
         let lines: Vec<&str> = output.lines().collect();
         let total_lines = lines.len();
 
         // Keep head and tail
         let head_end = std::cmp::min(self.config.head_lines, total_lines);
-        let tail_start = std::cmp::max(total_lines.saturating_sub(self.config.tail_lines), head_end);
+        let tail_start =
+            std::cmp::max(total_lines.saturating_sub(self.config.tail_lines), head_end);
 
         let head: Vec<&str> = lines[..head_end].to_vec();
         let tail: Vec<&str> = lines[tail_start..].to_vec();
@@ -198,7 +205,11 @@ impl Default for OutputTruncator {
 }
 
 /// Read partial content from a saved output file
-pub fn read_partial_output(file_path: &PathBuf, offset: usize, limit: Option<usize>) -> Result<String, String> {
+pub fn read_partial_output(
+    file_path: &PathBuf,
+    offset: usize,
+    limit: Option<usize>,
+) -> Result<String, String> {
     if !file_path.exists() {
         return Err(format!("Output file not found: {}", file_path.display()));
     }

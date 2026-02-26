@@ -290,6 +290,20 @@ export NDC_MINIMAX_GROUP_ID="..."
 - `NDC_SECURITY_GIT_COMMIT_ACTION=ask|allow|deny`（默认 `ask`）
 - `NDC_SECURITY_OVERRIDE_PERMISSIONS=<comma-separated>`（调试/测试用途，通常不需要手动设置）
 
+## 6.2 非交互迁移说明（P0-D6）
+
+- 详细迁移文档：`docs/design/p0-d6-non-interactive-migration.md`
+- daemon/gRPC/CI 场景下，命中 `ask` 不会等待 stdin，直接失败并返回：
+  - `non_interactive confirmation required: ...`
+- 建议优先使用“精确 permission 覆盖”而不是全局放开：
+  - 例如 `NDC_SECURITY_OVERRIDE_PERMISSIONS=external_directory,git_commit`
+- 生产建议：
+  - `NDC_SECURITY_PERMISSION_ENFORCE_GATEWAY=true`
+  - `NDC_SECURITY_EXTERNAL_DIRECTORY_ACTION=deny`
+  - `NDC_SECURITY_GIT_COMMIT_ACTION=deny`（如不需要提交能力）
+- 测试说明：
+  - `cfg(test)` 下安全动作默认值为 `allow`（仅在未设置 env 时），安全相关测试需显式设置 env 策略。
+
 ## 7. 建议使用流程
 
 1. 先用 `run --message` 做一次性分析任务

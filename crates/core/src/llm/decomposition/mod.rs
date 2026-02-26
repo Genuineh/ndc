@@ -3,14 +3,6 @@
 pub mod lint;
 
 pub use lint::{
-    DecompositionLint,
-    TaskDecomposition,
-    SubTask,
-    ActionType,
-    Complexity,
-    TaskDependency,
-    DependencyType,
-    LintResult,
-    LintViolation,
-    LintSeverity,
+    ActionType, Complexity, DecompositionLint, DependencyType, LintResult, LintSeverity,
+    LintViolation, SubTask, TaskDecomposition, TaskDependency,
 };

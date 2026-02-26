@@ -3,24 +3,102 @@
 //! Allows AI to list tasks with filtering options.
 
 use async_trait::async_trait;
-use serde_json::json;
+use ndc_core::{AgentRole, Task, TaskPriority, TaskState};
 
-use super::super::{Tool, ToolResult, ToolError, ToolMetadata};
 use super::super::schema::ToolSchemaBuilder;
+use super::super::{Tool, ToolError, ToolMetadata, ToolResult};
+use ndc_storage::{create_memory_storage, SharedStorage};
 
 /// Task List Tool - 列出任务
-#[derive(Debug, Clone)]
-pub struct TaskListTool;
+#[derive(Clone)]
+pub struct TaskListTool {
+    storage: SharedStorage,
+}
 
 impl TaskListTool {
     pub fn new() -> Self {
-        Self
+        Self::with_storage(create_memory_storage())
     }
+
+    pub fn with_storage(storage: SharedStorage) -> Self {
+        Self { storage }
+    }
+}
+
+fn parse_state(value: &str) -> Option<TaskState> {
+    match value.to_ascii_lowercase().as_str() {
+        "pending" => Some(TaskState::Pending),
+        "preparing" => Some(TaskState::Preparing),
+        "in_progress" | "in-progress" => Some(TaskState::InProgress),
+        "awaiting_verification" | "awaiting-verification" => Some(TaskState::AwaitingVerification),
+        "blocked" => Some(TaskState::Blocked),
+        "completed" => Some(TaskState::Completed),
+        "failed" => Some(TaskState::Failed),
+        "cancelled" | "canceled" => Some(TaskState::Cancelled),
+        _ => None,
+    }
+}
+
+fn parse_priority(value: &str) -> Option<TaskPriority> {
+    match value.to_ascii_lowercase().as_str() {
+        "low" => Some(TaskPriority::Low),
+        "medium" | "normal" => Some(TaskPriority::Medium),
+        "high" | "urgent" => Some(TaskPriority::High),
+        "critical" => Some(TaskPriority::Critical),
+        _ => None,
+    }
+}
+
+fn parse_role(value: &str) -> Option<AgentRole> {
+    match value.to_ascii_lowercase().as_str() {
+        "planner" => Some(AgentRole::Planner),
+        "implementer" => Some(AgentRole::Implementer),
+        "reviewer" => Some(AgentRole::Reviewer),
+        "tester" => Some(AgentRole::Tester),
+        "historian" => Some(AgentRole::Historian),
+        "admin" => Some(AgentRole::Admin),
+        _ => None,
+    }
+}
+
+fn matches_filters(
+    task: &Task,
+    state_filter: Option<&TaskState>,
+    priority_filter: Option<&TaskPriority>,
+    created_by_filter: Option<&AgentRole>,
+    search_filter: Option<&str>,
+) -> bool {
+    if let Some(state) = state_filter
+        && &task.state != state {
+            return false;
+        }
+    if let Some(priority) = priority_filter
+        && &task.metadata.priority != priority {
+            return false;
+        }
+    if let Some(created_by) = created_by_filter
+        && &task.metadata.created_by != created_by {
+            return false;
+        }
+    if let Some(query) = search_filter {
+        let query = query.to_ascii_lowercase();
+        let hay = format!("{} {}", task.title, task.description).to_ascii_lowercase();
+        if !hay.contains(&query) {
+            return false;
+        }
+    }
+    true
 }
 
 impl Default for TaskListTool {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl std::fmt::Debug for TaskListTool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TaskListTool").finish()
     }
 }
 
@@ -37,45 +115,92 @@ impl Tool for TaskListTool {
     async fn execute(&self, params: &serde_json::Value) -> Result<ToolResult, ToolError> {
         let start = std::time::Instant::now();
 
-        // 提取过滤参数
-        let state_filter = params.get("state").and_then(|v| v.as_str());
-        let priority_filter = params.get("priority").and_then(|v| v.as_str());
-        let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(20);
-        let created_by = params.get("created_by").and_then(|v| v.as_str());
+        let state_filter_raw = params.get("state").and_then(|v| v.as_str());
+        let priority_filter_raw = params.get("priority").and_then(|v| v.as_str());
+        let created_by_raw = params.get("created_by").and_then(|v| v.as_str());
         let search_query = params.get("search").and_then(|v| v.as_str());
+        let limit = params
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(20)
+            .min(100) as usize;
 
-        // TODO: 从存储查询任务
-        // 目前返回模拟数据
+        let state_filter = match state_filter_raw {
+            Some(state) => Some(parse_state(state).ok_or_else(|| {
+                ToolError::InvalidArgument(format!("Invalid state filter: {}", state))
+            })?),
+            None => None,
+        };
+        let priority_filter = match priority_filter_raw {
+            Some(priority) => Some(parse_priority(priority).ok_or_else(|| {
+                ToolError::InvalidArgument(format!("Invalid priority filter: {}", priority))
+            })?),
+            None => None,
+        };
+        let created_by_filter = match created_by_raw {
+            Some(role) => Some(parse_role(role).ok_or_else(|| {
+                ToolError::InvalidArgument(format!("Invalid created_by filter: {}", role))
+            })?),
+            None => None,
+        };
 
-        // 构建输出
+        let mut tasks = self
+            .storage
+            .list_tasks()
+            .await
+            .map_err(ToolError::ExecutionFailed)?;
+        tasks.sort_by_key(|task| std::cmp::Reverse(task.metadata.updated_at));
+
+        let filtered: Vec<Task> = tasks
+            .into_iter()
+            .filter(|task| {
+                matches_filters(
+                    task,
+                    state_filter.as_ref(),
+                    priority_filter.as_ref(),
+                    created_by_filter.as_ref(),
+                    search_query,
+                )
+            })
+            .take(limit)
+            .collect();
+
         let mut output = String::new();
-
         if let Some(query) = search_query {
             output.push_str(&format!("📋 Tasks matching '{}':\n\n", query));
         } else {
             output.push_str("📋 NDC Tasks:\n\n");
         }
 
-        // 显示应用的过滤器
         let mut filters = Vec::new();
-        if let Some(state) = state_filter {
+        if let Some(state) = state_filter_raw {
             filters.push(format!("state={}", state));
         }
-        if let Some(priority) = priority_filter {
+        if let Some(priority) = priority_filter_raw {
             filters.push(format!("priority={}", priority));
         }
-        if let Some(creator) = created_by {
+        if let Some(creator) = created_by_raw {
             filters.push(format!("created_by={}", creator));
         }
         if !filters.is_empty() {
             output.push_str(&format!("Filters: {}\n\n", filters.join(", ")));
         }
 
-        // 模拟任务列表 (TODO: 实际查询)
-        output.push_str("(Task listing would appear here - TODO: integrate with storage)\n");
+        if filtered.is_empty() {
+            output.push_str("No tasks found.\n");
+        } else {
+            for task in &filtered {
+                output.push_str(&format!(
+                    "- {} [{}] ({:?}) {}\n",
+                    task.id,
+                    format!("{:?}", task.state),
+                    task.metadata.priority,
+                    task.title
+                ));
+            }
+        }
 
-        // 显示查询提示
-        if search_query.is_none() && state_filter.is_none() && priority_filter.is_none() {
+        if search_query.is_none() && state_filter_raw.is_none() && priority_filter_raw.is_none() {
             output.push_str("\n💡 Tip: Use filters to narrow results:\n");
             output.push_str("  - state: pending, in_progress, completed, etc.\n");
             output.push_str("  - priority: low, normal, high, critical\n");
@@ -87,6 +212,7 @@ impl Tool for TaskListTool {
 
         tracing::info!(
             filters = filters.len(),
+            tasks_returned = filtered.len(),
             limit = limit,
             "Tasks listed via ndc_task_list tool"
         );
@@ -120,20 +246,37 @@ impl Tool for TaskListTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[tokio::test]
     async fn test_task_list_all() {
-        let tool = TaskListTool::new();
+        let storage = create_memory_storage();
+        let task = Task::new(
+            "Task A".to_string(),
+            "Description".to_string(),
+            AgentRole::Implementer,
+        );
+        storage.save_task(&task).await.unwrap();
+        let tool = TaskListTool::with_storage(storage);
         let params = json!({});
 
         let result = tool.execute(&params).await.unwrap();
         assert!(result.success);
         assert!(result.output.contains("NDC Tasks"));
+        assert!(result.output.contains("Task A"));
     }
 
     #[tokio::test]
     async fn test_task_list_with_state_filter() {
-        let tool = TaskListTool::new();
+        let storage = create_memory_storage();
+        let mut task = Task::new(
+            "Task B".to_string(),
+            "Description".to_string(),
+            AgentRole::Implementer,
+        );
+        task.state = TaskState::Pending;
+        storage.save_task(&task).await.unwrap();
+        let tool = TaskListTool::with_storage(storage);
         let params = json!({
             "state": "pending"
         });
@@ -145,7 +288,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_task_list_with_priority_filter() {
-        let tool = TaskListTool::new();
+        let storage = create_memory_storage();
+        let mut task = Task::new(
+            "Task C".to_string(),
+            "Description".to_string(),
+            AgentRole::Implementer,
+        );
+        task.metadata.priority = TaskPriority::High;
+        storage.save_task(&task).await.unwrap();
+        let tool = TaskListTool::with_storage(storage);
         let params = json!({
             "priority": "high"
         });
@@ -157,7 +308,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_task_list_with_search() {
-        let tool = TaskListTool::new();
+        let storage = create_memory_storage();
+        let task = Task::new(
+            "Implement auth flow".to_string(),
+            "Add oauth login".to_string(),
+            AgentRole::Implementer,
+        );
+        storage.save_task(&task).await.unwrap();
+        let tool = TaskListTool::with_storage(storage);
         let params = json!({
             "search": "auth"
         });
@@ -169,7 +327,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_task_list_with_limit() {
-        let tool = TaskListTool::new();
+        let storage = create_memory_storage();
+        for i in 0..3 {
+            let task = Task::new(
+                format!("Task {}", i),
+                "Description".to_string(),
+                AgentRole::Implementer,
+            );
+            storage.save_task(&task).await.unwrap();
+        }
+        let tool = TaskListTool::with_storage(storage);
         let params = json!({
             "limit": 5
         });
@@ -180,7 +347,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_task_list_multiple_filters() {
-        let tool = TaskListTool::new();
+        let storage = create_memory_storage();
+        let mut task = Task::new(
+            "Task D".to_string(),
+            "Description".to_string(),
+            AgentRole::Implementer,
+        );
+        task.state = TaskState::InProgress;
+        task.metadata.priority = TaskPriority::High;
+        storage.save_task(&task).await.unwrap();
+        let tool = TaskListTool::with_storage(storage);
         let params = json!({
             "state": "in_progress",
             "priority": "high",

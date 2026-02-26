@@ -4,23 +4,11 @@ pub mod lineage;
 pub mod mapping_service;
 
 pub use lineage::{
-    TaskLineage,
-    InheritedInvariant,
-    ArchivedContext,
-    ArchivedFailure,
-    LineageService,
-    LineageConfig,
-    LineageError,
-    LineageSummary,
+    ArchivedContext, ArchivedFailure, InheritedInvariant, LineageConfig, LineageError,
+    LineageService, LineageSummary, TaskLineage,
 };
 
 pub use mapping_service::{
-    TodoMappingService,
-    UserIntent,
-    TodoItem,
-    TodoStatus,
-    TodoPriority,
-    IntentPriority,
-    MappingResult,
-    TodoUpdate,
+    IntentPriority, MappingResult, TodoItem, TodoMappingService, TodoPriority, TodoStatus,
+    TodoUpdate, UserIntent,
 };

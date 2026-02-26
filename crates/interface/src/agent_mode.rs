@@ -630,12 +630,11 @@ impl Default for AgentModeConfig {
 
         // Prefer configured provider/model when available.
         let mut loader = NdcConfigLoader::new();
-        if loader.load().is_ok() {
-            if let Some(llm) = loader.config().llm.as_ref() {
+        if loader.load().is_ok()
+            && let Some(llm) = loader.config().llm.as_ref() {
                 config.provider = llm.provider.clone();
                 config.model = llm.model.clone();
             }
-        }
 
         config
     }
@@ -643,6 +642,7 @@ impl Default for AgentModeConfig {
 
 /// Agent REPL 模式状态
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct AgentModeState {
     /// 是否启用
     pub enabled: bool,
@@ -669,20 +669,6 @@ pub struct AgentModeState {
     pub worktree: Option<PathBuf>,
 }
 
-impl Default for AgentModeState {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            config: AgentModeConfig::default(),
-            session_id: None,
-            active_task_id: None,
-            working_dir: None,
-            project_id: None,
-            project_root: None,
-            worktree: None,
-        }
-    }
-}
 
 /// Agent REPL 模式管理器
 pub struct AgentModeManager {
@@ -1298,7 +1284,7 @@ impl AgentModeManager {
         if cfg!(test) {
             return;
         }
-        std::env::set_var("NDC_PROJECT_ROOT", &identity.project_root);
+        unsafe { std::env::set_var("NDC_PROJECT_ROOT", &identity.project_root); }
         if let Err(err) = std::env::set_current_dir(&identity.working_dir) {
             debug!(
                 error = %err,
@@ -2368,10 +2354,12 @@ mod tests {
         let _guard = env_lock();
         let temp = TempDir::new().expect("temp dir");
         let index_path = temp.path().join("project_index.json");
+        unsafe {
         std::env::set_var(
             "NDC_PROJECT_INDEX_FILE",
             index_path.to_string_lossy().to_string(),
         );
+        }
 
         let project = temp.path().join("demo");
         std::fs::create_dir_all(project.as_path()).expect("create project dir");
@@ -2392,7 +2380,7 @@ mod tests {
         let roots = reloaded.known_project_roots(10);
         assert!(roots.contains(&identity.project_root));
 
-        std::env::remove_var("NDC_PROJECT_INDEX_FILE");
+        unsafe { std::env::remove_var("NDC_PROJECT_INDEX_FILE"); }
     }
 
     #[test]
@@ -2400,10 +2388,12 @@ mod tests {
         let _guard = env_lock();
         let temp = TempDir::new().expect("temp dir");
         let archive_path = temp.path().join("session_archive.json");
+        unsafe {
         std::env::set_var(
             "NDC_SESSION_ARCHIVE_FILE",
             archive_path.to_string_lossy().to_string(),
         );
+        }
 
         let project = temp.path().join("demo");
         std::fs::create_dir_all(project.as_path()).expect("create project dir");
@@ -2450,7 +2440,7 @@ mod tests {
             "persisted timeline event"
         );
 
-        std::env::remove_var("NDC_SESSION_ARCHIVE_FILE");
+        unsafe { std::env::remove_var("NDC_SESSION_ARCHIVE_FILE"); }
     }
 
     #[tokio::test]
@@ -2458,10 +2448,12 @@ mod tests {
         let _guard = env_lock();
         let temp = TempDir::new().expect("temp dir");
         let index_path = temp.path().join("project_index.json");
+        unsafe {
         std::env::set_var(
             "NDC_PROJECT_INDEX_FILE",
             index_path.to_string_lossy().to_string(),
         );
+        }
 
         let project_a = temp.path().join("project-a");
         let project_b = temp.path().join("project-b");
@@ -2531,7 +2523,7 @@ mod tests {
         assert!(known_ids.contains(&identity_a.project_id));
         assert!(known_ids.contains(&identity_b.project_id));
 
-        std::env::remove_var("NDC_PROJECT_INDEX_FILE");
+        unsafe { std::env::remove_var("NDC_PROJECT_INDEX_FILE"); }
     }
 
     #[tokio::test]
@@ -2540,14 +2532,18 @@ mod tests {
         let temp = TempDir::new().expect("temp dir");
         let archive_path = temp.path().join("session_archive.json");
         let index_path = temp.path().join("project_index.json");
+        unsafe {
         std::env::set_var(
             "NDC_SESSION_ARCHIVE_FILE",
             archive_path.to_string_lossy().to_string(),
         );
+        }
+        unsafe {
         std::env::set_var(
             "NDC_PROJECT_INDEX_FILE",
             index_path.to_string_lossy().to_string(),
         );
+        }
 
         let project_root = temp.path().join("project");
         std::fs::create_dir_all(project_root.as_path()).expect("create project");
@@ -2615,8 +2611,8 @@ mod tests {
         assert_eq!(timeline.len(), 1);
         assert_eq!(timeline[0].message, "workflow_stage: planning | restore");
 
-        std::env::remove_var("NDC_PROJECT_INDEX_FILE");
-        std::env::remove_var("NDC_SESSION_ARCHIVE_FILE");
+        unsafe { std::env::remove_var("NDC_PROJECT_INDEX_FILE"); }
+        unsafe { std::env::remove_var("NDC_SESSION_ARCHIVE_FILE"); }
     }
 
     #[tokio::test]
@@ -2869,7 +2865,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_ask_auto_approve_allows_tool_execution() {
-        std::env::set_var("NDC_AUTO_APPROVE_TOOLS", "1");
+        unsafe { std::env::set_var("NDC_AUTO_APPROVE_TOOLS", "1"); }
 
         let mut registry = ToolRegistry::new();
         registry.register(DummyWriteTool);
@@ -2889,7 +2885,7 @@ mod tests {
             .await;
         assert!(result.is_ok());
 
-        std::env::remove_var("NDC_AUTO_APPROVE_TOOLS");
+        unsafe { std::env::remove_var("NDC_AUTO_APPROVE_TOOLS"); }
     }
 
     #[tokio::test]
@@ -2916,9 +2912,9 @@ mod tests {
     #[tokio::test]
     async fn test_runtime_permission_ask_can_auto_confirm_and_retry() {
         let _guard = env_lock();
-        std::env::set_var("NDC_SECURITY_PERMISSION_ENFORCE_GATEWAY", "1");
-        std::env::set_var("NDC_SECURITY_GIT_COMMIT_ACTION", "ask");
-        std::env::set_var("NDC_AUTO_APPROVE_TOOLS", "1");
+        unsafe { std::env::set_var("NDC_SECURITY_PERMISSION_ENFORCE_GATEWAY", "1"); }
+        unsafe { std::env::set_var("NDC_SECURITY_GIT_COMMIT_ACTION", "ask"); }
+        unsafe { std::env::set_var("NDC_AUTO_APPROVE_TOOLS", "1"); }
 
         let mut registry = ToolRegistry::new();
         registry.register(DummyRuntimeGitCommitTool);
@@ -2955,17 +2951,17 @@ mod tests {
             .expect("retry result");
         assert_eq!(retry.as_deref(), Some("commit-ok"));
 
-        std::env::remove_var("NDC_AUTO_APPROVE_TOOLS");
-        std::env::remove_var("NDC_SECURITY_GIT_COMMIT_ACTION");
-        std::env::remove_var("NDC_SECURITY_PERMISSION_ENFORCE_GATEWAY");
+        unsafe { std::env::remove_var("NDC_AUTO_APPROVE_TOOLS"); }
+        unsafe { std::env::remove_var("NDC_SECURITY_GIT_COMMIT_ACTION"); }
+        unsafe { std::env::remove_var("NDC_SECURITY_PERMISSION_ENFORCE_GATEWAY"); }
     }
 
     #[tokio::test]
     async fn test_runtime_permission_retry_non_interactive_returns_denied() {
         let _guard = env_lock();
-        std::env::set_var("NDC_SECURITY_PERMISSION_ENFORCE_GATEWAY", "1");
-        std::env::set_var("NDC_SECURITY_GIT_COMMIT_ACTION", "ask");
-        std::env::remove_var("NDC_AUTO_APPROVE_TOOLS");
+        unsafe { std::env::set_var("NDC_SECURITY_PERMISSION_ENFORCE_GATEWAY", "1"); }
+        unsafe { std::env::set_var("NDC_SECURITY_GIT_COMMIT_ACTION", "ask"); }
+        unsafe { std::env::remove_var("NDC_AUTO_APPROVE_TOOLS"); }
 
         let mut registry = ToolRegistry::new();
         registry.register(DummyRuntimeGitCommitTool);
@@ -2991,7 +2987,7 @@ mod tests {
             matches!(result, Err(AgentError::PermissionDenied(message)) if message.contains("non_interactive confirmation required"))
         );
 
-        std::env::remove_var("NDC_SECURITY_GIT_COMMIT_ACTION");
-        std::env::remove_var("NDC_SECURITY_PERMISSION_ENFORCE_GATEWAY");
+        unsafe { std::env::remove_var("NDC_SECURITY_GIT_COMMIT_ACTION"); }
+        unsafe { std::env::remove_var("NDC_SECURITY_PERMISSION_ENFORCE_GATEWAY"); }
     }
 }

@@ -7,18 +7,19 @@
 //! - Token counting
 //! - Model registry
 
-pub mod openai;
 pub mod anthropic;
 pub mod minimax;
+pub mod openai;
 pub mod openrouter;
 pub mod token_counter;
 
-pub use openai::{OpenAiProvider, create_openai_config, create_azure_config};
 pub use anthropic::{AnthropicProvider, create_anthropic_config};
 pub use minimax::{MiniMaxProvider, create_minimax_config};
+pub use openai::{OpenAiProvider, create_azure_config, create_openai_config};
 pub use openrouter::{OpenRouterProvider, create_openrouter_config};
 pub use token_counter::{SimpleTokenCounter, TokenCountError};
 
+use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -28,7 +29,10 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum ProviderError {
     #[error("API error: {message}")]
-    Api { message: String, status_code: Option<u16> },
+    Api {
+        message: String,
+        status_code: Option<u16>,
+    },
 
     #[error("Rate limited, retry after {retry_after}s")]
     RateLimited { retry_after: u64 },
@@ -69,9 +73,18 @@ pub enum MessageRole {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub role: MessageRole,
+    #[serde(default, deserialize_with = "deserialize_message_content")]
     pub content: String,
     pub name: Option<String>,
     pub tool_calls: Option<Vec<ToolCall>>,
+}
+
+fn deserialize_message_content<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let content = Option::<String>::deserialize(deserializer)?;
+    Ok(content.unwrap_or_default())
 }
 
 /// Tool call request
@@ -108,6 +121,7 @@ pub struct CompletionRequest {
     pub presence_penalty: Option<f32>,
     pub stop: Option<Vec<String>>,
     pub stream: bool,
+    pub tools: Option<Vec<serde_json::Value>>,
 }
 
 /// Response from LLM
@@ -318,9 +332,7 @@ pub fn map_provider_error(error: reqwest::Error, _provider: &str) -> ProviderErr
                 message: "Resource not found".to_string(),
                 status_code: Some(401),
             },
-            429 => ProviderError::RateLimited {
-                retry_after: 60,
-            },
+            429 => ProviderError::RateLimited { retry_after: 60 },
             500 | 502 | 503 | 504 => ProviderError::Api {
                 message: "Server error".to_string(),
                 status_code: Some(status.as_u16()),
@@ -401,6 +413,7 @@ mod tests {
             presence_penalty: None,
             stop: None,
             stream: false,
+            tools: None,
         };
 
         let json = serde_json::to_string(&request).unwrap();
@@ -409,6 +422,15 @@ mod tests {
         assert_eq!(parsed.model, "gpt-4");
         assert_eq!(parsed.messages.len(), 2);
         assert_eq!(parsed.temperature, Some(0.7));
+        assert!(parsed.tools.is_none());
+    }
+
+    #[test]
+    fn test_message_null_content_deserialization() {
+        let json = r#"{"role":"assistant","content":null}"#;
+        let parsed: Message = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.role, MessageRole::Assistant);
+        assert_eq!(parsed.content, "");
     }
 
     #[test]

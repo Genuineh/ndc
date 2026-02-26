@@ -29,15 +29,23 @@ impl SimpleTokenCounter {
 
         // GPT-4 family (approximately 4 chars per token)
         for model in &[
-            "gpt-4", "gpt-4-turbo", "gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo",
+            "gpt-4",
+            "gpt-4-turbo",
+            "gpt-4o",
+            "gpt-4o-mini",
+            "gpt-3.5-turbo",
         ] {
             counter.model_ratios.insert(model.to_string(), 0.25);
         }
 
         // Claude family (approximately 4 chars per token)
         for model in &[
-            "claude-opus-4", "claude-sonnet-4", "claude-haiku-4",
-            "claude-3-5-sonnet", "claude-3-opus", "claude-3-haiku",
+            "claude-opus-4",
+            "claude-sonnet-4",
+            "claude-haiku-4",
+            "claude-3-5-sonnet",
+            "claude-3-opus",
+            "claude-3-haiku",
         ] {
             counter.model_ratios.insert(model.to_string(), 0.25);
         }

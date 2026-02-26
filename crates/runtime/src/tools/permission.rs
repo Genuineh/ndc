@@ -95,7 +95,7 @@ pub struct PermissionRequest {
 pub enum PermissionResponse {
     Allow,
     Deny,
-    Confirm(String),  // 确认码
+    Confirm(String), // 确认码
 }
 
 /// 权限配置
@@ -155,7 +155,7 @@ impl Default for PermissionConfig {
             enabled: true,
             auto_allow_level: DangerLevel::Low,
             require_confirm_level: DangerLevel::High,
-            cache_ttl_seconds: 300,  // 5 minutes
+            cache_ttl_seconds: 300, // 5 minutes
             dangerous_patterns: Self::default_dangerous_patterns(),
         }
     }
@@ -181,7 +181,6 @@ impl PermissionConfig {
                 level: DangerLevel::Critical,
                 description: "Format filesystem".to_string(),
             },
-
             // High - 高风险
             DangerousPattern {
                 pattern: "rm -rf".to_string(),
@@ -208,7 +207,6 @@ impl PermissionConfig {
                 level: DangerLevel::High,
                 description: "Disk wipe".to_string(),
             },
-
             // Medium - 中等风险
             DangerousPattern {
                 pattern: "kill -9".to_string(),
@@ -235,7 +233,6 @@ impl PermissionConfig {
                 level: DangerLevel::Medium,
                 description: "Shutdown system".to_string(),
             },
-
             // Low - 低风险（但仍需注意）
             DangerousPattern {
                 pattern: "curl ".to_string(),
@@ -261,7 +258,10 @@ impl PermissionSystem {
     }
 
     /// 检查权限
-    pub async fn check(&mut self, request: PermissionRequest) -> Result<PermissionResponse, PermissionError> {
+    pub async fn check(
+        &mut self,
+        request: PermissionRequest,
+    ) -> Result<PermissionResponse, PermissionError> {
         // 如果权限检查禁用，允许所有操作
         if !self.config.enabled {
             return Ok(PermissionResponse::Allow);
@@ -289,17 +289,19 @@ impl PermissionSystem {
         if self.should_confirm(level) {
             let response = PermissionResponse::Confirm(hash.clone());
             self.cache_response(hash, response.clone());
-            return Err(PermissionError::RequiresConfirmation(
-                format!("Operation requires confirmation: {}", request.description)
-            ));
+            return Err(PermissionError::RequiresConfirmation(format!(
+                "Operation requires confirmation: {}",
+                request.description
+            )));
         }
 
         // 默认拒绝高风险操作
         if level.ge(&DangerLevel::High) {
             warn!("Permission denied: {:?}", request.description);
-            return Err(PermissionError::Denied(
-                format!("High-risk operation denied: {}", request.description)
-            ));
+            return Err(PermissionError::Denied(format!(
+                "High-risk operation denied: {}",
+                request.description
+            )));
         }
 
         // 默认允许低风险操作
@@ -307,7 +309,11 @@ impl PermissionSystem {
     }
 
     /// 确认权限请求
-    pub async fn confirm(&mut self, hash: &str, confirm: bool) -> Result<PermissionResponse, PermissionError> {
+    pub async fn confirm(
+        &mut self,
+        hash: &str,
+        confirm: bool,
+    ) -> Result<PermissionResponse, PermissionError> {
         if confirm {
             // 更新缓存
             for entry in &mut self.cache {
@@ -369,14 +375,12 @@ impl PermissionSystem {
 
     /// 生成请求哈希
     fn hash_request(&self, request: &PermissionRequest) -> String {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
 
         let input = format!(
             "{:?}:{:?}:{}",
-            request.permission_type,
-            request.path,
-            request.description
+            request.permission_type, request.path, request.description
         );
 
         hasher.update(input);
@@ -411,9 +415,8 @@ impl PermissionSystem {
     /// 清理过期缓存
     fn cleanup_cache(&mut self) {
         let ttl = Duration::from_secs(self.config.cache_ttl_seconds);
-        self.cache.retain(|entry| {
-            entry.created_at.elapsed().map(|e| e < ttl).unwrap_or(true)
-        });
+        self.cache
+            .retain(|entry| entry.created_at.elapsed().map(|e| e < ttl).unwrap_or(true));
     }
 
     /// 获取配置
@@ -504,10 +507,7 @@ mod tests {
     #[test]
     fn test_check_command_safe() {
         let system = PermissionSystem::new(None);
-        assert_eq!(
-            system.check_command("echo", &["hello".to_string()]),
-            None
-        );
+        assert_eq!(system.check_command("echo", &["hello".to_string()]), None);
     }
 
     #[test]

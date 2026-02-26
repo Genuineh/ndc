@@ -4,17 +4,23 @@
 //! Design参考 OpenCode grep.ts
 
 use async_trait::async_trait;
-use std::path::PathBuf;
 use regex::Regex;
+use std::path::PathBuf;
 use tokio::fs;
 use tracing::debug;
 
-use super::{Tool, ToolResult, ToolError, ToolMetadata};
 use super::schema::ToolSchemaBuilder;
+use super::{enforce_path_boundary, Tool, ToolError, ToolMetadata, ToolResult};
 
 /// Grep tool - 内容搜索
 #[derive(Debug)]
 pub struct GrepTool;
+
+impl Default for GrepTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl GrepTool {
     pub fn new() -> Self {
@@ -33,7 +39,8 @@ impl Tool for GrepTool {
     }
 
     async fn execute(&self, params: &serde_json::Value) -> Result<ToolResult, ToolError> {
-        let pattern = params.get("pattern")
+        let pattern = params
+            .get("pattern")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArgument("Missing 'pattern' parameter".to_string()))?;
 
@@ -41,9 +48,7 @@ impl Tool for GrepTool {
         let regex = Regex::new(pattern)
             .map_err(|e| ToolError::InvalidArgument(format!("Invalid regex pattern: {}", e)))?;
 
-        let path_str = params.get("path")
-            .and_then(|v| v.as_str())
-            .unwrap_or(".");
+        let path_str = params.get("path").and_then(|v| v.as_str()).unwrap_or(".");
 
         let path = PathBuf::from(path_str);
 
@@ -53,6 +58,8 @@ impl Tool for GrepTool {
         if !path.exists() {
             return Err(ToolError::InvalidPath(path));
         }
+
+        enforce_path_boundary(path.as_path(), None, "grep")?;
 
         // Determine if path is a file or directory
         let results = if path.is_file() {
@@ -92,8 +99,14 @@ impl Tool for GrepTool {
         ToolSchemaBuilder::new()
             .description("Search for a pattern in files")
             .required_string("pattern", "The regex pattern to search for")
-            .param_string("path", "The directory or file to search in (defaults to current directory)")
-            .param_string("include", "File pattern to include (e.g., \"*.rs\", \"*.{ts,tsx}\")")
+            .param_string(
+                "path",
+                "The directory or file to search in (defaults to current directory)",
+            )
+            .param_string(
+                "include",
+                "File pattern to include (e.g., \"*.rs\", \"*.{ts,tsx}\")",
+            )
             .param_integer("max_results", "Maximum number of results to return")
             .build()
             .to_value()
@@ -103,8 +116,9 @@ impl Tool for GrepTool {
 impl GrepTool {
     /// 搜索单个文件
     async fn search_file(path: &PathBuf, regex: &Regex) -> Result<Vec<String>, ToolError> {
-        let content = fs::read_to_string(path).await
-            .map_err(|e| ToolError::Io(e))?;
+        let content = fs::read_to_string(path)
+            .await
+            .map_err(ToolError::Io)?;
 
         let mut results = Vec::new();
 
@@ -120,22 +134,30 @@ impl GrepTool {
     }
 
     /// 搜索目录（非递归版本）
-    async fn search_directory(dir: &PathBuf, regex: &Regex, params: &serde_json::Value) -> Result<Vec<String>, ToolError> {
+    async fn search_directory(
+        dir: &PathBuf,
+        regex: &Regex,
+        params: &serde_json::Value,
+    ) -> Result<Vec<String>, ToolError> {
         let mut results = Vec::new();
 
-        let include_pattern = params.get("include").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let max_results = params.get("max_results").and_then(|v| v.as_u64()).unwrap_or(u64::MAX);
+        let include_pattern = params
+            .get("include")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let max_results = params
+            .get("max_results")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(u64::MAX);
 
         // Walk directory
-        let mut entries = tokio::fs::read_dir(dir).await
-            .map_err(|e| ToolError::Io(e))?;
+        let mut entries = tokio::fs::read_dir(dir)
+            .await
+            .map_err(ToolError::Io)?;
 
-        while let Some(entry) = entries.next_entry().await
-            .map_err(|e| ToolError::Io(e))? {
-
+        while let Some(entry) = entries.next_entry().await.map_err(ToolError::Io)? {
             let path = entry.path();
-            let metadata = entry.metadata().await
-                .map_err(|e| ToolError::Io(e))?;
+            let metadata = entry.metadata().await.map_err(ToolError::Io)?;
 
             if metadata.is_file() {
                 // Check include pattern
@@ -174,8 +196,6 @@ impl GrepTool {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use std::fs::File;
-    use std::io::Write;
 
     #[tokio::test]
     async fn test_grep_single_file() {

@@ -10,11 +10,12 @@
 //! - repl/: 交互式 REPL
 //! - daemon/: gRPC 服务
 
-pub mod cli;
-pub mod repl;
-pub mod daemon;
 pub mod agent_mode;
+pub mod cli;
+pub mod daemon;
 pub mod interactive;
+pub mod redaction;
+pub mod repl;
 
 #[cfg(feature = "grpc")]
 pub mod generated;
@@ -34,22 +35,20 @@ mod daemon_tests;
 #[cfg(test)]
 mod e2e_tests;
 
-pub use cli::{run, CliConfig};
-pub use repl::{run_repl, ReplConfig, ReplState};
-pub use daemon::run_daemon;
 pub use agent_mode::{
-    AgentModeManager, AgentModeConfig, AgentModeState,
+    handle_agent_command, show_agent_status, AgentModeConfig, AgentModeManager, AgentModeState,
     AgentModeStatus, PermissionRule,
-    handle_agent_command, show_agent_status,
 };
+pub use cli::{run, CliConfig};
+pub use daemon::run_daemon;
+pub use repl::{run_repl, ReplConfig, ReplState};
 
 // Interactive components
 pub use interactive::{
-    StreamingDisplay, AgentModeSwitcher, AgentSwitchResult,
-    PermissionConfirm, PermissionResult, ProgressIndicator, MultiProgress,
-    prompt_recovery, display_agent_status, display_tool_call,
-    RiskLevel,
+    display_agent_status, display_tool_call, prompt_recovery, AgentModeSwitcher, AgentSwitchResult,
+    MultiProgress, PermissionConfirm, PermissionResult, ProgressIndicator, RiskLevel,
+    StreamingDisplay,
 };
 
 #[cfg(feature = "grpc")]
-pub use grpc_client::{NdcClient, ClientConfig, create_client, ClientError};
+pub use grpc_client::{create_client, ClientConfig, ClientError, NdcClient};

@@ -6,7 +6,7 @@
 //! - Support headers and methods
 //! - Parse response status
 
-use super::{Tool, ToolResult, ToolError};
+use super::{Tool, ToolError, ToolResult};
 use std::time::Duration;
 use tracing::debug;
 
@@ -18,8 +18,13 @@ pub struct WebFetchTool {
     /// Maximum content size (bytes)
     max_content_size: usize,
     /// Follow redirects
-    #[allow(dead_code)]
     _follow_redirects: bool,
+}
+
+impl Default for WebFetchTool {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl WebFetchTool {
@@ -32,7 +37,13 @@ impl WebFetchTool {
     }
 
     /// Fetch URL content
-    async fn fetch(&self, url: &str, method: &str, headers: Option<&serde_json::Value>, body: Option<&str>) -> Result<String, ToolError> {
+    async fn fetch(
+        &self,
+        url: &str,
+        method: &str,
+        headers: Option<&serde_json::Value>,
+        body: Option<&str>,
+    ) -> Result<String, ToolError> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(self.timeout_seconds))
             .build()
@@ -60,11 +71,15 @@ impl WebFetchTool {
             request = request.body(b.to_string());
         }
 
-        let response = request.send().await
+        let response = request
+            .send()
+            .await
             .map_err(|e| ToolError::ExecutionFailed(format!("Request failed: {}", e)))?;
 
         let status = response.status();
-        let text = response.text().await
+        let text = response
+            .text()
+            .await
             .map_err(|e| ToolError::ExecutionFailed(format!("Read response failed: {}", e)))?;
 
         // Check content size
@@ -91,18 +106,19 @@ impl Tool for WebFetchTool {
     }
 
     async fn execute(&self, params: &serde_json::Value) -> Result<ToolResult, ToolError> {
-        let url = params.get("url")
+        let url = params
+            .get("url")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArgument("Missing URL".to_string()))?;
 
-        let method = params.get("method")
+        let method = params
+            .get("method")
             .and_then(|v| v.as_str())
             .unwrap_or("GET");
 
-        let headers = params.get("headers").and_then(|v| Some(v));
+        let headers = params.get("headers").map(|v| v);
 
-        let body = params.get("body")
-            .and_then(|v| v.as_str());
+        let body = params.get("body").and_then(|v| v.as_str());
 
         debug!("WebFetch: {} {}", method, url);
 

@@ -8,7 +8,7 @@
 //! - Support parameter substitution for skills
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 
 /// Skill definition from skill registry
@@ -83,10 +83,7 @@ pub struct SkillAgentTool {
 
 impl SkillAgentTool {
     /// Create new Skill Agent tool
-    pub fn new(
-        skill_def: SkillDef,
-        config: SkillAdapterConfig,
-    ) -> Self {
+    pub fn new(skill_def: SkillDef, config: SkillAdapterConfig) -> Self {
         let agent_name = format!("skill_{}", skill_def.name);
 
         // Convert skill parameters to JSON Schema
@@ -192,11 +189,7 @@ impl SkillToolRegistry {
 
     /// Get all tools as schema
     pub fn to_schema(&self) -> Value {
-        let tools: Vec<Value> = self
-            .tools
-            .values()
-            .map(|t| t.to_schema())
-            .collect();
+        let tools: Vec<Value> = self.tools.values().map(|t| t.to_schema()).collect();
 
         json!(tools)
     }

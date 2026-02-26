@@ -4,24 +4,36 @@
 
 use async_trait::async_trait;
 use ndc_core::TaskId;
-use serde_json::json;
 
-use super::super::{Tool, ToolResult, ToolError, ToolMetadata};
 use super::super::schema::ToolSchemaBuilder;
+use super::super::{Tool, ToolError, ToolMetadata, ToolResult};
+use ndc_storage::{create_memory_storage, SharedStorage};
 
 /// Task Verify Tool - 验证任务完成状态
-#[derive(Debug, Clone)]
-pub struct TaskVerifyTool;
+#[derive(Clone)]
+pub struct TaskVerifyTool {
+    storage: SharedStorage,
+}
 
 impl TaskVerifyTool {
     pub fn new() -> Self {
-        Self
+        Self::with_storage(create_memory_storage())
+    }
+
+    pub fn with_storage(storage: SharedStorage) -> Self {
+        Self { storage }
     }
 }
 
 impl Default for TaskVerifyTool {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl std::fmt::Debug for TaskVerifyTool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TaskVerifyTool").finish()
     }
 }
 
@@ -38,47 +50,103 @@ impl Tool for TaskVerifyTool {
     async fn execute(&self, params: &serde_json::Value) -> Result<ToolResult, ToolError> {
         let start = std::time::Instant::now();
 
-        // 提取任务 ID
-        let task_id_str = params.get("task_id")
+        let task_id_str = params
+            .get("task_id")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArgument("Missing 'task_id' parameter".to_string()))?;
 
-        // 解析任务 ID
-        let task_id: TaskId = task_id_str.parse()
+        let task_id: TaskId = task_id_str
+            .parse()
             .map_err(|_| ToolError::InvalidArgument(format!("Invalid task_id: {}", task_id_str)))?;
 
-        // TODO: 从存储获取任务并验证
-        // 目前为模拟实现
+        let detailed = params
+            .get("detailed")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let task = self
+            .storage
+            .get_task(&task_id)
+            .await
+            .map_err(ToolError::ExecutionFailed)?
+            .ok_or_else(|| ToolError::ExecutionFailed(format!("Task not found: {}", task_id)))?;
 
-        // 构建验证结果输出
-        let mut output = format!("🔍 Task Verification Report\n\n");
-        output.push_str(&format!("Task ID: {}\n\n", task_id));
+        let state_ok = task.state == ndc_core::TaskState::Completed;
+        let failed_steps: Vec<&ndc_core::ExecutionStep> = task
+            .steps
+            .iter()
+            .filter(|step| {
+                step.status == ndc_core::StepStatus::Failed
+                    || step.result.as_ref().map(|r| !r.success).unwrap_or(false)
+            })
+            .collect();
+        let verified = state_ok && failed_steps.is_empty();
 
-        // 模拟验证过程
-        output.push_str("Checking task state... ");
-        output.push_str("✓ Completed\n\n");
+        let mut output = String::from("🔍 Task Verification Report\n\n");
+        output.push_str(&format!("Task ID: {}\n", task_id));
+        output.push_str(&format!("Title: {}\n", task.title));
+        output.push_str(&format!("State: {:?}\n\n", task.state));
 
-        output.push_str("Verifying execution steps... ");
-        output.push_str("✓ All steps successful\n\n");
+        output.push_str("Checks:\n");
+        output.push_str(&format!(
+            "- State is Completed: {}\n",
+            if state_ok { "✓" } else { "✗" }
+        ));
+        output.push_str(&format!(
+            "- No failed execution steps: {}\n",
+            if failed_steps.is_empty() {
+                "✓"
+            } else {
+                "✗"
+            }
+        ));
+        output.push_str(&format!(
+            "- Quality gate present: {}\n\n",
+            if task.quality_gate.is_some() {
+                "Yes"
+            } else {
+                "No"
+            }
+        ));
 
-        output.push_str("Running quality gates... ");
-        output.push_str("✓ Passed\n\n");
+        if detailed {
+            output.push_str("Execution Steps:\n");
+            if task.steps.is_empty() {
+                output.push_str("- (none)\n");
+            } else {
+                for step in &task.steps {
+                    let step_ok = step.result.as_ref().map(|r| r.success).unwrap_or(true);
+                    output.push_str(&format!(
+                        "- Step {} {:?} result_ok={}\n",
+                        step.step_id, step.status, step_ok
+                    ));
+                }
+            }
+            output.push('\n');
+        }
 
-        output.push_str("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n");
-        output.push_str("✅ Task verification PASSED\n\n");
-        output.push_str("The task has been successfully completed and all quality checks have passed.");
+        if verified {
+            output.push_str("✅ Task verification PASSED");
+        } else {
+            output.push_str("❌ Task verification FAILED\n");
+            if !state_ok {
+                output.push_str("- Task is not in Completed state.\n");
+            }
+            if !failed_steps.is_empty() {
+                output.push_str("- One or more execution steps failed.\n");
+            }
+        }
 
         let duration = start.elapsed().as_millis() as u64;
-
-        tracing::info!(
-            task_id = %task_id,
-            "Task verified via ndc_task_verify tool"
-        );
+        tracing::info!(task_id = %task_id, verified, "Task verified via ndc_task_verify tool");
 
         Ok(ToolResult {
-            success: true,
+            success: verified,
             output,
-            error: None,
+            error: if verified {
+                None
+            } else {
+                Some("Task verification failed".to_string())
+            },
             metadata: ToolMetadata {
                 execution_time_ms: duration,
                 files_read: 0,
@@ -101,18 +169,28 @@ impl Tool for TaskVerifyTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ndc_core::Task;
+    use ndc_core::{AgentRole, Task};
+    use serde_json::json;
+
+    async fn seed_completed_task(storage: SharedStorage) -> Task {
+        let mut task = Task::new(
+            "Test".to_string(),
+            "Description".to_string(),
+            AgentRole::Implementer,
+        );
+        task.state = ndc_core::TaskState::Completed;
+        storage.save_task(&task).await.unwrap();
+        task
+    }
 
     #[tokio::test]
     async fn test_task_verify_basic() {
-        let tool = TaskVerifyTool::new();
-
-        // Create a mock task to get a valid ID
-        let task = Task::new("Test".to_string(), "Description".to_string(), ndc_core::AgentRole::Implementer);
-        let task_id = task.id.to_string();
+        let storage = create_memory_storage();
+        let task = seed_completed_task(storage.clone()).await;
+        let tool = TaskVerifyTool::with_storage(storage);
 
         let params = json!({
-            "task_id": task_id
+            "task_id": task.id.to_string()
         });
 
         let result = tool.execute(&params).await.unwrap();
@@ -123,18 +201,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_task_verify_with_detailed() {
-        let tool = TaskVerifyTool::new();
-
-        let task = Task::new("Test".to_string(), "Description".to_string(), ndc_core::AgentRole::Implementer);
-        let task_id = task.id.to_string();
+        let storage = create_memory_storage();
+        let task = seed_completed_task(storage.clone()).await;
+        let tool = TaskVerifyTool::with_storage(storage);
 
         let params = json!({
-            "task_id": task_id,
+            "task_id": task.id.to_string(),
             "detailed": true
         });
 
         let result = tool.execute(&params).await.unwrap();
         assert!(result.success);
+        assert!(result.output.contains("Execution Steps"));
     }
 
     #[tokio::test]
@@ -167,7 +245,6 @@ mod tests {
         assert!(props.contains_key("task_id"));
         assert!(props.contains_key("detailed"));
 
-        // task_id should be required
         let required = schema.get("required").unwrap().as_array().unwrap();
         assert!(required.contains(&serde_json::json!("task_id")));
     }

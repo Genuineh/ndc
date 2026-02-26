@@ -9,13 +9,13 @@
 //! - 同步阻塞：没有 Verdict，任何动作不能 commit
 //! - 插件不能绕过核心层
 
-use ndc_core::{
-    Intent, Verdict, Action, AgentRole,
-    PrivilegeLevel, Condition, ConditionType, ErrorCode, HumanContext,
-};
-use std::sync::Arc;
-use std::collections::HashMap;
 use async_trait::async_trait;
+use ndc_core::{
+    Action, AgentRole, Condition, ConditionType, ErrorCode, HumanContext, Intent, PrivilegeLevel,
+    Verdict,
+};
+use std::collections::HashMap;
+use std::sync::Arc;
 
 /// 决策引擎 Trait
 #[async_trait]
@@ -110,12 +110,18 @@ impl BasicDecisionEngine {
 
     /// 初始化默认角色权限
     fn init_default_privileges(&mut self) {
-        self.role_privileges.insert(AgentRole::Planner, PrivilegeLevel::Normal);
-        self.role_privileges.insert(AgentRole::Implementer, PrivilegeLevel::Elevated);
-        self.role_privileges.insert(AgentRole::Reviewer, PrivilegeLevel::Normal);
-        self.role_privileges.insert(AgentRole::Tester, PrivilegeLevel::Normal);
-        self.role_privileges.insert(AgentRole::Historian, PrivilegeLevel::Normal);
-        self.role_privileges.insert(AgentRole::Admin, PrivilegeLevel::Critical);
+        self.role_privileges
+            .insert(AgentRole::Planner, PrivilegeLevel::Normal);
+        self.role_privileges
+            .insert(AgentRole::Implementer, PrivilegeLevel::Elevated);
+        self.role_privileges
+            .insert(AgentRole::Reviewer, PrivilegeLevel::Normal);
+        self.role_privileges
+            .insert(AgentRole::Tester, PrivilegeLevel::Normal);
+        self.role_privileges
+            .insert(AgentRole::Historian, PrivilegeLevel::Normal);
+        self.role_privileges
+            .insert(AgentRole::Admin, PrivilegeLevel::Critical);
     }
 }
 
@@ -132,7 +138,8 @@ impl DecisionEngine for BasicDecisionEngine {
         let required_privilege = self.calculate_required_privilege(&intent);
 
         // 2. 获取角色默认权限
-        let granted_privilege = self.role_privileges
+        let granted_privilege = self
+            .role_privileges
             .get(&intent.agent_role)
             .cloned()
             .unwrap_or(PrivilegeLevel::Normal);
@@ -249,13 +256,11 @@ impl BasicDecisionEngine {
                     PrivilegeLevel::Normal
                 }
             }
-            Action::Git { operation, .. } => {
-                match operation {
-                    ndc_core::GitOp::Commit { .. } => PrivilegeLevel::High,
-                    ndc_core::GitOp::Push => PrivilegeLevel::High,
-                    _ => PrivilegeLevel::Normal,
-                }
-            }
+            Action::Git { operation, .. } => match operation {
+                ndc_core::GitOp::Commit { .. } => PrivilegeLevel::High,
+                ndc_core::GitOp::Push => PrivilegeLevel::High,
+                _ => PrivilegeLevel::Normal,
+            },
             Action::ModifyMemory { .. } => PrivilegeLevel::Elevated,
             Action::CreateTask { .. } => PrivilegeLevel::Normal,
             Action::UpdateTaskState { .. } => PrivilegeLevel::Normal,
@@ -271,27 +276,25 @@ impl BasicDecisionEngine {
     /// 判断是否为配置文件
     fn is_config_file(path: &std::path::PathBuf) -> bool {
         let path_str = path.to_string_lossy();
-        path_str.contains("Cargo.toml") ||
-        path_str.contains("package.json") ||
-        path_str.ends_with(".lock") ||
-        path_str.ends_with(".toml")
+        path_str.contains("Cargo.toml")
+            || path_str.contains("package.json")
+            || path_str.ends_with(".lock")
+            || path_str.ends_with(".toml")
     }
 
     /// 判断是否为危险命令
     fn is_dangerous_command(command: &str) -> bool {
         let cmd = command.to_lowercase();
-        cmd.contains("rm -rf") ||
-        cmd.contains("sudo") ||
-        cmd.contains(":(){:|:&};:")
+        cmd.contains("rm -rf") || cmd.contains("sudo") || cmd.contains(":(){:|:&};:")
     }
 
     /// 判断是否为构建命令
     fn is_build_command(command: &str) -> bool {
         let cmd = command.to_lowercase();
-        cmd.contains("cargo build") ||
-        cmd.contains("npm run build") ||
-        cmd.contains("go build") ||
-        cmd.contains("make")
+        cmd.contains("cargo build")
+            || cmd.contains("npm run build")
+            || cmd.contains("go build")
+            || cmd.contains("make")
     }
 
     /// 构建附加条件

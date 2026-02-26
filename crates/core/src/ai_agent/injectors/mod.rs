@@ -7,6 +7,6 @@
 //!
 //! Design: Inject NDC's cognitive system into Agent prompts
 
-pub mod working_memory;
 pub mod invariant;
 pub mod lineage;
+pub mod working_memory;

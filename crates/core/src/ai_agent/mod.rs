@@ -23,7 +23,7 @@ pub use orchestrator::{
     AgentConfig, AgentOrchestrator, AgentRequest, AgentResponse, StreamEvent, ToolExecutor,
 };
 
-pub use session::{AgentMessage, AgentSession, SessionManager, SessionState};
+pub use session::{AgentMessage, AgentSession, ProjectIdentity, SessionManager, SessionState};
 
 pub use verifier::{TaskStorage, TaskVerifier, VerificationError, VerificationResult};
 

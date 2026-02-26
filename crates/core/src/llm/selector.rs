@@ -164,37 +164,61 @@ impl ModelSelector {
     pub fn new() -> Self {
         let mut capabilities = HashMap::new();
 
-        capabilities.insert(LlmProvider::Fast, ProviderCapabilities {
-            max_context_tokens: 32_000,
-            strengths: vec!["Simple code generation".to_string(), "Quick fixes".to_string()],
-            weaknesses: vec!["Limited reasoning".to_string(), "Poor complex logic".to_string()],
-            relative_cost: 0.1,
-            relative_speed: 2.0,
-        });
+        capabilities.insert(
+            LlmProvider::Fast,
+            ProviderCapabilities {
+                max_context_tokens: 32_000,
+                strengths: vec![
+                    "Simple code generation".to_string(),
+                    "Quick fixes".to_string(),
+                ],
+                weaknesses: vec![
+                    "Limited reasoning".to_string(),
+                    "Poor complex logic".to_string(),
+                ],
+                relative_cost: 0.1,
+                relative_speed: 2.0,
+            },
+        );
 
-        capabilities.insert(LlmProvider::Balanced, ProviderCapabilities {
-            max_context_tokens: 64_000,
-            strengths: vec!["Good reasoning".to_string(), "Balanced capability".to_string()],
-            weaknesses: vec!["Not max capability".to_string()],
-            relative_cost: 0.5,
-            relative_speed: 1.0,
-        });
+        capabilities.insert(
+            LlmProvider::Balanced,
+            ProviderCapabilities {
+                max_context_tokens: 64_000,
+                strengths: vec![
+                    "Good reasoning".to_string(),
+                    "Balanced capability".to_string(),
+                ],
+                weaknesses: vec!["Not max capability".to_string()],
+                relative_cost: 0.5,
+                relative_speed: 1.0,
+            },
+        );
 
-        capabilities.insert(LlmProvider::Powerful, ProviderCapabilities {
-            max_context_tokens: 128_000,
-            strengths: vec!["Strong reasoning".to_string(), "Complex logic".to_string()],
-            weaknesses: vec!["Higher cost".to_string(), "Slower".to_string()],
-            relative_cost: 1.0,
-            relative_speed: 0.7,
-        });
+        capabilities.insert(
+            LlmProvider::Powerful,
+            ProviderCapabilities {
+                max_context_tokens: 128_000,
+                strengths: vec!["Strong reasoning".to_string(), "Complex logic".to_string()],
+                weaknesses: vec!["Higher cost".to_string(), "Slower".to_string()],
+                relative_cost: 1.0,
+                relative_speed: 0.7,
+            },
+        );
 
-        capabilities.insert(LlmProvider::MaxReasoning, ProviderCapabilities {
-            max_context_tokens: 200_000,
-            strengths: vec!["Maximum reasoning".to_string(), "Complex analysis".to_string()],
-            weaknesses: vec!["Highest cost".to_string(), "Slowest".to_string()],
-            relative_cost: 3.0,
-            relative_speed: 0.4,
-        });
+        capabilities.insert(
+            LlmProvider::MaxReasoning,
+            ProviderCapabilities {
+                max_context_tokens: 200_000,
+                strengths: vec![
+                    "Maximum reasoning".to_string(),
+                    "Complex analysis".to_string(),
+                ],
+                weaknesses: vec!["Highest cost".to_string(), "Slowest".to_string()],
+                relative_cost: 3.0,
+                relative_speed: 0.4,
+            },
+        );
 
         Self {
             weights: SelectionWeights::default(),
@@ -234,16 +258,24 @@ impl ModelSelector {
         };
 
         // Complexity score
-        let complexity_score = (characteristics.file_count as f32 / 10.0)
-            .min(1.0) * 0.4
+        let complexity_score = (characteristics.file_count as f32 / 10.0).min(1.0) * 0.4
             + (characteristics.subtask_count as f32 / 20.0).min(1.0) * 0.3
-            + if characteristics.is_cross_module { 0.3 } else { 0.0 };
+            + if characteristics.is_cross_module {
+                0.3
+            } else {
+                0.0
+            };
 
         // High invariant density = simpler task
         let invariant_penalty = 1.0 - characteristics.invariant_density;
 
         // Calculate total score for each provider
-        for provider in [LlmProvider::Fast, LlmProvider::Balanced, LlmProvider::Powerful, LlmProvider::MaxReasoning] {
+        for provider in [
+            LlmProvider::Fast,
+            LlmProvider::Balanced,
+            LlmProvider::Powerful,
+            LlmProvider::MaxReasoning,
+        ] {
             let capability_level = match provider {
                 LlmProvider::Fast => 0.2,
                 LlmProvider::Balanced => 0.5,
@@ -256,7 +288,11 @@ impl ModelSelector {
                 + risk_score * self.weights.risk_weight
                 + complexity_score * self.weights.complexity_weight
                 + invariant_penalty * self.weights.invariant_density_weight
-                + if characteristics.is_cross_module { 0.2 } else { 0.0 };
+                + if characteristics.is_cross_module {
+                    0.2
+                } else {
+                    0.0
+                };
 
             let score = 1.0 - (capability_level - required_capability).abs();
 
@@ -273,8 +309,14 @@ impl ModelSelector {
         // Build reasoning
         reasoning.push(format!("Entropy: {:?}", characteristics.entropy));
         reasoning.push(format!("Risk: {:?}", characteristics.risk_level));
-        reasoning.push(format!("Files: {}, Subtasks: {}", characteristics.file_count, characteristics.subtask_count));
-        reasoning.push(format!("Invariant density: {:.2}", characteristics.invariant_density));
+        reasoning.push(format!(
+            "Files: {}, Subtasks: {}",
+            characteristics.file_count, characteristics.subtask_count
+        ));
+        reasoning.push(format!(
+            "Invariant density: {:.2}",
+            characteristics.invariant_density
+        ));
 
         if characteristics.is_cross_module {
             reasoning.push("Cross-module task detected".to_string());
@@ -366,12 +408,12 @@ impl TaskCharacteristics {
     /// Complex task
     pub fn complex() -> Self {
         Self {
-            entropy: TaskEntropy::Extreme,  // Use Extreme for complex
-            risk_level: TaskRiskLevel::Critical,  // Critical for complex
+            entropy: TaskEntropy::Extreme,       // Use Extreme for complex
+            risk_level: TaskRiskLevel::Critical, // Critical for complex
             file_count: 15,
             module_count: 5,
             api_call_count: 15,
-            invariant_density: 0.1,  // Very low density
+            invariant_density: 0.1, // Very low density
             is_cross_module: true,
             has_external_apis: true,
             subtask_count: 30,
@@ -410,7 +452,10 @@ mod tests {
         let selection = selector.select(&characteristics);
 
         // Complex tasks should use powerful model
-        assert!(matches!(selection.provider, LlmProvider::Powerful | LlmProvider::MaxReasoning));
+        assert!(matches!(
+            selection.provider,
+            LlmProvider::Powerful | LlmProvider::MaxReasoning
+        ));
     }
 
     #[test]

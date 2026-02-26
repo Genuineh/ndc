@@ -1,7 +1,7 @@
 # NDC TODO / Backlog
 
-> 更新时间：2026-02-25（v6）  
-> 关联文档：`docs/plan/current_plan.md`、`docs/USER_GUIDE.md`、`docs/design/p0-d-security-project-session.md`
+> 更新时间：2026-02-26（v7）  
+> 关联文档：`docs/plan/current_plan.md`、`docs/USER_GUIDE.md`、`docs/design/p0-d-security-project-session.md`、`docs/design/p0-d6-non-interactive-migration.md`
 
 ## 看板总览
 
@@ -109,6 +109,10 @@
 - 已完成（P0-D6 首批：非交互通道确认策略落地）：
   - `ReplToolExecutor` 在无 TTY 场景不再尝试 stdin 阻塞确认，返回结构化拒绝：`non_interactive confirmation required: ...`。
   - 新增回归测试：`test_runtime_permission_retry_non_interactive_returns_denied`。
+- 已完成（P0-D6 第二批：迁移说明与运维默认值）：
+  - 新增迁移文档：`docs/design/p0-d6-non-interactive-migration.md`（含 channel 语义矩阵、推荐配置档位、上线检查清单）。
+  - `USER_GUIDE` 新增 `6.2`，明确非交互通道行为、推荐 env、以及测试模式默认值注意事项。
+  - runtime 新增回归测试：网关默认启用、测试模式默认值、CSV 覆盖解析。
 - 已完成（P0-D1/P0-D2 第二批：REPL 项目识别与切换引导）：
   - REPL 启动时展示当前识别项目：`project_id/project_root/session`，并提示项目导航入口。
   - 新增 `/project` 命令族：
@@ -138,7 +142,7 @@
   - `ShellTool` 新增可选 `working_dir` 参数，执行目录与安全判定目录统一。
   - `PromptBuilder` 新增 `Project Context` 段落，向模型显式注入当前工作目录。
 - 下一步：
-  - 推进 `P0-D6`：补充“非交互通道确认策略”迁移说明与运维默认值建议。
+  - `P0-D` 收口：按 `Gate A/B/C/D` 进行一次完整验收回归并归档证据。
 
 ## P0-C（已完成：Workflow-Native REPL 与实时可观测）
 
@@ -181,7 +185,13 @@
 
 ## 最近修复（2026-02-25）
 
-1. Provider 凭证读取修复
+1. 工程治理重构
+   - 移除 8 个空占位 crate 目录（cli, context, daemon, execution, observability, plugins, repl, task）
+   - 从 runtime 抽取独立 `ndc-storage` crate（Storage trait + MemoryStorage + SqliteStorage）
+   - runtime 通过依赖 `ndc-storage` 复用存储层，不再内联 storage 模块
+   - 全 workspace 统一 Rust edition 2024（`edition.workspace = true`）
+   - 修复 edition 2024 match ergonomics 与 unsafe env var 变更
+2. Provider 凭证读取修复
    - MiniMax 别名 provider（`minimax-coding-plan`、`minimax-cn-*`）已支持配置键归一化回退（`minimax`），避免配置凭证被跳过导致鉴权失败。
 2. 任务状态机约束修复
    - `ndc_task_update` 不再允许非法强制迁移；非法迁移会明确报错并保持原状态不变。
@@ -199,8 +209,46 @@
 3. Invariant 的 TTL/version/conflict 检查接入执行前阶段
 4. Telemetry 指标落地（autonomous_rate / intervention_cost / token_efficiency）
 5. MCP/Skills 接入默认工具发现链与权限治理链
+6. **REPL TUI 布局与体验重设计**（P1-UX）
 
-### P1 当前执行清单（P0-D 完成后推进）
+### P1-UX（REPL TUI 布局与体验重设计）
+
+设计导航：`docs/design/p1-repl-ux-redesign.md`
+
+目标：
+- 从"日志行"体验升级为"对话轮次"体验，对齐 OpenCode 等现代 AI 编码助手的交互风格。
+- 解决当前布局信息过密、视觉扁平、缺少结构层次感、Hints 区浪费空间等问题。
+
+执行分 5 个 Phase：
+
+1. `P1-UX-1` 结构改造（基础布局）
+   - 新 5~6 区动态布局：标题栏 → 工作流进度条 → 对话区 → 权限栏(条件) → 状态提示栏 → 输入区
+   - 精简标题栏为核心 3~4 项信息
+   - 合并 Hints+Status 为 1 行上下文敏感状态提示栏
+   - 权限栏按需显示（0~2 行）
+   - 输入区去掉标题噪声
+2. `P1-UX-2` 消息轮次模型
+   - 引入 `ChatTurn`/`ToolCallCard` 数据模型，替代 `Vec<String>` 日志行
+   - 用户消息 / 助手回复带视觉边框与轮次标识
+   - 工具调用渲染为可折叠卡片 `▸/▾ name status duration`
+   - 推理内容默认折叠
+3. `P1-UX-3` 样式与主题
+   - 引入 `TuiTheme` 语义化颜色变量（`text_strong/text_base/primary/success/danger` 等）
+   - 所有渲染颜色经由主题间接引用，不再硬编码
+   - 工作流进度条加 spinner 动画
+   - 工具执行状态改为语义化文案（"Searching codebase..." 替代 "processing..."）
+4. `P1-UX-4` 交互增强
+   - 输入历史（↑/↓ 回溯）
+   - 多行输入（Shift+Enter 换行）
+   - 权限区独立交互（y/n/a 快捷键）
+   - 焦点管理分离（输入 vs 滚动）
+   - 简单 Markdown 渲染（代码块高亮、列表缩进、标题加粗）
+5. `P1-UX-5` polish
+   - 时间戳格式化、Token 使用进度条
+   - 长输出截断 + 展开提示
+   - 首次启动引导简化
+
+### P1 其他执行清单（P0-D 完成后推进）
 
 1. `P1-1` GoldMemory Top-K 注入主链
    - 在 orchestrator prompt 构建前注入 task 相关 Top-K facts
@@ -219,12 +267,13 @@
 
 1. 多 Agent 协同编排（planner / implementer / reviewer）
 2. 文档自动回灌与知识库固化策略（阶段 8）
-3. REPL 可视化进度与历史重放
+3. ~~REPL 可视化进度与历史重放~~ → 已纳入 P1-UX
 
 ## 已完成里程碑（压缩）
 
 - P0-A：REPL UI 对齐 OpenCode（固定输入区、可滚动 session、快捷键、命令提示补全）
 - P0-B：多轮对话实时可视化（事件模型、timeline 回放、实时流、SSE/gRPC、脱敏）
+- 工程治理：移除空 crate、storage 独立抽取、edition 2024 统一
 - 主链能力：tool-calling、task verify、memory/invariant 回灌、storage 打通等主线修复
 
 > 详细历史请查看 `git log` 与 `docs/plan/current_plan.md`，本文件仅保留“可执行待办 + 里程碑摘要”。

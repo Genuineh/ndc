@@ -8,29 +8,40 @@
 //! - TODO: 任务追踪
 //! - LLM: 集成与分解
 
-mod task;
-mod intent;
 mod agent;
 mod ai_agent;
-mod memory;
 mod config;
-mod todo;
+mod intent;
 pub mod llm;
+mod memory;
+mod task;
+mod todo;
 
-pub use task::*;
-pub use intent::*;
 pub use agent::*;
 pub use ai_agent::*;
-pub use memory::*;
-pub use todo::*;
+pub use intent::*;
 pub use llm::*;
+pub use memory::*;
+pub use task::*;
+pub use todo::*;
 // Re-export config types
 pub use config::{
-    NdcConfig, NdcConfigLoader, ConfigLayer, ConfigError,
-    YamlLlmConfig, YamlReplConfig, YamlRuntimeConfig, YamlStorageConfig, YamlProviderConfig, YamlAgentProfile,
     // Agent configuration
-    AgentProfile, PredefinedProfiles, AgentRoleSelector,
-    ToolPermissions, PermissionRule,
+    AgentProfile,
+    AgentRoleSelector,
+    ConfigError,
+    ConfigLayer,
+    NdcConfig,
+    NdcConfigLoader,
+    PermissionRule,
+    PredefinedProfiles,
+    ToolPermissions,
+    YamlAgentProfile,
+    YamlLlmConfig,
+    YamlProviderConfig,
+    YamlReplConfig,
+    YamlRuntimeConfig,
+    YamlStorageConfig,
 };
 // Re-export ProviderType from llm/provider
 pub use llm::provider::{ProviderType, TokenCounter};
@@ -99,7 +110,10 @@ mod tests {
         task.request_transition(TaskState::InProgress).unwrap();
 
         // Can go to AwaitingVerification or Blocked
-        assert!(task.request_transition(TaskState::AwaitingVerification).is_ok());
+        assert!(
+            task.request_transition(TaskState::AwaitingVerification)
+                .is_ok()
+        );
         assert_eq!(task.state, TaskState::AwaitingVerification);
     }
 
@@ -125,7 +139,9 @@ mod tests {
 
         let step = ExecutionStep {
             step_id: 1,
-            action: Action::ReadFile { path: PathBuf::from("test.rs") },
+            action: Action::ReadFile {
+                path: PathBuf::from("test.rs"),
+            },
             status: StepStatus::Completed,
             result: Some(ActionResult {
                 success: true,
@@ -198,13 +214,19 @@ mod tests {
     #[test]
     fn test_action_variants() {
         let actions = vec![
-            Action::ReadFile { path: PathBuf::from("test.rs") },
+            Action::ReadFile {
+                path: PathBuf::from("test.rs"),
+            },
             Action::WriteFile {
                 path: PathBuf::from("test.rs"),
                 content: "hello".to_string(),
             },
-            Action::CreateFile { path: PathBuf::from("new.rs") },
-            Action::DeleteFile { path: PathBuf::from("delete.rs") },
+            Action::CreateFile {
+                path: PathBuf::from("new.rs"),
+            },
+            Action::DeleteFile {
+                path: PathBuf::from("delete.rs"),
+            },
             Action::RunCommand {
                 command: "echo".to_string(),
                 args: vec!["hello".to_string()],
@@ -232,13 +254,17 @@ mod tests {
     #[test]
     fn test_verdict_allow() {
         let verdict = Verdict::Allow {
-            action: Action::ReadFile { path: PathBuf::from("test.rs") },
+            action: Action::ReadFile {
+                path: PathBuf::from("test.rs"),
+            },
             privilege: PrivilegeLevel::Normal,
             conditions: vec![],
         };
 
         match verdict {
-            Verdict::Allow { action, privilege, .. } => {
+            Verdict::Allow {
+                action, privilege, ..
+            } => {
                 assert!(matches!(action, Action::ReadFile { .. }));
                 assert_eq!(privilege, PrivilegeLevel::Normal);
             }
@@ -249,7 +275,9 @@ mod tests {
     #[test]
     fn test_verdict_deny() {
         let verdict = Verdict::Deny {
-            action: Action::DeleteFile { path: PathBuf::from("test.rs") },
+            action: Action::DeleteFile {
+                path: PathBuf::from("test.rs"),
+            },
             reason: "Dangerous operation".to_string(),
             error_code: ErrorCode::DangerousOperation,
         };
@@ -362,7 +390,8 @@ mod tests {
             AgentId::new(),
             AgentRole::Implementer,
             "Test Agent".to_string(),
-        ).with_capabilities(vec!["read".to_string(), "write".to_string()]);
+        )
+        .with_capabilities(vec!["read".to_string(), "write".to_string()]);
 
         assert_eq!(agent.capabilities.len(), 2);
         assert!(agent.capabilities.contains(&"read".to_string()));
@@ -574,7 +603,9 @@ mod tests {
             id: IntentId::new(),
             agent: AgentId::new(),
             agent_role: AgentRole::Reviewer,
-            proposed_action: Action::RunTests { test_type: TestType::Unit },
+            proposed_action: Action::RunTests {
+                test_type: TestType::Unit,
+            },
             effects: vec![],
             reasoning: "Running unit tests".to_string(),
             task_id: None,

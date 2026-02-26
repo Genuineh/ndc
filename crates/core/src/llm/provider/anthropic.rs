@@ -99,23 +99,20 @@ impl AnthropicProvider {
                 }
                 if let Some(content_parts) = block.get("content").and_then(|v| v.as_array()) {
                     for p in content_parts {
-                        if let Some(text) = p.get("text").and_then(|v| v.as_str()) {
-                            if !text.trim().is_empty() {
+                        if let Some(text) = p.get("text").and_then(|v| v.as_str())
+                            && !text.trim().is_empty() {
                                 parts.push(text.to_string());
                             }
-                        }
                     }
                 }
             }
         }
 
-        if parts.is_empty() {
-            if let Some(text) = data.get("output_text").and_then(|v| v.as_str()) {
-                if !text.trim().is_empty() {
+        if parts.is_empty()
+            && let Some(text) = data.get("output_text").and_then(|v| v.as_str())
+                && !text.trim().is_empty() {
                     parts.push(text.to_string());
                 }
-            }
-        }
 
         parts.join("\n")
     }
@@ -182,7 +179,10 @@ impl AnthropicProvider {
         }))
     }
 
-    fn serialize_messages_for_anthropic(&self, request: &CompletionRequest) -> Vec<serde_json::Value> {
+    fn serialize_messages_for_anthropic(
+        &self,
+        request: &CompletionRequest,
+    ) -> Vec<serde_json::Value> {
         request
             .messages
             .iter()
@@ -200,10 +200,9 @@ impl AnthropicProvider {
 
                     if let Some(tool_calls) = &m.tool_calls {
                         for tc in tool_calls {
-                            let parsed_input = serde_json::from_str::<serde_json::Value>(
-                                &tc.function.arguments,
-                            )
-                            .unwrap_or_else(|_| serde_json::json!({}));
+                            let parsed_input =
+                                serde_json::from_str::<serde_json::Value>(&tc.function.arguments)
+                                    .unwrap_or_else(|_| serde_json::json!({}));
                             blocks.push(serde_json::json!({
                                 "type": "tool_use",
                                 "id": tc.id,
@@ -223,7 +222,19 @@ impl AnthropicProvider {
                     })
                 }
                 MessageRole::Tool => {
-                    let tool_use_id = m.name.clone().unwrap_or_else(|| "tool".to_string());
+                    let tool_use_id = match m.name.clone() {
+                        Some(id) if !id.is_empty() => id,
+                        _ => {
+                            tracing::warn!(
+                                "Skipping Tool message with missing tool_use_id in Anthropic serialization"
+                            );
+                            // 返回空 user 消息以保持消息序列，避免发送非法 tool_result
+                            return serde_json::json!({
+                                "role": "user",
+                                "content": m.content,
+                            });
+                        }
+                    };
                     serde_json::json!({
                         "role": "user",
                         "content": [{
@@ -451,8 +462,7 @@ impl LlmProvider for AnthropicProvider {
                 status_code: None,
             })?;
 
-            if text.starts_with("data: ") {
-                let data = &text[6..];
+            if let Some(data) = text.strip_prefix("data: ") {
                 if data == "[DONE]" {
                     if let Some(ref response) = full_response {
                         handler.on_complete(response).await?;

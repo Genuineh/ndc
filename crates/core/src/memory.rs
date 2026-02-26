@@ -1,38 +1,34 @@
 //! Memory types and stability levels
 
-mod working_memory;
 mod invariant;
+mod working_memory;
 
 // Re-export working memory types, excluding duplicates with invariant module
 pub use working_memory::{
-    SubTaskId,
-    WorkingMemory,
-    AbstractHistory,
-    RawCurrent,
-    FailurePattern,
-    TrajectoryState,
-    ApiSurface,
-    ApiKind,
-    StepContext,
-    VersionedInvariant,
-    VersionTag,
-    LlmContext,
+    AbstractHistory, ApiKind, ApiSurface, FailurePattern, LlmContext, RawCurrent, StepContext,
+    SubTaskId, TrajectoryState, VersionTag, VersionedInvariant, WorkingMemory,
 };
 
 // Re-export all invariant types (using invariant module's definitions)
 pub use invariant::*;
 
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use uuid::Uuid;
 
-use crate::agent::{AgentId, AgentRole};
 use crate::TaskId;
+use crate::agent::{AgentId, AgentRole};
 
 /// Unique identifier for a memory entry (uses UUID for compatibility)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MemoryId(pub Uuid);
+
+impl Default for MemoryId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl MemoryId {
     pub fn new() -> Self {
@@ -173,25 +169,29 @@ impl AccessControl {
             AgentRole::Tester,
             AgentRole::Historian,
             AgentRole::Admin,
-        ].iter().cloned().collect();
+        ]
+        .iter()
+        .cloned()
+        .collect();
 
         let write_roles: HashSet<AgentRole> = match stability {
             MemoryStability::Ephemeral => [
                 AgentRole::Implementer,
                 AgentRole::Historian,
                 AgentRole::Admin,
-            ].iter().cloned().collect(),
-            MemoryStability::Derived => [
-                AgentRole::Historian,
-                AgentRole::Admin,
-            ].iter().cloned().collect(),
-            MemoryStability::Verified => [
-                AgentRole::Historian,
-                AgentRole::Admin,
-            ].iter().cloned().collect(),
-            MemoryStability::Canonical => [
-                AgentRole::Admin,
-            ].iter().cloned().collect(),
+            ]
+            .iter()
+            .cloned()
+            .collect(),
+            MemoryStability::Derived => [AgentRole::Historian, AgentRole::Admin]
+                .iter()
+                .cloned()
+                .collect(),
+            MemoryStability::Verified => [AgentRole::Historian, AgentRole::Admin]
+                .iter()
+                .cloned()
+                .collect(),
+            MemoryStability::Canonical => [AgentRole::Admin].iter().cloned().collect(),
         };
 
         Self {
@@ -267,4 +267,3 @@ pub struct ScoredMemory {
 
 /// Type alias for Memory (used by persistence layer)
 pub type Memory = MemoryEntry;
-

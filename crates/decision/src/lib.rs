@@ -10,7 +10,7 @@ pub use engine::*;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ndc_core::{Action, Intent, AgentRole, AgentId, PrivilegeLevel};
+    use ndc_core::{Action, AgentId, AgentRole, Intent, PrivilegeLevel};
     use std::path::PathBuf;
     use std::sync::Arc;
 
@@ -51,7 +51,9 @@ mod tests {
         let verdict = engine.evaluate(intent).await;
 
         match verdict {
-            ndc_core::Verdict::Allow { action, privilege, .. } => {
+            ndc_core::Verdict::Allow {
+                action, privilege, ..
+            } => {
                 assert!(matches!(action, Action::ReadFile { .. }));
                 assert_eq!(privilege, PrivilegeLevel::Normal);
             }
@@ -107,7 +109,9 @@ mod tests {
         let verdict = engine.evaluate(intent).await;
 
         match verdict {
-            ndc_core::Verdict::Deny { reason, error_code, .. } => {
+            ndc_core::Verdict::Deny {
+                reason, error_code, ..
+            } => {
                 assert!(reason.contains("Insufficient privilege"));
                 match error_code {
                     ndc_core::ErrorCode::InsufficientPrivilege { required, granted } => {
@@ -360,15 +364,20 @@ mod tests {
         let results = vec![
             ValidationResult::Allow,
             ValidationResult::Deny("test".to_string()),
-            ValidationResult::RequireHuman("question".to_string(), ndc_core::HumanContext {
-                task_id: None,
-                affected_files: vec![],
-                risk_level: ndc_core::RiskLevel::Medium,
-                alternatives: vec![],
-                required_privilege: PrivilegeLevel::Normal,
-            }),
+            ValidationResult::RequireHuman(
+                "question".to_string(),
+                ndc_core::HumanContext {
+                    task_id: None,
+                    affected_files: vec![],
+                    risk_level: ndc_core::RiskLevel::Medium,
+                    alternatives: vec![],
+                    required_privilege: PrivilegeLevel::Normal,
+                },
+            ),
             ValidationResult::Modify(
-                Action::ReadFile { path: PathBuf::from("test.rs") },
+                Action::ReadFile {
+                    path: PathBuf::from("test.rs"),
+                },
                 "modified".to_string(),
                 vec!["warning1".to_string()],
             ),
@@ -407,10 +416,12 @@ mod tests {
         match verdict {
             ndc_core::Verdict::Allow { conditions, .. } => {
                 assert!(!conditions.is_empty());
-                assert!(conditions.iter().any(|c| matches!(
-                    c.condition_type,
-                    ndc_core::ConditionType::MustPassTests
-                )));
+                assert!(
+                    conditions.iter().any(|c| matches!(
+                        c.condition_type,
+                        ndc_core::ConditionType::MustPassTests
+                    ))
+                );
             }
             _ => panic!("Expected Allow verdict"),
         }
@@ -483,14 +494,20 @@ mod tests {
         impl Validator for ModifyValidator {
             async fn validate(&self, _intent: &Intent, _policy: &PolicyState) -> ValidationResult {
                 ValidationResult::Modify(
-                    Action::ReadFile { path: PathBuf::from("modified.rs") },
+                    Action::ReadFile {
+                        path: PathBuf::from("modified.rs"),
+                    },
                     "Modified for safety".to_string(),
                     vec!["Warning: path changed".to_string()],
                 )
             }
 
-            fn name(&self) -> &str { "modify_validator" }
-            fn priority(&self) -> u32 { 1 }
+            fn name(&self) -> &str {
+                "modify_validator"
+            }
+            fn priority(&self) -> u32 {
+                1
+            }
         }
 
         let mut engine = BasicDecisionEngine::new();
@@ -512,7 +529,11 @@ mod tests {
         let verdict = engine.evaluate(intent).await;
 
         match verdict {
-            ndc_core::Verdict::Modify { modified_action, reason, .. } => {
+            ndc_core::Verdict::Modify {
+                modified_action,
+                reason,
+                ..
+            } => {
                 match modified_action {
                     Action::ReadFile { path } => {
                         assert_eq!(path, PathBuf::from("modified.rs"));
@@ -541,8 +562,12 @@ mod tests {
                 )
             }
 
-            fn name(&self) -> &str { "defer_validator" }
-            fn priority(&self) -> u32 { 1 }
+            fn name(&self) -> &str {
+                "defer_validator"
+            }
+            fn priority(&self) -> u32 {
+                1
+            }
         }
 
         let mut engine = BasicDecisionEngine::new();
@@ -564,7 +589,11 @@ mod tests {
         let verdict = engine.evaluate(intent).await;
 
         match verdict {
-            ndc_core::Verdict::Defer { required_info, retry_after, .. } => {
+            ndc_core::Verdict::Defer {
+                required_info,
+                retry_after,
+                ..
+            } => {
                 assert_eq!(required_info.len(), 1);
                 assert_eq!(retry_after, Some(120));
             }

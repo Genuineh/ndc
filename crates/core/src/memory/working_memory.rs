@@ -7,6 +7,7 @@
 //!
 //! Core principle: Abstract(History) + Raw(Current) + Hard(Invariants)
 
+pub use super::invariant::InvariantPriority;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -164,14 +165,6 @@ pub struct VersionedInvariant {
     pub version_tags: Vec<VersionTag>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub enum InvariantPriority {
-    Low,
-    Medium,
-    High,
-    Critical,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VersionTag {
     pub dimension: String,
@@ -216,7 +209,9 @@ impl WorkingMemory {
                 failure_patterns: Vec::new(),
                 root_cause_summary: None,
                 attempt_count: 0,
-                trajectory_state: TrajectoryState::Progressing { steps_since_last_failure: 0 },
+                trajectory_state: TrajectoryState::Progressing {
+                    steps_since_last_failure: 0,
+                },
             }),
             raw_current,
             hard_invariants,
@@ -232,7 +227,8 @@ impl WorkingMemory {
             self.abstract_history.root_cause_summary
         );
 
-        let invariants_summary = self.hard_invariants
+        let invariants_summary = self
+            .hard_invariants
             .iter()
             .map(|i| format!("MUST: {}", i.rule))
             .collect::<Vec<_>>()
@@ -294,12 +290,10 @@ impl AbstractHistory {
     /// Detect if stuck in a cycle
     pub fn detect_cycle(&self) -> bool {
         // Cycle if: >3 attempts AND >2 failures with same root cause
-        self.attempt_count > 3 && self.failure_patterns
-            .windows(3)
-            .any(|window| {
+        self.attempt_count > 3
+            && self.failure_patterns.windows(3).any(|window| {
                 if window.len() >= 3 {
-                    window[0].same_root_cause(&window[1]) &&
-                    window[1].same_root_cause(&window[2])
+                    window[0].same_root_cause(&window[1]) && window[1].same_root_cause(&window[2])
                 } else {
                     false
                 }
@@ -319,16 +313,13 @@ mod tests {
             current_step_context: None,
         };
 
-        let wm = WorkingMemory::generate(
-            SubTaskId::default(),
-            None,
-            raw,
-            Vec::new(),
-        );
+        let wm = WorkingMemory::generate(SubTaskId::default(), None, raw, Vec::new());
 
         assert_eq!(wm.abstract_history.attempt_count, 0);
-        assert!(matches!(wm.abstract_history.trajectory_state,
-            TrajectoryState::Progressing { .. }));
+        assert!(matches!(
+            wm.abstract_history.trajectory_state,
+            TrajectoryState::Progressing { .. }
+        ));
     }
 
     #[test]
@@ -339,12 +330,7 @@ mod tests {
             current_step_context: None,
         };
 
-        let mut wm = WorkingMemory::generate(
-            SubTaskId::default(),
-            None,
-            raw,
-            Vec::new(),
-        );
+        let mut wm = WorkingMemory::generate(SubTaskId::default(), None, raw, Vec::new());
 
         wm.record_failure(FailurePattern {
             error_type: "TypeError".to_string(),
@@ -366,12 +352,7 @@ mod tests {
             current_step_context: None,
         };
 
-        let mut wm = WorkingMemory::generate(
-            SubTaskId::default(),
-            None,
-            raw,
-            Vec::new(),
-        );
+        let mut wm = WorkingMemory::generate(SubTaskId::default(), None, raw, Vec::new());
 
         wm.record_failure(FailurePattern {
             error_type: "Test".to_string(),
@@ -383,8 +364,10 @@ mod tests {
 
         wm.record_success();
 
-        assert!(matches!(wm.abstract_history.trajectory_state,
-            TrajectoryState::Progressing { .. }));
+        assert!(matches!(
+            wm.abstract_history.trajectory_state,
+            TrajectoryState::Progressing { .. }
+        ));
     }
 
     #[test]
@@ -410,12 +393,7 @@ mod tests {
             version_tags: Vec::new(),
         }];
 
-        let wm = WorkingMemory::generate(
-            SubTaskId::default(),
-            None,
-            raw,
-            invariants,
-        );
+        let wm = WorkingMemory::generate(SubTaskId::default(), None, raw, invariants);
 
         let ctx = wm.concise_context_for_llm();
 
@@ -473,7 +451,9 @@ mod tests {
             ],
             root_cause_summary: None,
             attempt_count: 4,
-            trajectory_state: TrajectoryState::Stuck { last_error: "Same error".to_string() },
+            trajectory_state: TrajectoryState::Stuck {
+                last_error: "Same error".to_string(),
+            },
         };
 
         assert!(history.detect_cycle());

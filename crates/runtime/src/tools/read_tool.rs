@@ -8,12 +8,18 @@ use std::path::PathBuf;
 use tokio::fs;
 use tracing::debug;
 
-use super::{Tool, ToolResult, ToolError, ToolMetadata};
 use super::schema::ToolSchemaBuilder;
+use super::{enforce_path_boundary, Tool, ToolError, ToolMetadata, ToolResult};
 
 /// Read tool - 读取文件内容
 #[derive(Debug)]
 pub struct ReadTool;
+
+impl Default for ReadTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl ReadTool {
     pub fn new() -> Self {
@@ -32,7 +38,8 @@ impl Tool for ReadTool {
     }
 
     async fn execute(&self, params: &serde_json::Value) -> Result<ToolResult, ToolError> {
-        let path_str = params.get("path")
+        let path_str = params
+            .get("path")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArgument("Missing 'path' parameter".to_string()))?;
 
@@ -40,7 +47,7 @@ impl Tool for ReadTool {
         let path = PathBuf::from(path_str);
         if !path.is_absolute() {
             return Err(ToolError::InvalidArgument(
-                "path must be an absolute path, not relative".to_string()
+                "path must be an absolute path, not relative".to_string(),
             ));
         }
 
@@ -49,16 +56,20 @@ impl Tool for ReadTool {
             return Err(ToolError::InvalidPath(path));
         }
         if !path.is_file() {
-            return Err(ToolError::InvalidArgument(
-                format!("'{}' is not a file", path_str)
-            ));
+            return Err(ToolError::InvalidArgument(format!(
+                "'{}' is not a file",
+                path_str
+            )));
         }
+
+        enforce_path_boundary(path.as_path(), None, "read")?;
 
         let start = std::time::Instant::now();
 
         // Read entire file first
-        let content = fs::read_to_string(&path).await
-            .map_err(|e| ToolError::Io(e))?;
+        let content = fs::read_to_string(&path)
+            .await
+            .map_err(ToolError::Io)?;
 
         let total_lines = content.lines().count();
         let total_bytes = content.len();
@@ -67,9 +78,10 @@ impl Tool for ReadTool {
         let lines: Vec<&str> = if let Some(offset) = params.get("offset").and_then(|v| v.as_u64()) {
             let offset = offset as usize;
             if offset >= total_lines {
-                return Err(ToolError::InvalidArgument(
-                    format!("offset {} is beyond file length {}", offset, total_lines)
-                ));
+                return Err(ToolError::InvalidArgument(format!(
+                    "offset {} is beyond file length {}",
+                    offset, total_lines
+                )));
             }
             content.lines().skip(offset).collect()
         } else {
@@ -94,9 +106,15 @@ impl Tool for ReadTool {
         let output = lines.join("\n");
 
         // Add line numbers if requested
-        if params.get("number").and_then(|v| v.as_bool()).unwrap_or(false) {
+        if params
+            .get("number")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
             let offset = params.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
-            let numbered: Vec<String> = lines.iter().enumerate()
+            let numbered: Vec<String> = lines
+                .iter()
+                .enumerate()
                 .map(|(i, line)| format!("{:6}  {}", offset + i as u64 + 1, line))
                 .collect();
             let output = numbered.join("\n");
@@ -117,8 +135,13 @@ impl Tool for ReadTool {
 
         let duration = start.elapsed().as_millis() as u64;
 
-        debug!("Read {} bytes ({} lines, displayed {}) from {}",
-               total_bytes, total_lines, displayed_lines, path.display());
+        debug!(
+            "Read {} bytes ({} lines, displayed {}) from {}",
+            total_bytes,
+            total_lines,
+            displayed_lines,
+            path.display()
+        );
 
         Ok(ToolResult {
             success: true,
@@ -149,8 +172,6 @@ impl Tool for ReadTool {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use std::fs::File;
-    use std::io::Write;
 
     #[tokio::test]
     async fn test_read_file() {

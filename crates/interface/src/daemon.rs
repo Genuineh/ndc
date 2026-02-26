@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tracing::info;
 
 use ndc_core::TaskId;
-use ndc_runtime::{Executor, ExecutionContext};
+use ndc_runtime::{ExecutionContext, Executor};
 
 /// gRPC 服务实现
 #[derive(Debug)]
@@ -57,6 +57,12 @@ impl NdcDaemon {
 /// 健康检查服务
 #[derive(Debug, Clone)]
 pub struct HealthService;
+
+impl Default for HealthService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl HealthService {
     /// 创建新的健康检查服务

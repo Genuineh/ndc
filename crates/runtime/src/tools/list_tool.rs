@@ -8,12 +8,18 @@ use std::path::PathBuf;
 use tokio::fs;
 use tracing::debug;
 
-use super::{Tool, ToolResult, ToolError, ToolMetadata};
 use super::schema::ToolSchemaBuilder;
+use super::{enforce_path_boundary, Tool, ToolError, ToolMetadata, ToolResult};
 
 /// List tool - 列出目录内容
 #[derive(Debug)]
 pub struct ListTool;
+
+impl Default for ListTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl ListTool {
     pub fn new() -> Self {
@@ -32,7 +38,8 @@ impl Tool for ListTool {
     }
 
     async fn execute(&self, params: &serde_json::Value) -> Result<ToolResult, ToolError> {
-        let path_str = params.get("path")
+        let path_str = params
+            .get("path")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArgument("Missing 'path' parameter".to_string()))?;
 
@@ -40,7 +47,7 @@ impl Tool for ListTool {
         let path = PathBuf::from(path_str);
         if !path.is_absolute() {
             return Err(ToolError::InvalidArgument(
-                "path must be an absolute path, not relative".to_string()
+                "path must be an absolute path, not relative".to_string(),
             ));
         }
 
@@ -49,24 +56,24 @@ impl Tool for ListTool {
             return Err(ToolError::InvalidPath(path));
         }
         if !path.is_dir() {
-            return Err(ToolError::InvalidArgument(
-                format!("'{}' is not a directory", path_str)
-            ));
+            return Err(ToolError::InvalidArgument(format!(
+                "'{}' is not a directory",
+                path_str
+            )));
         }
+
+        enforce_path_boundary(path.as_path(), None, "list")?;
 
         let start = std::time::Instant::now();
 
         // Read directory
-        let mut entries = fs::read_dir(&path).await
-            .map_err(|e| ToolError::Io(e))?;
+        let mut entries = fs::read_dir(&path).await.map_err(ToolError::Io)?;
 
         let mut dirs = Vec::new();
         let mut files = Vec::new();
 
-        while let Some(entry) = entries.next_entry().await
-            .map_err(|e| ToolError::Io(e))? {
-            let metadata = entry.metadata().await
-                .map_err(|e| ToolError::Io(e))?;
+        while let Some(entry) = entries.next_entry().await.map_err(ToolError::Io)? {
+            let metadata = entry.metadata().await.map_err(ToolError::Io)?;
 
             let name = entry.file_name().to_string_lossy().into_owned();
 
@@ -80,7 +87,7 @@ impl Tool for ListTool {
         // Sort: directories first, then files
         dirs.sort();
         files.sort();
-        let items: Vec<String> = dirs.into_iter().chain(files.into_iter()).collect();
+        let items: Vec<String> = dirs.into_iter().chain(files).collect();
 
         let output = if items.is_empty() {
             "(empty)".to_string()
@@ -117,8 +124,8 @@ impl Tool for ListTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use std::fs::File;
+    use tempfile::TempDir;
 
     #[tokio::test]
     async fn test_list_directory() {

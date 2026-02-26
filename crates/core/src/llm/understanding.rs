@@ -198,23 +198,62 @@ pub struct KnowledgeUnderstandingService {
 #[derive(Debug, Clone)]
 pub struct UnderstandingConfig {
     /// Minimum confidence threshold
-    #[allow(dead_code)]
     _min_confidence: f32,
     /// Maximum knowledge items to retrieve
     max_knowledge_items: usize,
     /// Entity extraction patterns
-    #[allow(dead_code)]
     _entity_patterns: HashMap<EntityType, Vec<String>>,
 }
 
 impl Default for UnderstandingConfig {
     fn default() -> Self {
         let mut patterns = HashMap::new();
-        patterns.insert(EntityType::File, vec![".rs".to_string(), ".py".to_string(), ".js".to_string(), ".ts".to_string(), ".json".to_string(), ".yaml".to_string()]);
-        patterns.insert(EntityType::Function, vec!["fn ".to_string(), "function ".to_string(), "def ".to_string(), "class ".to_string()]);
-        patterns.insert(EntityType::Api, vec!["endpoint".to_string(), "api".to_string(), "route".to_string(), "handler".to_string()]);
-        patterns.insert(EntityType::Database, vec!["table".to_string(), "query".to_string(), "schema".to_string(), "database".to_string()]);
-        patterns.insert(EntityType::Config, vec!["config".to_string(), "setting".to_string(), "configuration".to_string()]);
+        patterns.insert(
+            EntityType::File,
+            vec![
+                ".rs".to_string(),
+                ".py".to_string(),
+                ".js".to_string(),
+                ".ts".to_string(),
+                ".json".to_string(),
+                ".yaml".to_string(),
+            ],
+        );
+        patterns.insert(
+            EntityType::Function,
+            vec![
+                "fn ".to_string(),
+                "function ".to_string(),
+                "def ".to_string(),
+                "class ".to_string(),
+            ],
+        );
+        patterns.insert(
+            EntityType::Api,
+            vec![
+                "endpoint".to_string(),
+                "api".to_string(),
+                "route".to_string(),
+                "handler".to_string(),
+            ],
+        );
+        patterns.insert(
+            EntityType::Database,
+            vec![
+                "table".to_string(),
+                "query".to_string(),
+                "schema".to_string(),
+                "database".to_string(),
+            ],
+        );
+        patterns.insert(
+            EntityType::Config,
+            vec![
+                "config".to_string(),
+                "setting".to_string(),
+                "configuration".to_string(),
+            ],
+        );
 
         Self {
             _min_confidence: 0.5,
@@ -279,25 +318,41 @@ impl KnowledgeUnderstandingService {
     fn extract_intent(&self, text: &str) -> RequirementIntent {
         let text_lower = text.to_lowercase();
 
-        if text_lower.contains("create") || text_lower.contains("add") || text_lower.contains("implement") {
+        if text_lower.contains("create")
+            || text_lower.contains("add")
+            || text_lower.contains("implement")
+        {
             return RequirementIntent::CreateFeature;
         }
-        if text_lower.contains("modify") || text_lower.contains("change") || text_lower.contains("update") {
+        if text_lower.contains("modify")
+            || text_lower.contains("change")
+            || text_lower.contains("update")
+        {
             return RequirementIntent::ModifyFeature;
         }
-        if text_lower.contains("fix") || text_lower.contains("bug") || text_lower.contains("error") {
+        if text_lower.contains("fix") || text_lower.contains("bug") || text_lower.contains("error")
+        {
             return RequirementIntent::FixBug;
         }
-        if text_lower.contains("remove") || text_lower.contains("delete") || text_lower.contains("eliminate") {
+        if text_lower.contains("remove")
+            || text_lower.contains("delete")
+            || text_lower.contains("eliminate")
+        {
             return RequirementIntent::RemoveFeature;
         }
         if text_lower.contains("refactor") || text_lower.contains("restructure") {
             return RequirementIntent::Refactor;
         }
-        if text_lower.contains("investigate") || text_lower.contains("explore") || text_lower.contains("find") {
+        if text_lower.contains("investigate")
+            || text_lower.contains("explore")
+            || text_lower.contains("find")
+        {
             return RequirementIntent::Investigate;
         }
-        if text_lower.contains("optimize") || text_lower.contains("performance") || text_lower.contains("speed") {
+        if text_lower.contains("optimize")
+            || text_lower.contains("performance")
+            || text_lower.contains("speed")
+        {
             return RequirementIntent::Optimize;
         }
         if text_lower.contains("document") || text_lower.contains("docs") {
@@ -323,7 +378,7 @@ impl KnowledgeUnderstandingService {
                 let absolute_pos = pos + ext_pos;
                 // Find the start of the file name by looking backwards
                 let word_start = text[..absolute_pos]
-                    .rfind(|c: char| c == ' ' || c == '/' || c == '\\' || c == '"' || c == '\'')
+                    .rfind([' ', '/', '\\', '"', '\''])
                     .map(|i| i + 1)
                     .unwrap_or(0);
                 let file_name = &text[word_start..absolute_pos + ext.len()];
@@ -341,7 +396,10 @@ impl KnowledgeUnderstandingService {
         }
 
         // Extract API entities
-        if text_lower.contains("api") || text_lower.contains("endpoint") || text_lower.contains("route") {
+        if text_lower.contains("api")
+            || text_lower.contains("endpoint")
+            || text_lower.contains("route")
+        {
             entities.push(Entity {
                 name: "API".to_string(),
                 entity_type: EntityType::Api,
@@ -353,8 +411,8 @@ impl KnowledgeUnderstandingService {
         // Extract function/method mentions (simple pattern matching)
         let func_patterns = ["fn ", "function ", "def ", "method "];
         for pattern in &func_patterns {
-            if text_lower.contains(pattern) {
-                if let Some(pos) = text_lower.find(pattern) {
+            if text_lower.contains(pattern)
+                && let Some(pos) = text_lower.find(pattern) {
                     // Use original text for case-preserving extraction
                     let after = &text[pos + pattern.len()..];
                     let func_name: String = after
@@ -370,11 +428,13 @@ impl KnowledgeUnderstandingService {
                         });
                     }
                 }
-            }
         }
 
         // Extract database mentions
-        if text_lower.contains("database") || text_lower.contains("table") || text_lower.contains("query") {
+        if text_lower.contains("database")
+            || text_lower.contains("table")
+            || text_lower.contains("query")
+        {
             entities.push(Entity {
                 name: "Database".to_string(),
                 entity_type: EntityType::Database,
@@ -397,18 +457,14 @@ impl KnowledgeUnderstandingService {
     }
 
     /// Extract relationships between entities
-    fn extract_relationships(
-        &self,
-        entities: &[Entity],
-        text: &str,
-    ) -> Vec<Relationship> {
+    fn extract_relationships(&self, entities: &[Entity], text: &str) -> Vec<Relationship> {
         let mut relationships = Vec::new();
         let text_lower = text.to_lowercase();
 
         for entity in entities {
             // Check for calls relationship
-            if text_lower.contains("calls") || text_lower.contains("uses") {
-                if entity.entity_type == EntityType::Function {
+            if (text_lower.contains("calls") || text_lower.contains("uses"))
+                && entity.entity_type == EntityType::Function {
                     relationships.push(Relationship {
                         source: entity.name.clone(),
                         target: "unknown".to_string(),
@@ -416,7 +472,6 @@ impl KnowledgeUnderstandingService {
                         confidence: 0.6,
                     });
                 }
-            }
 
             // Check for depends on relationship
             if text_lower.contains("depends") || text_lower.contains("requires") {
@@ -448,7 +503,10 @@ impl KnowledgeUnderstandingService {
         let text_lower = text.to_lowercase();
 
         // Performance constraints
-        if text_lower.contains("fast") || text_lower.contains("performance") || text_lower.contains("speed") {
+        if text_lower.contains("fast")
+            || text_lower.contains("performance")
+            || text_lower.contains("speed")
+        {
             constraints.push(Constraint {
                 description: "Performance requirement".to_string(),
                 constraint_type: ConstraintType::Performance,
@@ -458,7 +516,10 @@ impl KnowledgeUnderstandingService {
         }
 
         // Security constraints
-        if text_lower.contains("secure") || text_lower.contains("auth") || text_lower.contains("permission") {
+        if text_lower.contains("secure")
+            || text_lower.contains("auth")
+            || text_lower.contains("permission")
+        {
             constraints.push(Constraint {
                 description: "Security requirement".to_string(),
                 constraint_type: ConstraintType::Security,
@@ -487,8 +548,16 @@ impl KnowledgeUnderstandingService {
         entities: &[Entity],
         constraints: &[Constraint],
     ) -> RequirementQuality {
-        let clarity = if text.len() > 50 && text.len() < 1000 { 0.8 } else { 0.6 };
-        let completeness = if !entities.is_empty() && !constraints.is_empty() { 0.8 } else { 0.5 };
+        let clarity = if text.len() > 50 && text.len() < 1000 {
+            0.8
+        } else {
+            0.6
+        };
+        let completeness = if !entities.is_empty() && !constraints.is_empty() {
+            0.8
+        } else {
+            0.5
+        };
         let consistency = 0.9; // Assume consistent unless we detect contradictions
         let overall = (clarity + completeness + consistency) / 3.0;
 
@@ -516,7 +585,9 @@ impl KnowledgeUnderstandingService {
 
         // Score and sort by relevance
         relevant.sort_by(|a, b| {
-            b.relevance_score.partial_cmp(&a.relevance_score).unwrap_or(std::cmp::Ordering::Equal)
+            b.relevance_score
+                .partial_cmp(&a.relevance_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
 
         relevant.truncate(self.config.max_knowledge_items);
@@ -529,9 +600,9 @@ impl KnowledgeUnderstandingService {
 
         for entity in &requirement.entities {
             let found = knowledge.iter().any(|k| {
-                k.related_files.iter().any(|f| {
-                    f.to_string_lossy().contains(&entity.name)
-                })
+                k.related_files
+                    .iter()
+                    .any(|f| f.to_string_lossy().contains(&entity.name))
             });
 
             if !found && entity.location.is_some() {
@@ -543,11 +614,7 @@ impl KnowledgeUnderstandingService {
     }
 
     /// Generate suggested actions based on understanding
-    fn generate_actions(
-        &self,
-        requirement: &Requirement,
-        gaps: &[String],
-    ) -> Vec<String> {
+    fn generate_actions(&self, requirement: &Requirement, gaps: &[String]) -> Vec<String> {
         let mut actions = Vec::new();
 
         // Suggest documentation for undocumented entities
@@ -638,7 +705,12 @@ mod tests {
 
         assert_eq!(requirement.intent, RequirementIntent::CreateFeature);
         assert!(!requirement.entities.is_empty());
-        assert!(requirement.entities.iter().any(|e| e.name.contains("users.rs")));
+        assert!(
+            requirement
+                .entities
+                .iter()
+                .any(|e| e.name.contains("users.rs"))
+        );
     }
 
     #[tokio::test]
@@ -650,7 +722,12 @@ mod tests {
             .await;
 
         assert_eq!(requirement.intent, RequirementIntent::FixBug);
-        assert!(requirement.constraints.iter().any(|c| c.constraint_type == ConstraintType::Performance));
+        assert!(
+            requirement
+                .constraints
+                .iter()
+                .any(|c| c.constraint_type == ConstraintType::Performance)
+        );
     }
 
     #[tokio::test]
@@ -667,7 +744,9 @@ mod tests {
             relevance_score: 0.9,
         });
 
-        let requirement = service.understand_requirement("Update the user authentication").await;
+        let requirement = service
+            .understand_requirement("Update the user authentication")
+            .await;
         let context = service.build_context(&requirement).await;
 
         assert!(context.confidence > 0.0);
@@ -690,8 +769,16 @@ mod tests {
 
         let constraints = service.extract_constraints("Must be secure and fast");
 
-        assert!(constraints.iter().any(|c| c.constraint_type == ConstraintType::Security));
-        assert!(constraints.iter().any(|c| c.constraint_type == ConstraintType::Performance));
+        assert!(
+            constraints
+                .iter()
+                .any(|c| c.constraint_type == ConstraintType::Security)
+        );
+        assert!(
+            constraints
+                .iter()
+                .any(|c| c.constraint_type == ConstraintType::Performance)
+        );
     }
 
     #[tokio::test]

@@ -8,16 +8,10 @@
 //! - Priority-based ordering (critical first)
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-/// Invariant priority levels
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub enum InvariantPriority {
-    Critical = 3,
-    High = 2,
-    Medium = 1,
-    Low = 0,
-}
+/// Reuse core invariant priority type to keep a single semantic source.
+pub type InvariantPriority = crate::InvariantPriority;
 
 /// Gold Memory Invariant for agent injection
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,11 +43,7 @@ pub struct InvariantEntry {
 
 impl InvariantEntry {
     /// Create new entry
-    pub fn new(
-        id: String,
-        description: String,
-        priority: InvariantPriority,
-    ) -> Self {
+    pub fn new(id: String, description: String, priority: InvariantPriority) -> Self {
         Self {
             id,
             description,
@@ -122,11 +112,6 @@ impl InvariantInjector {
         }
     }
 
-    /// Create with default config
-    pub fn default() -> Self {
-        Self::new(InvariantInjectorConfig::default())
-    }
-
     /// Add an invariant
     pub fn add_invariant(&mut self, invariant: InvariantEntry) {
         self.invariants.push(invariant);
@@ -146,7 +131,7 @@ impl InvariantInjector {
     pub fn get_active(&self) -> Vec<&InvariantEntry> {
         self.invariants
             .iter()
-            .filter(|i| !i.is_active || self.config.active_only)
+            .filter(|i| i.is_active || !self.config.active_only)
             .collect()
     }
 
@@ -155,9 +140,7 @@ impl InvariantInjector {
         let mut relevant: Vec<&InvariantEntry> = self
             .invariants
             .iter()
-            .filter(|i| {
-                i.is_active && i.priority >= self.config.min_priority
-            })
+            .filter(|i| i.is_active && i.priority >= self.config.min_priority)
             .collect();
 
         // Sort by priority (critical first)
@@ -187,14 +170,12 @@ impl InvariantInjector {
         let invariants = if relevant_only {
             self.get_relevant(patterns)
         } else {
-            self.invariants
-                .iter()
-                .filter(|i| i.is_active)
-                .collect()
+            self.invariants.iter().filter(|i| i.is_active).collect()
         };
 
         if invariants.is_empty() {
-            return "=== INVARIANTS ===\n(no active invariants)\n=== END INVARIANTS ===".to_string();
+            return "=== INVARIANTS ===\n(no active invariants)\n=== END INVARIANTS ==="
+                .to_string();
         }
 
         let mut lines = Vec::new();
@@ -203,26 +184,36 @@ impl InvariantInjector {
         lines.push("".to_string());
 
         // Group by priority
-        let critical: Vec<_> = invariants.iter().filter(|i| i.priority == InvariantPriority::Critical).collect();
-        let high: Vec<_> = invariants.iter().filter(|i| i.priority == InvariantPriority::High).collect();
-        let medium: Vec<_> = invariants.iter().filter(|i| i.priority == InvariantPriority::Medium).collect();
-        let low: Vec<_> = invariants.iter().filter(|i| i.priority == InvariantPriority::Low).collect();
+        let critical: Vec<_> = invariants
+            .iter()
+            .filter(|i| i.priority == InvariantPriority::Critical)
+            .collect();
+        let high: Vec<_> = invariants
+            .iter()
+            .filter(|i| i.priority == InvariantPriority::High)
+            .collect();
+        let medium: Vec<_> = invariants
+            .iter()
+            .filter(|i| i.priority == InvariantPriority::Medium)
+            .collect();
+        let low: Vec<_> = invariants
+            .iter()
+            .filter(|i| i.priority == InvariantPriority::Low)
+            .collect();
 
         // Critical (🔴)
         if !critical.is_empty() {
             lines.push("🔴 CRITICAL (Never repeat):".to_string());
             for inv in critical {
                 lines.push(format!("  • {}", inv.description));
-                if self.config.include_patterns {
-                    if let Some(ref pattern) = inv.pattern {
+                if self.config.include_patterns
+                    && let Some(ref pattern) = inv.pattern {
                         lines.push(format!("    Pattern: {}", pattern));
                     }
-                }
-                if self.config.include_source {
-                    if let Some(ref task) = inv.source_task {
+                if self.config.include_source
+                    && let Some(ref task) = inv.source_task {
                         lines.push(format!("    From: {}", task));
                     }
-                }
             }
             lines.push("".to_string());
         }
@@ -281,10 +272,26 @@ impl InvariantInjector {
         InvariantStats {
             total: self.invariants.len(),
             active: self.invariants.iter().filter(|i| i.is_active).count(),
-            critical: self.invariants.iter().filter(|i| i.priority == InvariantPriority::Critical).count(),
-            high: self.invariants.iter().filter(|i| i.priority == InvariantPriority::High).count(),
-            medium: self.invariants.iter().filter(|i| i.priority == InvariantPriority::Medium).count(),
-            low: self.invariants.iter().filter(|i| i.priority == InvariantPriority::Low).count(),
+            critical: self
+                .invariants
+                .iter()
+                .filter(|i| i.priority == InvariantPriority::Critical)
+                .count(),
+            high: self
+                .invariants
+                .iter()
+                .filter(|i| i.priority == InvariantPriority::High)
+                .count(),
+            medium: self
+                .invariants
+                .iter()
+                .filter(|i| i.priority == InvariantPriority::Medium)
+                .count(),
+            low: self
+                .invariants
+                .iter()
+                .filter(|i| i.priority == InvariantPriority::Low)
+                .count(),
         }
     }
 }
@@ -301,6 +308,35 @@ pub struct InvariantStats {
 
 impl Default for InvariantInjector {
     fn default() -> Self {
-        Self::default()
+        Self::new(InvariantInjectorConfig::default())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_active_respects_active_only() {
+        let mut injector = InvariantInjector::default();
+        let mut active = InvariantEntry::new(
+            "active".to_string(),
+            "active rule".to_string(),
+            InvariantPriority::High,
+        );
+        active.is_active = true;
+        let mut inactive = InvariantEntry::new(
+            "inactive".to_string(),
+            "inactive rule".to_string(),
+            InvariantPriority::Low,
+        );
+        inactive.is_active = false;
+
+        injector.add_invariant(active);
+        injector.add_invariant(inactive);
+
+        let active_only = injector.get_active();
+        assert_eq!(active_only.len(), 1);
+        assert_eq!(active_only[0].id, "active");
     }
 }

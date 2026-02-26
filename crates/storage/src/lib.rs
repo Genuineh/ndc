@@ -9,3 +9,7 @@ pub mod memory;
 pub mod sqlite;
 
 pub use trait_::*;
+pub use memory::{create_memory_storage, MemoryStorage};
+
+#[cfg(feature = "sqlite")]
+pub use sqlite::{create_sqlite_storage, SqliteStorage, SqliteStorageError};

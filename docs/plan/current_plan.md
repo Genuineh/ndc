@@ -6,7 +6,11 @@
 
 ## 当前快照（2026-02-25）
 
-1. P0-C 已完成并通过核心回归：
+1. 工程治理重构已完成：
+   - 移除 8 个空占位 crate 目录（cli, context, daemon, execution, observability, plugins, repl, task）
+   - 从 runtime 抽取独立 `ndc-storage` crate（Storage trait + MemoryStorage + SqliteStorage）
+   - 全 workspace 统一 Rust edition 2024（`edition.workspace = true`）
+2. P0-C 已完成并通过核心回归：
    - REPL/gRPC/SSE 统一 workflow + token 可观测语义
    - `/workflow compact|verbose`、timeline replay、订阅一致性测试已落地
 2. 稳定性修复已补齐：
@@ -32,7 +36,8 @@
    - `process_input` 成功后会回写 session 快照，支持重启后的多轮上下文与 timeline 连续性
    - 项目切换执行上下文已补齐：`shell/fs` 使用当前项目 `working_dir`，并同步 `Project Context` 提示
 4. 下一步：
-   - 推进 P0-D6：非交互通道确认策略与迁移说明文档
+   - 执行 P0-D Gate A/B/C/D 全量验收回归并归档证据
+   - P1-UX：REPL TUI 布局与体验重设计（详见 `docs/design/p1-repl-ux-redesign.md`）
 
 ## 0. 基础愿景（统一口径）
 
@@ -85,12 +90,16 @@ NDC 的目标不是“再造一个 CLI 工具集”，而是：
   - `create_default_tool_registry_with_storage`
 - 默认工具集已注册 `ndc_task_*`。
 - CLI/REPL/Executor 统一使用同一份 storage 注入，避免状态分叉。
+- 存储抽象已独立为 `ndc-storage` crate，runtime 通过依赖复用。
 
 实现位置：
 
+- `crates/storage/src/trait_.rs`（Storage trait 定义）
+- `crates/storage/src/memory.rs`（MemoryStorage 实现）
+- `crates/storage/src/sqlite.rs`（SqliteStorage 实现，feature = "sqlite"）
 - `crates/runtime/src/tools/mod.rs`
 - `crates/runtime/src/executor.rs`
-- `crates/runtime/src/lib.rs`
+- `crates/runtime/src/lib.rs`（re-exports from ndc-storage）
 - `crates/interface/src/cli.rs`
 - `crates/interface/src/repl.rs`
 
@@ -148,7 +157,8 @@ User (run/repl)
   -> AgentModeManager
     -> AgentOrchestrator (session/tool loop)
       -> ToolRegistry (default + ndc_task + extensions)
-        -> Runtime Storage / Workflow / Quality
+        -> Runtime (tools, workflow, quality)
+          -> Storage (trait-based: MemoryStorage / SqliteStorage)
           -> Verification + Knowledge Feedback
 ```
 

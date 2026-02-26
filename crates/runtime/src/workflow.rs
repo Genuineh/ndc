@@ -7,12 +7,12 @@
 //! - Saga pattern for distributed transactions
 //! - Compensating transactions for rollback
 
-use ndc_core::{Task, TaskState, WorkRecord, WorkEvent, Executor, WorkResult, TaskId};
+use ndc_core::{Executor, Task, TaskId, TaskState, WorkEvent, WorkRecord, WorkResult};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use thiserror::Error;
-use tracing::{debug, info, warn, error};
-use serde::{Deserialize, Serialize};
+use tracing::{debug, error, info, warn};
 
 /// Workflow error
 #[derive(Debug, Error)]
@@ -93,7 +93,8 @@ impl WorkflowEngine {
 
     /// Check if transition is allowed
     pub fn can_transition(&self, from: &TaskState, to: &TaskState) -> bool {
-        self.rules.get(&(from.clone(), to.clone()))
+        self.rules
+            .get(&(from.clone(), to.clone()))
             .map(|r| r.allowed)
             .unwrap_or(false)
     }
@@ -112,7 +113,7 @@ impl WorkflowEngine {
         // Create work record
         let record = WorkRecord {
             id: ulid::Ulid::new(),
-            timestamp: chrono::Utc::now().into(),
+            timestamp: chrono::Utc::now(),
             event: WorkEvent::StepCompleted,
             executor: Executor::System,
             result: WorkResult::Success,
@@ -198,11 +199,15 @@ pub struct SagaAction {
     pub retries: u32,
 }
 
-fn default_timeout() -> u64 { 60 }
+fn default_timeout() -> u64 {
+    60
+}
 
 /// Saga step execution status
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum SagaStepStatus {
+    #[default]
     Pending,
     Running,
     Completed,
@@ -212,11 +217,6 @@ pub enum SagaStepStatus {
     Compensated,
 }
 
-impl Default for SagaStepStatus {
-    fn default() -> Self {
-        Self::Pending
-    }
-}
 
 /// Saga definition - a distributed transaction with compensation
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -297,7 +297,8 @@ impl SagaOrchestrator {
 
     /// Create a new Saga
     pub fn create_saga(&mut self, name: String, task_id: Option<String>) -> Saga {
-        let saga = Saga {
+        
+        Saga {
             id: ulid::Ulid::new().to_string(),
             name,
             task_id,
@@ -307,14 +308,17 @@ impl SagaOrchestrator {
             error: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
-        };
-        saga
+        }
     }
 
     /// Add a step to a Saga
     pub fn add_step(&mut self, saga_id: &str, step: SagaStep) -> Result<(), WorkflowError> {
-        let saga = self.sagas.get_mut(saga_id)
-            .ok_or_else(|| WorkflowError::SagaNotFound { saga_id: saga_id.to_string() })?;
+        let saga = self
+            .sagas
+            .get_mut(saga_id)
+            .ok_or_else(|| WorkflowError::SagaNotFound {
+                saga_id: saga_id.to_string(),
+            })?;
 
         if saga.state != SagaState::Pending {
             return Err(WorkflowError::SagaStepFailed {
@@ -336,8 +340,12 @@ impl SagaOrchestrator {
     /// Execute a Saga
     pub async fn execute_saga(&mut self, saga_id: &str) -> Result<SagaResult, WorkflowError> {
         {
-            let saga = self.sagas.get_mut(saga_id)
-                .ok_or_else(|| WorkflowError::SagaNotFound { saga_id: saga_id.to_string() })?;
+            let saga = self
+                .sagas
+                .get_mut(saga_id)
+                .ok_or_else(|| WorkflowError::SagaNotFound {
+                    saga_id: saga_id.to_string(),
+                })?;
 
             // Update state
             saga.state = SagaState::Running;
@@ -382,6 +390,7 @@ impl SagaOrchestrator {
 
             // Execute forward action
             let result = self.executor.execute_forward(&forward_action).await;
+            let mut step_error: Option<String> = None;
 
             {
                 let saga = self.sagas.get_mut(saga_id).unwrap();
@@ -403,22 +412,9 @@ impl SagaOrchestrator {
                         step.completed_at = Some(chrono::Utc::now());
                         saga.state = SagaState::Failed;
                         saga.error = Some(e.clone());
+                        step_error = Some(e.clone());
 
                         error!(saga = %saga_id, step = %step_name, error = %e, "Saga step failed");
-
-                        // Trigger compensation
-                        drop(saga); // Drop mutable borrow before compensate
-                        self.compensate_saga(saga_id).await?;
-
-                        return Ok(SagaResult {
-                            saga_id: saga_id.to_string(),
-                            success: false,
-                            completed_steps,
-                            total_steps,
-                            output: None,
-                            error: Some(e.clone()),
-                            compensated: true,
-                        });
                     }
                 }
 
@@ -427,6 +423,20 @@ impl SagaOrchestrator {
                 if let Some(storage) = &self.storage {
                     let _ = storage.save_saga(&saga_clone).await;
                 }
+            }
+
+            if let Some(error_msg) = step_error {
+                self.compensate_saga(saga_id).await?;
+
+                return Ok(SagaResult {
+                    saga_id: saga_id.to_string(),
+                    success: false,
+                    completed_steps,
+                    total_steps,
+                    output: None,
+                    error: Some(error_msg),
+                    compensated: true,
+                });
             }
         }
 
@@ -459,8 +469,12 @@ impl SagaOrchestrator {
     /// Compensate a failed Saga (run compensating actions in reverse)
     pub async fn compensate_saga(&mut self, saga_id: &str) -> Result<(), WorkflowError> {
         let last_completed = {
-            let saga = self.sagas.get_mut(saga_id)
-                .ok_or_else(|| WorkflowError::SagaNotFound { saga_id: saga_id.to_string() })?;
+            let saga = self
+                .sagas
+                .get_mut(saga_id)
+                .ok_or_else(|| WorkflowError::SagaNotFound {
+                    saga_id: saga_id.to_string(),
+                })?;
 
             saga.state = SagaState::Compensating;
             saga.updated_at = chrono::Utc::now();
@@ -550,7 +564,9 @@ impl SagaOrchestrator {
 
     /// Load Sagas from storage
     pub async fn load_from_storage(&mut self) -> Result<usize, Box<dyn std::error::Error>> {
-        let storage = self.storage.as_ref()
+        let storage = self
+            .storage
+            .as_ref()
             .ok_or_else(|| "No storage configured".to_string())?;
 
         let sagas = storage.list_sagas().await?;

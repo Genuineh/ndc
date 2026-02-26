@@ -4,8 +4,8 @@
 //! Captures what files/APIs will be affected by a task.
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 use std::fmt;
+use std::path::PathBuf;
 
 /// Impact Report - Discovery Phase Output
 ///
@@ -62,7 +62,7 @@ pub struct ImpactReport {
     pub estimated_duration_minutes: u32,
 
     /// Generated constraints
-    pub generated_constraints: Option<String>,  // JSON of HardConstraints
+    pub generated_constraints: Option<String>, // JSON of HardConstraints
 
     /// Discovery findings
     pub findings: Vec<DiscoveryFinding>,
@@ -351,9 +351,7 @@ impl ImpactReport {
 
     /// Calculate total affected files
     pub fn total_affected_files(&self) -> usize {
-        self.files_to_modify.len()
-            + self.files_to_create.len()
-            + self.files_to_delete.len()
+        self.files_to_modify.len() + self.files_to_create.len() + self.files_to_delete.len()
     }
 
     /// Calculate scope from affected files
@@ -430,10 +428,7 @@ mod tests {
 
     #[test]
     fn test_impact_report_new() {
-        let report = ImpactReport::new(
-            "task-123".to_string(),
-            "Add new feature".to_string(),
-        );
+        let report = ImpactReport::new("task-123".to_string(), "Add new feature".to_string());
 
         assert_eq!(report.task_id, "task-123");
         assert!(report.id.0.starts_with("impact-"));
@@ -458,7 +453,10 @@ mod tests {
     fn test_scope_from_count() {
         assert_eq!(ImpactScope::from_file_count(1), ImpactScope::Local);
         assert_eq!(ImpactScope::from_file_count(3), ImpactScope::Module);
-        assert_eq!(ImpactScope::from_file_count(10), ImpactScope::ModuleCrossing);
+        assert_eq!(
+            ImpactScope::from_file_count(10),
+            ImpactScope::ModuleCrossing
+        );
         assert_eq!(ImpactScope::from_file_count(50), ImpactScope::CrateWide);
         assert_eq!(ImpactScope::from_file_count(100), ImpactScope::ProjectWide);
     }
@@ -471,11 +469,11 @@ mod tests {
         );
         assert_eq!(
             Complexity::estimate(ImpactScope::CrateWide, 0.8),
-            Complexity::Moderate  // base=4 + volatility_factor=1 = score=5 -> Moderate
+            Complexity::Moderate // base=4 + volatility_factor=1 = score=5 -> Moderate
         );
         assert_eq!(
             Complexity::estimate(ImpactScope::ProjectWide, 0.9),
-            Complexity::Complex  // base=5 + volatility_factor=1 = score=6 -> Complex
+            Complexity::Complex // base=5 + volatility_factor=1 = score=6 -> Complex
         );
     }
 

@@ -6,8 +6,8 @@
 //! - Task 包含原始 Intent 信息，保证可追溯性
 //! - Snapshot 使用 Git Worktree 实现，支持精确回滚
 
-use crate::intent::{Intent, Action, Verdict};
 use crate::agent::AgentRole;
+use crate::intent::{Action, Intent, Verdict};
 use crate::memory::MemoryId;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -97,7 +97,7 @@ pub struct LightweightSnapshot {
     pub id: SnapshotId,
     pub captured_at: Timestamp,
     pub paths: Vec<PathBuf>,
-    pub checksum: String,  // SHA256 of all file contents
+    pub checksum: String, // SHA256 of all file contents
 }
 
 /// 任务
@@ -316,10 +316,7 @@ impl Task {
         self.allowed_transitions = match self.state {
             TaskState::Pending => vec![TaskState::Preparing],
             TaskState::Preparing => vec![TaskState::InProgress],
-            TaskState::InProgress => vec![
-                TaskState::AwaitingVerification,
-                TaskState::Blocked,
-            ],
+            TaskState::InProgress => vec![TaskState::AwaitingVerification, TaskState::Blocked],
             TaskState::AwaitingVerification => vec![
                 TaskState::Completed,
                 TaskState::Failed,

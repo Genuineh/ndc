@@ -8,14 +8,14 @@
 
 use super::{
     AgentError, AgentExecutionEvent, AgentExecutionEventKind, AgentMessage, AgentSession,
-    AgentSessionExecutionEvent, AgentToolCall, AgentToolResult, AgentWorkflowStage, TaskVerifier,
-    VerificationResult,
+    AgentSessionExecutionEvent, AgentToolCall, AgentToolResult, AgentWorkflowStage,
+    ProjectIdentity, TaskVerifier, VerificationResult,
     injectors::working_memory::{TaskContext, WorkingMemoryContext, WorkingMemoryInjector},
     prompts::{EnhancedPromptContext, build_enhanced_prompt},
 };
 use crate::llm::provider::{
     CompletionRequest, LlmProvider, Message, MessageRole, ProviderError, StreamHandler, ToolCall,
-    ToolResult as LlmToolResult,
+    ToolCallFunction, ToolResult as LlmToolResult,
 };
 use crate::{AgentRole, TaskId};
 use async_trait::async_trait;
@@ -44,11 +44,10 @@ impl StreamHandler for StreamingHandler {
     ) -> Result<(), ProviderError> {
         let mut content = self.content.lock().await;
         for choice in &chunk.choices {
-            if let Some(delta) = &choice.delta {
-                if !delta.content.is_empty() {
+            if let Some(delta) = &choice.delta
+                && !delta.content.is_empty() {
                     content.push_str(&delta.content);
                 }
-            }
         }
         Ok(())
     }
@@ -176,6 +175,19 @@ pub trait ToolExecutor: Send + Sync {
     /// 执行工具调用
     async fn execute_tool(&self, name: &str, arguments: &str) -> Result<String, AgentError>;
 
+    /// 在权限确认后重试工具（默认不处理）。
+    ///
+    /// 返回 `Ok(Some(output))` 表示已确认并重试成功；
+    /// 返回 `Ok(None)` 表示执行器不处理该确认流程，orchestrator 将保留原错误路径。
+    async fn confirm_and_retry_permission(
+        &self,
+        _name: &str,
+        _arguments: &str,
+        _permission_message: &str,
+    ) -> Result<Option<String>, AgentError> {
+        Ok(None)
+    }
+
     /// 获取可用工具列表
     fn list_tools(&self) -> Vec<String>;
 
@@ -199,6 +211,12 @@ pub struct AgentOrchestrator {
 
     /// 会话存储
     sessions: Arc<Mutex<HashMap<String, AgentSession>>>,
+
+    /// 项目到会话列表索引（按创建/首次出现顺序）
+    project_sessions: Arc<Mutex<HashMap<String, Vec<String>>>>,
+
+    /// 项目最近活跃 root session 游标
+    project_last_root_session: Arc<Mutex<HashMap<String, String>>>,
 
     /// 实时执行事件总线
     event_tx: broadcast::Sender<AgentSessionExecutionEvent>,
@@ -307,6 +325,8 @@ impl AgentOrchestrator {
             tool_executor,
             verifier,
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            project_sessions: Arc::new(Mutex::new(HashMap::new())),
+            project_last_root_session: Arc::new(Mutex::new(HashMap::new())),
             event_tx,
             config,
         }
@@ -331,7 +351,9 @@ impl AgentOrchestrator {
                 .clone()
                 .unwrap_or_else(|| ulid::Ulid::new().to_string());
 
-            let session = self.get_or_create_session(&session_id).await?;
+            let session = self
+                .get_or_create_session(&session_id, request.working_dir.clone())
+                .await?;
 
             // 构建消息
             let user_message = Message {
@@ -378,7 +400,9 @@ impl AgentOrchestrator {
             .clone()
             .unwrap_or_else(|| ulid::Ulid::new().to_string());
 
-        let session = self.get_or_create_session(&session_id).await?;
+        let session = self
+            .get_or_create_session(&session_id, request.working_dir.clone())
+            .await?;
 
         // 构建消息
         let user_message = Message {
@@ -439,6 +463,7 @@ impl AgentOrchestrator {
             timestamp: chrono::Utc::now(),
             tool_calls: None,
             tool_results: None,
+            tool_call_id: None,
         });
         session_state.add_message(AgentMessage {
             role: MessageRole::Assistant,
@@ -446,6 +471,7 @@ impl AgentOrchestrator {
             timestamp: chrono::Utc::now(),
             tool_calls: None,
             tool_results: None,
+            tool_call_id: None,
         });
         self.save_session(session_state).await;
 
@@ -461,21 +487,135 @@ impl AgentOrchestrator {
     }
 
     /// 获取或创建会话
-    async fn get_or_create_session(&self, session_id: &str) -> Result<AgentSession, AgentError> {
-        let mut sessions = self.sessions.lock().await;
+    async fn get_or_create_session(
+        &self,
+        session_id: &str,
+        working_dir: Option<std::path::PathBuf>,
+    ) -> Result<AgentSession, AgentError> {
+        let identity = ProjectIdentity::detect(working_dir);
+        let maybe_session = {
+            let mut sessions = self.sessions.lock().await;
 
-        if !sessions.contains_key(session_id) {
-            let session = AgentSession::new(session_id.to_string());
-            sessions.insert(session_id.to_string(), session);
-            info!("Created new session: {}", session_id);
-        }
+            if let Some(existing) = sessions.get(session_id) {
+                if existing.project_id != identity.project_id {
+                    return Err(AgentError::InvalidRequest(format!(
+                        "session '{}' belongs to project '{}', current project is '{}'; cross-project session continuation is denied by default",
+                        session_id, existing.project_id, identity.project_id
+                    )));
+                }
+                Some(existing.clone())
+            } else {
+                let session =
+                    AgentSession::new_with_project_identity(session_id.to_string(), identity);
+                sessions.insert(session_id.to_string(), session.clone());
+                info!("Created new session: {}", session_id);
+                Some(session)
+            }
+        };
 
-        Ok(sessions.get(session_id).cloned().unwrap())
+        let session = maybe_session.expect("session must exist after lookup/create");
+        self.index_session(&session).await;
+        Ok(session)
     }
 
     async fn save_session(&self, session: AgentSession) {
-        let mut sessions = self.sessions.lock().await;
-        sessions.insert(session.id.clone(), session);
+        {
+            let mut sessions = self.sessions.lock().await;
+            sessions.insert(session.id.clone(), session.clone());
+        }
+        self.index_session(&session).await;
+    }
+
+    /// Insert or update a session snapshot (used by external persistence hydration).
+    pub async fn upsert_session_snapshot(&self, session: AgentSession) {
+        self.save_session(session).await;
+    }
+
+    /// Return a cloned session snapshot for persistence.
+    pub async fn session_snapshot(&self, session_id: &str) -> Option<AgentSession> {
+        let sessions = self.sessions.lock().await;
+        sessions.get(session_id).cloned()
+    }
+
+    /// Bulk import persisted sessions into in-memory orchestrator state.
+    pub async fn hydrate_sessions(&self, sessions: Vec<AgentSession>) {
+        for session in sessions {
+            self.save_session(session).await;
+        }
+    }
+
+    /// Return latest session id for a project, prioritizing root sessions.
+    pub async fn latest_session_id_for_project(&self, project_id: &str) -> Option<String> {
+        {
+            let latest = self.project_last_root_session.lock().await;
+            if let Some(session_id) = latest.get(project_id) {
+                return Some(session_id.clone());
+            }
+        }
+        let sessions = self.sessions.lock().await;
+        sessions
+            .values()
+            .filter(|session| session.project_id == project_id)
+            .max_by(|left, right| left.started_at.cmp(&right.started_at))
+            .map(|session| session.id.clone())
+    }
+
+    /// Return project identity metadata for a session id.
+    pub async fn session_project_identity(&self, session_id: &str) -> Option<ProjectIdentity> {
+        let sessions = self.sessions.lock().await;
+        let session = sessions.get(session_id)?;
+        Some(ProjectIdentity {
+            project_id: session.project_id.clone(),
+            project_root: session.project_root.clone(),
+            working_dir: session.working_dir.clone(),
+            worktree: session.worktree.clone(),
+        })
+    }
+
+    /// Return known project ids tracked by the orchestrator.
+    pub async fn known_project_ids(&self) -> Vec<String> {
+        let sessions = self.sessions.lock().await;
+        let mut ids = sessions
+            .values()
+            .map(|session| session.project_id.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        ids.sort();
+        ids
+    }
+
+    /// Return session ids for a project ordered by latest activity.
+    pub async fn session_ids_for_project(
+        &self,
+        project_id: &str,
+        limit: Option<usize>,
+    ) -> Vec<String> {
+        let sessions = self.sessions.lock().await;
+        let mut entries = sessions
+            .values()
+            .filter(|session| session.project_id == project_id)
+            .map(|session| (session.started_at, session.id.clone()))
+            .collect::<Vec<_>>();
+        entries.sort_by(|left, right| right.0.cmp(&left.0));
+        if let Some(limit) = limit {
+            entries.truncate(limit);
+        }
+        entries.into_iter().map(|(_, id)| id).collect()
+    }
+
+    async fn index_session(&self, session: &AgentSession) {
+        {
+            let mut project_sessions = self.project_sessions.lock().await;
+            let entries = project_sessions
+                .entry(session.project_id.clone())
+                .or_insert_with(Vec::new);
+            if !entries.iter().any(|id| id == &session.id) {
+                entries.push(session.id.clone());
+            }
+        }
+        let mut latest = self.project_last_root_session.lock().await;
+        latest.insert(session.project_id.clone(), session.id.clone());
     }
 
     /// 获取会话执行事件时间线（用于回放/可视化）
@@ -507,7 +647,7 @@ impl AgentOrchestrator {
             .build_messages(
                 &session,
                 &user_message,
-                active_task_id.clone(),
+                active_task_id,
                 working_dir.clone(),
                 working_memory,
             )
@@ -519,6 +659,7 @@ impl AgentOrchestrator {
             timestamp: chrono::Utc::now(),
             tool_calls: None,
             tool_results: None,
+            tool_call_id: None,
         });
 
         let mut tool_call_count = 0;
@@ -696,8 +837,8 @@ impl AgentOrchestrator {
             .await;
 
             // 检查是否有工具调用
-            if let Some(ref tool_calls) = assistant_message.tool_calls {
-                if !tool_calls.is_empty() {
+            if let Some(ref tool_calls) = assistant_message.tool_calls
+                && !tool_calls.is_empty() {
                     self.emit_workflow_stage(
                         &mut session_state,
                         &mut execution_events,
@@ -761,6 +902,7 @@ impl AgentOrchestrator {
                         timestamp: chrono::Utc::now(),
                         tool_calls: Some(session_tool_calls.clone()),
                         tool_results: None,
+                        tool_call_id: None,
                     });
                     for tc in &session_tool_calls {
                         session_state.record_tool_call(&tc.name);
@@ -802,13 +944,13 @@ impl AgentOrchestrator {
                             timestamp: chrono::Utc::now(),
                             tool_calls: None,
                             tool_results: Some(vec![result.content.clone()]),
+                            tool_call_id: Some(result.tool_call_id.clone()),
                         });
                     }
 
                     // 继续循环
                     continue;
                 }
-            }
 
             // 没有工具调用，获取最终内容
             let final_content = assistant_message.content.clone();
@@ -839,6 +981,7 @@ impl AgentOrchestrator {
                 timestamp: chrono::Utc::now(),
                 tool_calls: None,
                 tool_results: None,
+                tool_call_id: None,
             });
 
             // 如果启用了自动验证且有活跃任务，执行验证
@@ -906,6 +1049,7 @@ impl AgentOrchestrator {
                     timestamp: chrono::Utc::now(),
                     tool_calls: None,
                     tool_results: None,
+                    tool_call_id: None,
                 });
 
                 // 继续循环
@@ -971,7 +1115,7 @@ impl AgentOrchestrator {
         let available_tools = self.tool_executor.tool_schemas();
         let working_memory_injector = self.build_working_memory_injector(
             session,
-            active_task_id.clone(),
+            active_task_id,
             working_dir.clone(),
             working_memory,
         );
@@ -999,14 +1143,114 @@ impl AgentOrchestrator {
         });
 
         // 添加历史消息 (最近的 N 条)
+        // 为兼容旧 session 数据（Tool 消息缺少 tool_call_id），
+        // 从前一条 Assistant 消息的 tool_calls 中依次恢复。
         let history_limit = 20;
+        let mut pending_tc_ids: Vec<String> = Vec::new();
         for msg in session.messages.iter().rev().take(history_limit).rev() {
+            let tool_calls = msg.tool_calls.as_ref().map(|tcs| {
+                tcs.iter()
+                    .map(|tc| ToolCall {
+                        id: tc.id.clone(),
+                        function: ToolCallFunction {
+                            name: tc.name.clone(),
+                            arguments: tc.arguments.clone(),
+                        },
+                    })
+                    .collect()
+            });
+
+            // Assistant 消息带 tool_calls 时，缓存其 ID 列表
+            if msg.role == MessageRole::Assistant {
+                if let Some(ref tcs) = msg.tool_calls {
+                    pending_tc_ids = tcs.iter().map(|tc| tc.id.clone()).collect();
+                } else {
+                    pending_tc_ids.clear();
+                }
+            }
+
+            // Tool 消息：优先使用已有 tool_call_id，否则从缓存的 ID 队列中取
+            let name = if msg.role == MessageRole::Tool {
+                msg.tool_call_id
+                    .clone()
+                    .or_else(|| {
+                        if !pending_tc_ids.is_empty() {
+                            Some(pending_tc_ids.remove(0))
+                        } else {
+                            None
+                        }
+                    })
+            } else {
+                msg.tool_call_id.clone()
+            };
+
+            // 如果 Tool 消息仍然缺少 tool_call_id，跳过以免 API 报错
+            if msg.role == MessageRole::Tool && name.is_none() {
+                warn!("Skipping Tool message without tool_call_id in session history");
+                continue;
+            }
+
             messages.push(Message {
                 role: msg.role.clone(),
                 content: msg.content.clone(),
-                name: None,
-                tool_calls: None,
+                name,
+                tool_calls,
             });
+        }
+
+        // 后处理：验证 tool_use / tool_result 配对完整性。
+        // 收集所有 tool_use_id 和 tool_result_id，移除不匹配的条目。
+        {
+            use std::collections::HashSet;
+            let tool_use_ids: HashSet<String> = messages
+                .iter()
+                .filter_map(|m| m.tool_calls.as_ref())
+                .flat_map(|tcs| tcs.iter().map(|tc| tc.id.clone()))
+                .collect();
+            let tool_result_ids: HashSet<String> = messages
+                .iter()
+                .filter(|m| m.role == MessageRole::Tool)
+                .filter_map(|m| m.name.clone())
+                .collect();
+
+            // 如果存在不匹配的 ID，清理掉孤立的 tool_use 和 tool_result
+            let orphan_uses: HashSet<&String> =
+                tool_use_ids.difference(&tool_result_ids).collect();
+            let orphan_results: HashSet<&String> =
+                tool_result_ids.difference(&tool_use_ids).collect();
+
+            if !orphan_uses.is_empty() || !orphan_results.is_empty() {
+                if !orphan_uses.is_empty() {
+                    warn!(
+                        "Stripping {} orphaned tool_use(s) from history",
+                        orphan_uses.len()
+                    );
+                }
+                if !orphan_results.is_empty() {
+                    warn!(
+                        "Removing {} orphaned tool_result(s) from history",
+                        orphan_results.len()
+                    );
+                }
+                // 移除孤立的 tool_result 消息
+                messages.retain(|m| {
+                    if m.role == MessageRole::Tool {
+                        if let Some(ref id) = m.name {
+                            return !orphan_results.contains(id);
+                        }
+                    }
+                    true
+                });
+                // 对于孤立的 tool_use：从 Assistant 消息中去掉 tool_calls
+                for m in messages.iter_mut() {
+                    if let Some(ref mut tcs) = m.tool_calls {
+                        tcs.retain(|tc| !orphan_uses.contains(&tc.id));
+                        if tcs.is_empty() {
+                            m.tool_calls = None;
+                        }
+                    }
+                }
+            }
         }
 
         // 添加当前用户消息
@@ -1145,12 +1389,122 @@ impl AgentOrchestrator {
                             },
                         )
                         .await;
-                    }
-                    warn!("Tool {} execution failed: {}", tool_name, e);
-                    LlmToolResult {
-                        tool_call_id: tool_call.id.clone(),
-                        content: format!("Error: {}", e),
-                        is_error: true,
+
+                        if is_confirmation_permission_error(message.as_str()) {
+                            match self
+                                .tool_executor
+                                .confirm_and_retry_permission(
+                                    tool_name,
+                                    &function.arguments,
+                                    message.as_str(),
+                                )
+                                .await
+                            {
+                                Ok(Some(content)) => {
+                                    self.emit_event(
+                                        session_state,
+                                        execution_events,
+                                        AgentExecutionEvent {
+                                            kind: AgentExecutionEventKind::PermissionAsked,
+                                            timestamp: chrono::Utc::now(),
+                                            message: format!(
+                                                "permission_asked: permission_approved: {}",
+                                                message
+                                            ),
+                                            round,
+                                            tool_name: Some(tool_name.clone()),
+                                            tool_call_id: Some(tool_call.id.clone()),
+                                            duration_ms: None,
+                                            is_error: false,
+                                            workflow_stage: None,
+                                            workflow_detail: None,
+                                            workflow_stage_index: None,
+                                            workflow_stage_total: None,
+                                        },
+                                    )
+                                    .await;
+                                    LlmToolResult {
+                                        tool_call_id: tool_call.id.clone(),
+                                        content,
+                                        is_error: false,
+                                    }
+                                }
+                                Ok(None) => {
+                                    warn!("Tool {} execution failed: {}", tool_name, e);
+                                    LlmToolResult {
+                                        tool_call_id: tool_call.id.clone(),
+                                        content: format!("Error: {}", e),
+                                        is_error: true,
+                                    }
+                                }
+                                Err(AgentError::PermissionDenied(rejected)) => {
+                                    let rejected_payload = if rejected
+                                        .trim_start()
+                                        .starts_with("permission_rejected:")
+                                    {
+                                        rejected
+                                    } else {
+                                        format!("permission_rejected: {}", rejected)
+                                    };
+                                    self.emit_event(
+                                        session_state,
+                                        execution_events,
+                                        AgentExecutionEvent {
+                                            kind: AgentExecutionEventKind::PermissionAsked,
+                                            timestamp: chrono::Utc::now(),
+                                            message: format!(
+                                                "permission_asked: {}",
+                                                rejected_payload
+                                            ),
+                                            round,
+                                            tool_name: Some(tool_name.clone()),
+                                            tool_call_id: Some(tool_call.id.clone()),
+                                            duration_ms: None,
+                                            is_error: true,
+                                            workflow_stage: None,
+                                            workflow_detail: None,
+                                            workflow_stage_index: None,
+                                            workflow_stage_total: None,
+                                        },
+                                    )
+                                    .await;
+                                    warn!(
+                                        "Tool {} execution rejected after confirmation: {}",
+                                        tool_name, rejected_payload
+                                    );
+                                    LlmToolResult {
+                                        tool_call_id: tool_call.id.clone(),
+                                        content: format!("Error: {}", rejected_payload),
+                                        is_error: true,
+                                    }
+                                }
+                                Err(other) => {
+                                    warn!(
+                                        "Tool {} execution failed after confirmation retry: {}",
+                                        tool_name, other
+                                    );
+                                    LlmToolResult {
+                                        tool_call_id: tool_call.id.clone(),
+                                        content: format!("Error: {}", other),
+                                        is_error: true,
+                                    }
+                                }
+                            }
+                        } else {
+                            warn!("Tool {} execution failed: {}", tool_name, e);
+                            LlmToolResult {
+                                tool_call_id: tool_call.id.clone(),
+                                content: format!("Error: {}", e),
+                                is_error: true,
+                            }
+                        }
+                    } else {
+                        warn!("Tool {} execution failed: {}", tool_name, e);
+                        LlmToolResult {
+                            tool_call_id: tool_call.id.clone(),
+                            content: format!("Error: {}", e),
+                            is_error: true,
+                        }
                     }
                 }
             };
@@ -1197,10 +1551,15 @@ fn truncate_for_event(content: &str, max: usize) -> String {
     out
 }
 
+fn is_confirmation_permission_error(message: &str) -> bool {
+    message
+        .trim_start()
+        .starts_with("requires_confirmation permission=")
+}
+
 fn compact_preview(content: &str, max: usize) -> String {
     let one_line = content
-        .replace('\n', " ")
-        .replace('\r', " ")
+        .replace(['\n', '\r'], " ")
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
@@ -1228,6 +1587,7 @@ mod tests {
         ToolCallFunction, Usage,
     };
     use std::collections::VecDeque;
+    use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::sync::Mutex as TokioMutex;
 
     #[test]
@@ -1466,6 +1826,60 @@ mod tests {
         }
     }
 
+    struct ConfirmingPermissionToolExecutor {
+        attempts: Arc<TokioMutex<usize>>,
+    }
+
+    impl ConfirmingPermissionToolExecutor {
+        fn new() -> Self {
+            Self {
+                attempts: Arc::new(TokioMutex::new(0)),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ToolExecutor for ConfirmingPermissionToolExecutor {
+        async fn execute_tool(&self, _name: &str, _arguments: &str) -> Result<String, AgentError> {
+            let mut attempts = self.attempts.lock().await;
+            *attempts += 1;
+            if *attempts == 1 {
+                return Err(AgentError::PermissionDenied(
+                    "requires_confirmation permission=git_commit risk=high git commit requires confirmation"
+                        .to_string(),
+                ));
+            }
+            Ok("commit-ok".to_string())
+        }
+
+        async fn confirm_and_retry_permission(
+            &self,
+            _name: &str,
+            _arguments: &str,
+            permission_message: &str,
+        ) -> Result<Option<String>, AgentError> {
+            if !permission_message.starts_with("requires_confirmation permission=") {
+                return Ok(None);
+            }
+            Ok(Some("commit-ok".to_string()))
+        }
+
+        fn list_tools(&self) -> Vec<String> {
+            vec!["git".to_string()]
+        }
+
+        fn tool_schemas(&self) -> Vec<serde_json::Value> {
+            vec![serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": "git",
+                    "description": "Git operation",
+                    "parameters": {"type": "object", "properties": {}}
+                }
+            })]
+        }
+    }
+
     struct MockStorage;
 
     #[async_trait::async_trait]
@@ -1672,6 +2086,159 @@ mod tests {
             .unwrap();
         assert!(!replay.is_empty());
         assert!(replay.len() <= 3);
+    }
+
+    fn make_temp_project_path(prefix: &str) -> std::path::PathBuf {
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let path = std::env::temp_dir().join(format!("ndc-orch-{}-{}", prefix, millis));
+        std::fs::create_dir_all(&path).expect("create temp project path");
+        path
+    }
+
+    #[tokio::test]
+    async fn test_get_or_create_session_rejects_cross_project_existing_session() {
+        let provider = Arc::new(ScriptedProvider::new(vec![]));
+        let tool_executor = Arc::new(MockToolExecutor::new());
+        let verifier = Arc::new(TaskVerifier::new(Arc::new(MockStorage)));
+        let orchestrator =
+            AgentOrchestrator::new(provider, tool_executor, verifier, AgentConfig::default());
+
+        let project_a = make_temp_project_path("project-a");
+        let project_b = make_temp_project_path("project-b");
+
+        let session_id = "session-fixed";
+        let created = orchestrator
+            .get_or_create_session(session_id, Some(project_a.clone()))
+            .await
+            .expect("create first session");
+        assert_eq!(created.id, session_id);
+
+        let err = orchestrator
+            .get_or_create_session(session_id, Some(project_b.clone()))
+            .await
+            .expect_err("cross-project continuation must be denied");
+
+        match err {
+            AgentError::InvalidRequest(message) => {
+                assert!(
+                    message.contains("cross-project session continuation is denied by default")
+                );
+                assert!(message.contains(session_id));
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+
+        std::fs::remove_dir_all(project_a).ok();
+        std::fs::remove_dir_all(project_b).ok();
+    }
+
+    #[tokio::test]
+    async fn test_latest_session_id_for_project_tracks_recent_activity() {
+        let provider = Arc::new(ScriptedProvider::new(vec![]));
+        let tool_executor = Arc::new(MockToolExecutor::new());
+        let verifier = Arc::new(TaskVerifier::new(Arc::new(MockStorage)));
+        let orchestrator =
+            AgentOrchestrator::new(provider, tool_executor, verifier, AgentConfig::default());
+
+        let project = make_temp_project_path("project-latest");
+        let first = orchestrator
+            .get_or_create_session("session-first", Some(project.clone()))
+            .await
+            .expect("first session");
+        let second = orchestrator
+            .get_or_create_session("session-second", Some(project.clone()))
+            .await
+            .expect("second session");
+
+        let latest = orchestrator
+            .latest_session_id_for_project(&first.project_id)
+            .await
+            .expect("latest session id");
+        assert_eq!(latest, second.id);
+
+        orchestrator.save_session(first.clone()).await;
+        let latest_after_activity = orchestrator
+            .latest_session_id_for_project(&first.project_id)
+            .await
+            .expect("latest session id after activity");
+        assert_eq!(latest_after_activity, first.id);
+
+        std::fs::remove_dir_all(project).ok();
+    }
+
+    #[tokio::test]
+    async fn test_session_project_identity_returns_expected_fields() {
+        let provider = Arc::new(ScriptedProvider::new(vec![]));
+        let tool_executor = Arc::new(MockToolExecutor::new());
+        let verifier = Arc::new(TaskVerifier::new(Arc::new(MockStorage)));
+        let orchestrator =
+            AgentOrchestrator::new(provider, tool_executor, verifier, AgentConfig::default());
+
+        let project = make_temp_project_path("project-identity");
+        let session = orchestrator
+            .get_or_create_session("session-ident", Some(project.clone()))
+            .await
+            .expect("create session");
+
+        let identity = orchestrator
+            .session_project_identity(&session.id)
+            .await
+            .expect("session identity");
+        assert_eq!(identity.project_id, session.project_id);
+        assert_eq!(identity.project_root, session.project_root);
+        assert_eq!(identity.worktree, session.worktree);
+
+        std::fs::remove_dir_all(project).ok();
+    }
+
+    #[tokio::test]
+    async fn test_known_project_ids_and_session_ids_for_project() {
+        let provider = Arc::new(ScriptedProvider::new(vec![]));
+        let tool_executor = Arc::new(MockToolExecutor::new());
+        let verifier = Arc::new(TaskVerifier::new(Arc::new(MockStorage)));
+        let orchestrator =
+            AgentOrchestrator::new(provider, tool_executor, verifier, AgentConfig::default());
+
+        let project_a = make_temp_project_path("project-a-known");
+        let project_b = make_temp_project_path("project-b-known");
+
+        let first = orchestrator
+            .get_or_create_session("session-a-first", Some(project_a.clone()))
+            .await
+            .expect("create first session");
+        let second = orchestrator
+            .get_or_create_session("session-a-second", Some(project_a.clone()))
+            .await
+            .expect("create second session");
+        let _third = orchestrator
+            .get_or_create_session("session-b", Some(project_b.clone()))
+            .await
+            .expect("create third session");
+
+        let project_ids = orchestrator.known_project_ids().await;
+        assert!(project_ids.iter().any(|id| id == &first.project_id));
+        assert!(project_ids.iter().any(|id| id == &second.project_id));
+
+        let sessions = orchestrator
+            .session_ids_for_project(&first.project_id, Some(10))
+            .await;
+        assert_eq!(
+            sessions.first().map(String::as_str),
+            Some(second.id.as_str())
+        );
+        assert!(sessions.iter().any(|id| id == &first.id));
+
+        let limited = orchestrator
+            .session_ids_for_project(&first.project_id, Some(1))
+            .await;
+        assert_eq!(limited.len(), 1);
+        assert_eq!(limited[0], second.id);
+
+        std::fs::remove_dir_all(project_a).ok();
+        std::fs::remove_dir_all(project_b).ok();
     }
 
     #[tokio::test]
@@ -1956,6 +2523,89 @@ mod tests {
             e.kind == AgentExecutionEventKind::PermissionAsked
                 && e.tool_name.as_deref() == Some("write")
                 && e.is_error
+        }));
+    }
+
+    #[tokio::test]
+    async fn test_permission_confirmation_emits_approved_and_succeeds() {
+        let first_response = CompletionResponse {
+            id: "resp-perm-approve-1".to_string(),
+            object: "chat.completion".to_string(),
+            created: 0,
+            model: "mock-model".to_string(),
+            choices: vec![Choice {
+                index: 0,
+                message: Message {
+                    role: MessageRole::Assistant,
+                    content: String::new(),
+                    name: None,
+                    tool_calls: Some(vec![ToolCall {
+                        id: "tool-perm-approve-1".to_string(),
+                        function: ToolCallFunction {
+                            name: "git".to_string(),
+                            arguments: r#"{"operation":"commit"}"#.to_string(),
+                        },
+                    }]),
+                },
+                finish_reason: None,
+                logprobs: None,
+            }],
+            usage: None,
+        };
+        let second_response = CompletionResponse {
+            id: "resp-perm-approve-2".to_string(),
+            object: "chat.completion".to_string(),
+            created: 0,
+            model: "mock-model".to_string(),
+            choices: vec![Choice {
+                index: 0,
+                message: Message {
+                    role: MessageRole::Assistant,
+                    content: "commit completed".to_string(),
+                    name: None,
+                    tool_calls: None,
+                },
+                finish_reason: Some("stop".to_string()),
+                logprobs: None,
+            }],
+            usage: None,
+        };
+
+        let provider = Arc::new(ScriptedProvider::new(vec![first_response, second_response]));
+        let verifier = Arc::new(TaskVerifier::new(Arc::new(MockStorage)));
+        let orchestrator = AgentOrchestrator::new(
+            provider,
+            Arc::new(ConfirmingPermissionToolExecutor::new()),
+            verifier,
+            AgentConfig::default(),
+        );
+
+        let response = orchestrator
+            .process(AgentRequest {
+                user_input: "commit changes".to_string(),
+                session_id: None,
+                working_dir: None,
+                role: None,
+                active_task_id: None,
+                working_memory: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(response.execution_events.iter().any(|e| {
+            e.kind == AgentExecutionEventKind::PermissionAsked
+                && e.message.contains("permission_asked:")
+                && e.message
+                    .contains("requires_confirmation permission=git_commit")
+        }));
+        assert!(response.execution_events.iter().any(|e| {
+            e.kind == AgentExecutionEventKind::PermissionAsked
+                && e.message.contains("permission_approved:")
+        }));
+        assert!(response.execution_events.iter().any(|e| {
+            e.kind == AgentExecutionEventKind::ToolCallEnd
+                && e.tool_name.as_deref() == Some("git")
+                && !e.is_error
         }));
     }
 
@@ -2334,6 +2984,152 @@ mod tests {
             events
                 .iter()
                 .any(|e| e.event.kind == AgentExecutionEventKind::SessionStatus)
+        );
+    }
+
+    /// 验证 build_messages 对旧 session 数据（Tool 消息缺少 tool_call_id）
+    /// 能正确从前一条 Assistant 的 tool_calls 中恢复 tool_call_id。
+    #[tokio::test]
+    async fn test_build_messages_reconstructs_tool_call_id_from_legacy_session() {
+        let provider = Arc::new(ScriptedProvider::new(vec![]));
+        let tool_executor = Arc::new(MockToolExecutor::new());
+        let verifier = Arc::new(TaskVerifier::new(Arc::new(MockStorage)));
+        let orchestrator = AgentOrchestrator::new(
+            provider,
+            tool_executor,
+            verifier,
+            AgentConfig::default(),
+        );
+
+        // 模拟旧 session: Assistant 有 tool_calls，Tool 消息缺少 tool_call_id
+        let mut session = AgentSession::new("legacy-session-1".to_string());
+        session.project_id = "test-project".to_string();
+
+        // User message
+        session.add_message(AgentMessage {
+            role: MessageRole::User,
+            content: "run tool".to_string(),
+            timestamp: chrono::Utc::now(),
+            tool_calls: None,
+            tool_results: None,
+            tool_call_id: None,
+        });
+
+        // Assistant message with tool_calls (old code stored these correctly)
+        session.add_message(AgentMessage {
+            role: MessageRole::Assistant,
+            content: "".to_string(),
+            timestamp: chrono::Utc::now(),
+            tool_calls: Some(vec![AgentToolCall {
+                name: "read_file".to_string(),
+                arguments: r#"{"path":"src/main.rs"}"#.to_string(),
+                id: "call_abc123".to_string(),
+            }]),
+            tool_results: None,
+            tool_call_id: None,
+        });
+
+        // Tool result WITHOUT tool_call_id (legacy data)
+        session.add_message(AgentMessage {
+            role: MessageRole::Tool,
+            content: "fn main() {}".to_string(),
+            timestamp: chrono::Utc::now(),
+            tool_calls: None,
+            tool_results: Some(vec!["fn main() {}".to_string()]),
+            tool_call_id: None, // <-- 旧数据缺失
+        });
+
+        orchestrator.save_session(session.clone()).await;
+
+        let user_msg = Message {
+            role: MessageRole::User,
+            content: "hello".to_string(),
+            name: None,
+            tool_calls: None,
+        };
+
+        let messages = orchestrator
+            .build_messages(&session, &user_msg, None, None, None)
+            .await
+            .expect("build_messages should succeed");
+
+        // 找到 Tool 消息，验证 name 被正确恢复为 "call_abc123"
+        let tool_msg = messages
+            .iter()
+            .find(|m| m.role == MessageRole::Tool)
+            .expect("should have a Tool message");
+        assert_eq!(
+            tool_msg.name.as_deref(),
+            Some("call_abc123"),
+            "Tool message name should be reconstructed from preceding Assistant's tool_calls"
+        );
+
+        // 找到 Assistant 消息，验证 tool_calls 被正确恢复
+        let assistant_msg = messages
+            .iter()
+            .find(|m| {
+                m.role == MessageRole::Assistant && m.tool_calls.is_some()
+            })
+            .expect("should have an Assistant message with tool_calls");
+        let tc = &assistant_msg.tool_calls.as_ref().unwrap()[0];
+        assert_eq!(tc.id, "call_abc123");
+        assert_eq!(tc.function.name, "read_file");
+    }
+
+    /// 验证 build_messages 对窗口截断导致的孤立 Tool 消息能正确跳过。
+    #[tokio::test]
+    async fn test_build_messages_skips_orphaned_tool_messages() {
+        let provider = Arc::new(ScriptedProvider::new(vec![]));
+        let tool_executor = Arc::new(MockToolExecutor::new());
+        let verifier = Arc::new(TaskVerifier::new(Arc::new(MockStorage)));
+        let orchestrator = AgentOrchestrator::new(
+            provider,
+            tool_executor,
+            verifier,
+            AgentConfig::default(),
+        );
+
+        let mut session = AgentSession::new("orphan-session-1".to_string());
+        session.project_id = "test-project".to_string();
+
+        // 孤立的 Tool 消息 — 没有前置 Assistant（模拟 take(N) 截断）
+        session.add_message(AgentMessage {
+            role: MessageRole::Tool,
+            content: "some result".to_string(),
+            timestamp: chrono::Utc::now(),
+            tool_calls: None,
+            tool_results: Some(vec!["some result".to_string()]),
+            tool_call_id: None,
+        });
+
+        // 正常的 User 消息
+        session.add_message(AgentMessage {
+            role: MessageRole::User,
+            content: "continue".to_string(),
+            timestamp: chrono::Utc::now(),
+            tool_calls: None,
+            tool_results: None,
+            tool_call_id: None,
+        });
+
+        orchestrator.save_session(session.clone()).await;
+
+        let user_msg = Message {
+            role: MessageRole::User,
+            content: "hello".to_string(),
+            name: None,
+            tool_calls: None,
+        };
+
+        let messages = orchestrator
+            .build_messages(&session, &user_msg, None, None, None)
+            .await
+            .expect("build_messages should succeed");
+
+        // 孤立的 Tool 消息应被跳过
+        assert!(
+            !messages.iter().any(|m| m.role == MessageRole::Tool),
+            "Orphaned Tool message should be skipped"
         );
     }
 }

@@ -16,3 +16,6 @@ pub use task_list::TaskListTool;
 
 pub mod task_verify;
 pub use task_verify::TaskVerifyTool;
+
+pub mod memory_query;
+pub use memory_query::MemoryQueryTool;

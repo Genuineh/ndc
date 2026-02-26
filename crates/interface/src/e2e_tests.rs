@@ -330,7 +330,7 @@ mod e2e_tests {
     #[tokio::test]
     async fn test_discovery_failure_block_mode() {
         let _guard = DISCOVERY_ENV_LOCK.lock().unwrap();
-        std::env::set_var("NDC_DISCOVERY_FAILURE_MODE", "block");
+        unsafe { std::env::set_var("NDC_DISCOVERY_FAILURE_MODE", "block"); }
 
         let mut context = ExecutionContext::default();
         let temp_dir = TempDir::new().unwrap();
@@ -376,14 +376,14 @@ mod e2e_tests {
             ndc_runtime::ExecutionError::DiscoveryFailed(_)
         ));
 
-        std::env::remove_var("NDC_DISCOVERY_FAILURE_MODE");
+        unsafe { std::env::remove_var("NDC_DISCOVERY_FAILURE_MODE"); }
     }
 
     /// Discovery signals should be persisted into GoldMemory even when degrading on failure.
     #[tokio::test]
     async fn test_discovery_signal_persisted_to_gold_memory() {
         let _guard = DISCOVERY_ENV_LOCK.lock().unwrap();
-        std::env::set_var("NDC_DISCOVERY_FAILURE_MODE", "degrade");
+        unsafe { std::env::set_var("NDC_DISCOVERY_FAILURE_MODE", "degrade"); }
 
         let mut context = ExecutionContext::default();
         let temp_dir = TempDir::new().unwrap();
@@ -442,7 +442,7 @@ mod e2e_tests {
             _ => panic!("expected general memory payload"),
         }
 
-        std::env::remove_var("NDC_DISCOVERY_FAILURE_MODE");
+        unsafe { std::env::remove_var("NDC_DISCOVERY_FAILURE_MODE"); }
     }
 
     /// P0.13 smoke: query persisted GoldMemory facts via ndc_memory_query
@@ -680,7 +680,8 @@ mod cli_storage_tests {
 
         let params = serde_json::json!({
             "operation": "read",
-            "path": test_file.to_string_lossy()
+            "path": test_file.to_string_lossy(),
+            "working_dir": temp_dir.path().to_string_lossy()
         });
 
         let result = fs_tool.execute(&params).await.unwrap();

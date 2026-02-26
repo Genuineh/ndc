@@ -5,8 +5,8 @@
 
 use ndc_core::RiskLevel;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 use std::fmt;
+use std::path::PathBuf;
 
 /// Hard Constraints - Generated from Discovery Phase
 ///

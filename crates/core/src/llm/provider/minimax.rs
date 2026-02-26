@@ -36,10 +36,7 @@ impl std::fmt::Debug for MiniMaxProvider {
 
 impl MiniMaxProvider {
     /// Create a new MiniMax provider
-    pub fn new(
-        config: ProviderConfig,
-        token_counter: Arc<dyn TokenCounter>,
-    ) -> Self {
+    pub fn new(config: ProviderConfig, token_counter: Arc<dyn TokenCounter>) -> Self {
         let client = Client::builder()
             .timeout(std::time::Duration::from_millis(config.timeout_ms))
             .build()
@@ -85,8 +82,8 @@ impl MiniMaxProvider {
     fn map_model_name(&self, model: &str) -> String {
         // MiniMax model names mapping
         match model {
-            "gpt-4" | "gpt-3.5-turbo" => "m2.1-0107".to_string(),
-            "claude-3-opus" | "claude-3-sonnet" => "m2.1-0107".to_string(),
+            "gpt-4" | "gpt-3.5-turbo" => "abab6.5s-chat".to_string(),
+            "claude-3-opus" | "claude-3-sonnet" => "abab6.5s-chat".to_string(),
             _ => model.to_string(),
         }
     }
@@ -97,27 +94,26 @@ impl MiniMaxProvider {
             .messages
             .iter()
             .map(|m| {
-                let sender_name = m.name.as_deref().unwrap_or("User");
-                let role_str = match m.role {
+                // MiniMax chatcompletion_v2 expects OpenAI-like messages.
+                // Keep roles strictly in {system,user,assistant}.
+                let role = self.map_role_to_sender(match m.role {
                     MessageRole::System => "system",
                     MessageRole::User => "user",
                     MessageRole::Assistant => "assistant",
                     MessageRole::Tool => "tool",
-                };
-                let sender_type = self.map_role_to_sender(role_str);
-
-                let mut msg = serde_json::json!({
-                    "sender_type": sender_type,
-                    "sender_name": sender_name,
-                    "text": m.content,
+                });
+                let name = m.name.clone().unwrap_or_else(|| match role.as_str() {
+                    "assistant" => "MiniMax AI".to_string(),
+                    _ => "user".to_string(),
                 });
 
-                // Add tool_calls if present
-                if let Some(calls) = &m.tool_calls {
-                    if !calls.is_empty() {
-                        msg["sender_type"] = serde_json::json!("bot");
-                        msg["tool_calls"] = serde_json::json!(calls);
-                    }
+                let mut msg = serde_json::json!({
+                    "role": role,
+                    "name": name,
+                });
+
+                if !m.content.trim().is_empty() {
+                    msg["content"] = serde_json::json!(m.content);
                 }
 
                 msg
@@ -129,6 +125,7 @@ impl MiniMaxProvider {
             "messages": messages,
             "temperature": request.temperature.unwrap_or(0.9),
             "top_p": request.top_p.unwrap_or(0.95),
+            "max_tokens": request.max_tokens,
             "tokens_to_generate": request.max_tokens,
             "stream": false,
         })
@@ -138,58 +135,116 @@ impl MiniMaxProvider {
     fn map_role_to_sender(&self, role: &str) -> String {
         match role {
             "system" => "system".to_string(),
-            "user" => "USER".to_string(),
-            "assistant" => "bot".to_string(),
-            _ => "USER".to_string(),
+            "user" => "user".to_string(),
+            "assistant" => "assistant".to_string(),
+            "tool" => "user".to_string(),
+            _ => "user".to_string(),
+        }
+    }
+
+    fn extract_text_from_value(value: &serde_json::Value) -> Option<String> {
+        match value {
+            serde_json::Value::String(s) => {
+                let trimmed = s.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            }
+            serde_json::Value::Array(items) => items.iter().find_map(Self::extract_text_from_value),
+            serde_json::Value::Object(map) => {
+                for key in ["text", "reply", "answer", "output_text"] {
+                    if let Some(v) = map.get(key)
+                        && let Some(text) = Self::extract_text_from_value(v) {
+                            return Some(text);
+                        }
+                }
+
+                for key in ["content", "message", "messages", "delta"] {
+                    if let Some(v) = map.get(key)
+                        && let Some(text) = Self::extract_text_from_value(v) {
+                            return Some(text);
+                        }
+                }
+
+                None
+            }
+            _ => None,
         }
     }
 
     /// Parse MiniMax response to CompletionResponse
-    fn parse_response(&self, response_value: serde_json::Value) -> Result<CompletionResponse, ProviderError> {
-        let choices = response_value["choices"]
-            .as_array()
-            .ok_or_else(|| ProviderError::Api {
-                message: "Missing choices in response".to_string(),
-                status_code: None,
-            })?;
+    fn parse_response(
+        &self,
+        response_value: serde_json::Value,
+    ) -> Result<CompletionResponse, ProviderError> {
+        if let Some(base_resp) = response_value.get("base_resp") {
+            let status_code = base_resp
+                .get("status_code")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            if status_code != 0 {
+                let status_msg = base_resp
+                    .get("status_msg")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown minimax error");
+                return Err(ProviderError::Api {
+                    message: format!("MiniMax base_resp error {}: {}", status_code, status_msg),
+                    status_code: None,
+                });
+            }
+        }
 
-        let first_choice = choices
-            .first()
-            .ok_or_else(|| ProviderError::Api {
-                message: "Empty choices array".to_string(),
-                status_code: None,
-            })?;
+        let first_choice = response_value
+            .get("choices")
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.first());
 
-        let text = first_choice["text"]
-            .as_str()
-            .ok_or_else(|| ProviderError::Api {
-                message: "Missing text in choice".to_string(),
-                status_code: None,
+        let text = first_choice
+            .and_then(Self::extract_text_from_value)
+            .or_else(|| Self::extract_text_from_value(&response_value))
+            .ok_or_else(|| {
+                let keys = response_value
+                    .as_object()
+                    .map(|obj| obj.keys().cloned().collect::<Vec<_>>().join(","))
+                    .unwrap_or_else(|| "<non-object>".to_string());
+                ProviderError::Api {
+                    message: format!(
+                        "Missing text content in MiniMax response (top-level keys: {})",
+                        keys
+                    ),
+                    status_code: None,
+                }
             })?;
 
         // Parse usage if available
-        let usage = if let Some(u) = response_value.get("usage") {
-            Some(Usage {
+        let usage = response_value.get("usage").map(|u| Usage {
                 prompt_tokens: u["prompt_tokens"].as_u64().unwrap_or(0) as u32,
                 completion_tokens: u["completion_tokens"].as_u64().unwrap_or(0) as u32,
                 total_tokens: u["total_tokens"].as_u64().unwrap_or(0) as u32,
-            })
-        } else {
-            None
-        };
+            });
 
-        let finish_reason = first_choice["finish_reason"]
-            .as_str()
+        let finish_reason = first_choice
+            .and_then(|choice| choice.get("finish_reason"))
+            .or_else(|| first_choice.and_then(|choice| choice.get("finishReason")))
+            .and_then(|v| v.as_str())
             .unwrap_or("stop")
             .to_string();
 
         Ok(CompletionResponse {
             id: response_value["id"]
                 .as_str()
+                .or_else(|| response_value["request_id"].as_str())
                 .unwrap_or("minimax-unknown")
                 .to_string(),
             object: "chat.completion".to_string(),
-            created: response_value["created"].as_u64().unwrap_or(0),
+            created: response_value["created"].as_u64().unwrap_or_else(|| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0)
+            }),
             model: self.config.default_model.clone(),
             choices: vec![Choice {
                 index: 0,
@@ -231,14 +286,12 @@ impl LlmProvider for MiniMaxProvider {
             req_builder = req_builder.header("GroupId", group_id);
         }
 
-        let response = req_builder
-            .send()
-            .await;
+        let response = req_builder.send().await;
 
-        if let Ok(resp) = response {
-            if resp.status().is_success() {
-                if let Ok(data) = resp.json::<serde_json::Value>().await {
-                    if let Some(models_array) = data.get("data").and_then(|v| v.as_array()) {
+        if let Ok(resp) = response
+            && resp.status().is_success()
+                && let Ok(data) = resp.json::<serde_json::Value>().await
+                    && let Some(models_array) = data.get("data").and_then(|v| v.as_array()) {
                         let now = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap()
@@ -249,14 +302,17 @@ impl LlmProvider for MiniMaxProvider {
                             .filter_map(|m| {
                                 Some(ModelInfo {
                                     id: m.get("id")?.as_str()?.to_string(),
-                                    object: m.get("object")
+                                    object: m
+                                        .get("object")
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("model")
                                         .to_string(),
-                                    created: m.get("created")
+                                    created: m
+                                        .get("created")
                                         .and_then(|v| v.as_u64())
                                         .unwrap_or(now),
-                                    owned_by: m.get("owned_by")
+                                    owned_by: m
+                                        .get("owned_by")
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("minimax")
                                         .to_string(),
@@ -269,9 +325,6 @@ impl LlmProvider for MiniMaxProvider {
                             return Ok(models);
                         }
                     }
-                }
-            }
-        }
 
         // Fallback to static model list
         let now = std::time::SystemTime::now()
@@ -280,13 +333,6 @@ impl LlmProvider for MiniMaxProvider {
             .as_secs();
 
         let models = vec![
-            ModelInfo {
-                id: "m2.1-0107".to_string(),
-                object: "model".to_string(),
-                created: now,
-                owned_by: "minimax".to_string(),
-                permission: vec![],
-            },
             ModelInfo {
                 id: "abab6.5s-chat".to_string(),
                 object: "model".to_string(),
@@ -323,6 +369,7 @@ impl LlmProvider for MiniMaxProvider {
         // Add group_id header if available
         if let Some(ref group_id) = self.group_id {
             req_builder = req_builder.header("GroupId", group_id);
+            req_builder = req_builder.query(&[("GroupId", group_id)]);
         }
 
         let response = req_builder
@@ -340,9 +387,7 @@ impl LlmProvider for MiniMaxProvider {
         }
 
         if status.as_u16() == 429 {
-            return Err(ProviderError::RateLimited {
-                retry_after: 60,
-            });
+            return Err(ProviderError::RateLimited { retry_after: 60 });
         }
 
         if !status.is_success() {
@@ -364,10 +409,8 @@ impl LlmProvider for MiniMaxProvider {
             });
         }
 
-        let response_value: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| ProviderError::Api {
+        let response_value: serde_json::Value =
+            response.json().await.map_err(|e| ProviderError::Api {
                 message: format!("Failed to parse response: {}", e),
                 status_code: None,
             })?;
@@ -396,6 +439,7 @@ impl LlmProvider for MiniMaxProvider {
         // Add group_id header if available
         if let Some(ref group_id) = self.group_id {
             req_builder = req_builder.header("GroupId", group_id);
+            req_builder = req_builder.query(&[("GroupId", group_id)]);
         }
 
         let response = req_builder
@@ -430,16 +474,16 @@ impl LlmProvider for MiniMaxProvider {
 
         while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result.map_err(|e| ProviderError::Network { source: e })?;
-            let text = std::str::from_utf8(&chunk)
-                .map_err(|e| ProviderError::Api { message: e.to_string(), status_code: None })?;
+            let text = std::str::from_utf8(&chunk).map_err(|e| ProviderError::Api {
+                message: e.to_string(),
+                status_code: None,
+            })?;
 
             buffer.push_str(text);
 
             // MiniMax SSE format: data: {...}
             for line in buffer.lines() {
-                if line.starts_with("data: ") {
-                    let data = &line[6..];
-
+                if let Some(data) = line.strip_prefix("data: ") {
                     if data == "[DONE]" {
                         if let Some(ref response) = full_response {
                             handler.on_complete(response).await?;
@@ -452,6 +496,14 @@ impl LlmProvider for MiniMaxProvider {
                             .get(0)
                             .and_then(|c| c.get("text"))
                             .and_then(|t| t.as_str())
+                            .or_else(|| {
+                                value["choices"]
+                                    .get(0)
+                                    .and_then(|c| c.get("delta"))
+                                    .and_then(|d| d.get("content"))
+                                    .and_then(|v| v.as_str())
+                            })
+                            .or_else(|| value.get("reply").and_then(|v| v.as_str()))
                             .unwrap_or("");
 
                         if !chunk_text.is_empty() {
@@ -530,7 +582,7 @@ impl LlmProvider for MiniMaxProvider {
 
     async fn is_model_available(&self, model: &str) -> bool {
         // Check if model is in the supported list
-        let supported_models = ["m2.1-0107", "abab6.5s-chat", "abab6.5-chat", "abab5.5-chat"];
+        let supported_models = ["abab6.5s-chat", "abab6.5-chat", "abab5.5-chat"];
 
         let mapped_model = self.map_model_name(model);
         supported_models.contains(&mapped_model.as_str())
@@ -553,9 +605,8 @@ pub fn create_minimax_config(
         api_key,
         base_url: None,
         organization: group_id,
-        default_model: model.unwrap_or_else(|| "m2.1-0107".to_string()),
+        default_model: model.unwrap_or_else(|| "abab6.5s-chat".to_string()),
         models: vec![
-            "m2.1-0107".to_string(),
             "abab6.5s-chat".to_string(),
             "abab6.5-chat".to_string(),
             "abab5.5-chat".to_string(),
@@ -571,11 +622,12 @@ mod tests {
 
     #[test]
     fn test_create_minimax_config() {
-        let config = create_minimax_config("test-key".to_string(), Some("test-group".to_string()), None);
+        let config =
+            create_minimax_config("test-key".to_string(), Some("test-group".to_string()), None);
 
         assert_eq!(config.name, "minimax");
         assert_eq!(config.provider_type, ProviderType::MiniMax);
-        assert_eq!(config.default_model, "m2.1-0107");
+        assert_eq!(config.default_model, "abab6.5s-chat");
         assert_eq!(config.organization, Some("test-group".to_string()));
     }
 
@@ -585,8 +637,8 @@ mod tests {
         let token_counter = Arc::new(SimpleTokenCounter::new());
         let provider = MiniMaxProvider::new(config, token_counter);
 
-        assert_eq!(provider.map_model_name("gpt-4"), "m2.1-0107");
-        assert_eq!(provider.map_model_name("m2.1-0107"), "m2.1-0107");
+        assert_eq!(provider.map_model_name("gpt-4"), "abab6.5s-chat");
+        assert_eq!(provider.map_model_name("abab6.5s-chat"), "abab6.5s-chat");
     }
 
     #[test]
@@ -595,19 +647,153 @@ mod tests {
         let token_counter = Arc::new(SimpleTokenCounter::new());
         let provider = MiniMaxProvider::new(config, token_counter);
 
-        assert_eq!(provider.map_role_to_sender("user"), "USER");
+        assert_eq!(provider.map_role_to_sender("user"), "user");
         assert_eq!(provider.map_role_to_sender("system"), "system");
-        assert_eq!(provider.map_role_to_sender("assistant"), "bot");
+        assert_eq!(provider.map_role_to_sender("assistant"), "assistant");
+        assert_eq!(provider.map_role_to_sender("tool"), "user");
     }
 
     #[test]
     fn test_minimax_provider_debug() {
-        let config = create_minimax_config("test-key".to_string(), Some("test-group".to_string()), None);
+        let config =
+            create_minimax_config("test-key".to_string(), Some("test-group".to_string()), None);
         let token_counter = Arc::new(SimpleTokenCounter::new());
         let provider = MiniMaxProvider::new(config, token_counter);
 
         let debug_str = format!("{:?}", provider);
         assert!(debug_str.contains("MiniMaxProvider"));
         assert!(debug_str.contains("minimax"));
+    }
+
+    #[test]
+    fn test_parse_response_with_reply_shape() {
+        let config = create_minimax_config("test-key".to_string(), None, None);
+        let token_counter = Arc::new(SimpleTokenCounter::new());
+        let provider = MiniMaxProvider::new(config, token_counter);
+
+        let payload = serde_json::json!({
+            "id": "resp-1",
+            "reply": "你好，这是 MiniMax",
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15
+            }
+        });
+
+        let response = provider.parse_response(payload).expect("should parse");
+        assert_eq!(response.id, "resp-1");
+        assert_eq!(response.choices[0].message.content, "你好，这是 MiniMax");
+        assert_eq!(response.usage.unwrap().total_tokens, 15);
+    }
+
+    #[test]
+    fn test_parse_response_with_message_content_shape() {
+        let config = create_minimax_config("test-key".to_string(), None, None);
+        let token_counter = Arc::new(SimpleTokenCounter::new());
+        let provider = MiniMaxProvider::new(config, token_counter);
+
+        let payload = serde_json::json!({
+            "id": "resp-2",
+            "created": 123,
+            "choices": [
+                {
+                    "message": {
+                        "content": "message-content"
+                    },
+                    "finish_reason": "stop"
+                }
+            ]
+        });
+
+        let response = provider.parse_response(payload).expect("should parse");
+        assert_eq!(response.id, "resp-2");
+        assert_eq!(response.created, 123);
+        assert_eq!(response.choices[0].message.content, "message-content");
+    }
+
+    #[test]
+    fn test_parse_response_with_content_parts_array() {
+        let config = create_minimax_config("test-key".to_string(), None, None);
+        let token_counter = Arc::new(SimpleTokenCounter::new());
+        let provider = MiniMaxProvider::new(config, token_counter);
+
+        let payload = serde_json::json!({
+            "id": "resp-3",
+            "choices": [
+                {
+                    "message": {
+                        "content": [
+                            { "type": "text", "text": "part-text-content" }
+                        ]
+                    }
+                }
+            ]
+        });
+
+        let response = provider.parse_response(payload).expect("should parse");
+        assert_eq!(response.choices[0].message.content, "part-text-content");
+    }
+
+    #[test]
+    fn test_parse_response_with_base_resp_error() {
+        let config = create_minimax_config("test-key".to_string(), None, None);
+        let token_counter = Arc::new(SimpleTokenCounter::new());
+        let provider = MiniMaxProvider::new(config, token_counter);
+
+        let payload = serde_json::json!({
+            "base_resp": {
+                "status_code": 1004,
+                "status_msg": "invalid group id"
+            },
+            "choices": [],
+            "usage": {}
+        });
+
+        let err = provider.parse_response(payload).expect_err("should fail");
+        let err_text = err.to_string();
+        assert!(err_text.contains("MiniMax base_resp error 1004"));
+        assert!(err_text.contains("invalid group id"));
+    }
+
+    #[test]
+    fn test_build_request_body_normalizes_system_role() {
+        let config = create_minimax_config("test-key".to_string(), None, None);
+        let token_counter = Arc::new(SimpleTokenCounter::new());
+        let provider = MiniMaxProvider::new(config, token_counter);
+
+        let request = CompletionRequest {
+            model: "abab6.5s-chat".to_string(),
+            messages: vec![
+                Message {
+                    role: MessageRole::System,
+                    content: "you are helpful".to_string(),
+                    name: None,
+                    tool_calls: None,
+                },
+                Message {
+                    role: MessageRole::User,
+                    content: "hello".to_string(),
+                    name: None,
+                    tool_calls: None,
+                },
+            ],
+            temperature: Some(0.3),
+            max_tokens: Some(256),
+            top_p: Some(0.9),
+            frequency_penalty: None,
+            presence_penalty: None,
+            stop: None,
+            stream: false,
+            tools: None,
+        };
+
+        let body = provider.build_request_body(&request);
+        let messages = body["messages"].as_array().unwrap();
+        assert!(!messages.is_empty());
+        assert_eq!(messages[0]["role"].as_str(), Some("system"));
+        let text = messages[0]["content"].as_str().unwrap_or("");
+        assert!(text.contains("you are helpful"));
+        assert_eq!(messages[1]["role"].as_str(), Some("user"));
     }
 }

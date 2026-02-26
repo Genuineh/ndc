@@ -3,58 +3,26 @@
 //! Provides read-only impact analysis before execution.
 //! Generates ImpactReport, Volatility Heatmap, and Hard Constraints.
 
-pub mod heatmap;
 pub mod hard_constraints;
+pub mod heatmap;
 pub mod impact_report;
 
 pub use heatmap::{
-    VolatilityHeatmap,
-    HeatmapConfig,
-    ModuleId,
-    GitChange,
-    ChangeType,
-    ModuleVolatility,
-    HeatmapError,
-    volatility_to_risk_level,
+    volatility_to_risk_level, ChangeType, GitChange, HeatmapConfig, HeatmapError, ModuleId,
+    ModuleVolatility, VolatilityHeatmap,
 };
 
 pub use hard_constraints::{
-    HardConstraints,
-    HardConstraintsId,
-    RegressionTest,
-    TestType,
-    ApiSymbol,
-    ApiKind,
-    HighVolatilityModule,
-    CouplingWarning,
-    CouplingType,
-    ComponentRef,
-    ComponentKind,
-    VersionedConstraint,
-    VersionDimension,
-    VersionOperator,
-    FileValidation,
-    FileValidationType,
-    FailedConstraint,
-    Severity,
-    HardConstraintsSummary,
+    ApiKind, ApiSymbol, ComponentKind, ComponentRef, CouplingType, CouplingWarning,
+    FailedConstraint, FileValidation, FileValidationType, HardConstraints, HardConstraintsId,
+    HardConstraintsSummary, HighVolatilityModule, RegressionTest, Severity, TestType,
+    VersionDimension, VersionOperator, VersionedConstraint,
 };
 
 pub use impact_report::{
-    ImpactReport,
-    ImpactReportId,
-    ImpactScope,
-    ApiChange,
-    ApiChangeType,
-    GitOperation,
-    GitOpType,
-    ShellCommand,
-    ExternalDependency,
-    DepChangeType,
-    Complexity,
-    DiscoveryFinding,
-    FindingCategory,
-    ImpactSummary,
+    ApiChange, ApiChangeType, Complexity, DepChangeType, DiscoveryFinding, ExternalDependency,
+    FindingCategory, GitOpType, GitOperation, ImpactReport, ImpactReportId, ImpactScope,
+    ImpactSummary, ShellCommand,
 };
 
 /// Discovery Service - Main entry point for Discovery Phase
@@ -139,7 +107,8 @@ impl DiscoveryService {
             let avg_volatility = affected_files
                 .iter()
                 .map(|f| if heatmap.is_high_risk(f) { 1.0 } else { 0.0 })
-                .sum::<f64>() / affected_files.len().max(1) as f64;
+                .sum::<f64>()
+                / affected_files.len().max(1) as f64;
 
             report.volatility_score = avg_volatility;
             report.risk_level = heatmap::volatility_to_risk_level(avg_volatility);
@@ -151,7 +120,10 @@ impl DiscoveryService {
 
         // Generate hard constraints if high risk
         let hard_constraints = if self.should_generate_constraints(&report) {
-            Some(self.generate_hard_constraints(&report, heatmap.as_ref()).await?)
+            Some(
+                self.generate_hard_constraints(&report, heatmap.as_ref())
+                    .await?,
+            )
         } else {
             None
         };
@@ -187,8 +159,7 @@ impl DiscoveryService {
             return false;
         }
 
-        report.volatility_score >= self.config.risk_threshold
-            || report.is_high_risk()
+        report.volatility_score >= self.config.risk_threshold || report.is_high_risk()
     }
 
     /// Generate hard constraints
@@ -215,12 +186,13 @@ impl DiscoveryService {
 
         // Add coupling warnings for high-risk files
         for file in &report.files_to_modify {
-            if let Some(heatmap) = heatmap {
-                if heatmap.is_high_risk(file) {
+            if let Some(heatmap) = heatmap
+                && heatmap.is_high_risk(file) {
                     constraints.add_coupling_warning(CouplingWarning {
                         id: format!("coupling-{}", uuid::Uuid::new_v4()),
                         source: ComponentRef {
-                            name: file.file_name()
+                            name: file
+                                .file_name()
                                 .and_then(|n| n.to_str())
                                 .map(|s| s.to_string())
                                 .unwrap_or_default(),
@@ -238,7 +210,6 @@ impl DiscoveryService {
                         mitigation: "Ensure thorough testing before commit".to_string(),
                     });
                 }
-            }
         }
 
         Ok(constraints)
@@ -314,17 +285,16 @@ mod tests {
         assert!(output.status.success());
 
         // Create service
-        let service = DiscoveryService::new(
-            repo_path.clone(),
-            Some(DiscoveryConfig::default()),
-        );
+        let service = DiscoveryService::new(repo_path.clone(), Some(DiscoveryConfig::default()));
 
         // Run discovery
-        let result = service.discover(
-            "test-task".to_string(),
-            "Test discovery".to_string(),
-            vec![PathBuf::from("test.rs")],
-        ).await;
+        let result = service
+            .discover(
+                "test-task".to_string(),
+                "Test discovery".to_string(),
+                vec![PathBuf::from("test.rs")],
+            )
+            .await;
 
         match result {
             Ok(discovery_result) => {

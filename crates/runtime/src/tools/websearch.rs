@@ -5,7 +5,7 @@
 //! - Parse search results
 //! - Return formatted results
 
-use super::{Tool, ToolResult, ToolError};
+use super::{Tool, ToolError, ToolResult};
 use std::time::Duration;
 use tracing::debug;
 
@@ -18,6 +18,12 @@ pub struct WebSearchTool {
     max_results: usize,
     /// Search provider
     provider: String,
+}
+
+impl Default for WebSearchTool {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl WebSearchTool {
@@ -36,26 +42,30 @@ impl WebSearchTool {
             .build()
             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
 
-// DuckDuckGo Instant Answer API (free, no API key required)
+        // DuckDuckGo Instant Answer API (free, no API key required)
         let url = format!(
             "https://api.duckduckgo.com/?q={}&format=json&no_html=1&skip_disambig=1",
             urlencoding::encode(query)
         );
 
-        let response = client.get(&url).send().await
+        let response = client
+            .get(&url)
+            .send()
+            .await
             .map_err(|e| ToolError::ExecutionFailed(format!("Search request failed: {}", e)))?;
 
-        let json: serde_json::Value = response.json().await
+        let json: serde_json::Value = response
+            .json()
+            .await
             .map_err(|e| ToolError::ExecutionFailed(format!("Parse response failed: {}", e)))?;
 
         // Format results
         let mut output = format!("Search results for: \"{}\"\n\n", query);
 
-        if let Some(abstract_summary) = json.get("Abstract").and_then(|v| v.as_str()) {
-            if !abstract_summary.is_empty() {
+        if let Some(abstract_summary) = json.get("Abstract").and_then(|v| v.as_str())
+            && !abstract_summary.is_empty() {
                 output.push_str(&format!("Summary:\n{}\n\n", abstract_summary));
             }
-        }
 
         if let Some(results) = json.get("RelatedTopics").and_then(|v| v.as_array()) {
             let mut count = 0;
@@ -64,12 +74,11 @@ impl WebSearchTool {
                     break;
                 }
 
-                if let Some(text) = item.get("Text").and_then(|v| v.as_str()) {
-                    if let Some(url) = item.get("FirstURL").and_then(|v| v.as_str()) {
+                if let Some(text) = item.get("Text").and_then(|v| v.as_str())
+                    && let Some(url) = item.get("FirstURL").and_then(|v| v.as_str()) {
                         output.push_str(&format!("{}. {}\n   {}\n\n", count + 1, text, url));
                         count += 1;
                     }
-                }
             }
 
             if count == 0 {
@@ -94,11 +103,13 @@ impl Tool for WebSearchTool {
     }
 
     async fn execute(&self, params: &serde_json::Value) -> Result<ToolResult, ToolError> {
-        let query = params.get("query")
+        let query = params
+            .get("query")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArgument("Missing query".to_string()))?;
 
-        let max_results = params.get("max_results")
+        let max_results = params
+            .get("max_results")
             .and_then(|v| v.as_u64())
             .unwrap_or(self.max_results as u64) as usize;
 

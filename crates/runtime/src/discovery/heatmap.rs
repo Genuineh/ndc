@@ -3,7 +3,7 @@
 //! Calculates module change frequency via git history
 //! to identify high-risk areas that need extra presence.
 
-use chrono::{DateTime, Utc, Duration};
+use chrono::{DateTime, Duration, Utc};
 use ndc_core::RiskLevel;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -39,13 +39,15 @@ impl ModuleId {
     pub fn from_path(path: &Path) -> Self {
         // Use parent directory as module if available
         let (name, path_buf) = if let Some(parent) = path.parent() {
-            let name = parent.file_name()
+            let name = parent
+                .file_name()
                 .and_then(|n| n.to_str())
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| "unknown".to_string());
             (name, parent.to_path_buf())
         } else {
-            let name = path.file_name()
+            let name = path
+                .file_name()
                 .and_then(|n| n.to_str())
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| "unknown".to_string());
@@ -104,8 +106,8 @@ impl Default for HeatmapConfig {
 #[derive(Debug, Clone)]
 pub struct ModuleVolatility {
     pub module: ModuleId,
-    pub score: f64,              // 0-1 normalized
-    pub raw_count: u32,          // Raw change count
+    pub score: f64,     // 0-1 normalized
+    pub raw_count: u32, // Raw change count
     pub recent_files: Vec<PathBuf>,
     pub risk_level: RiskLevel,
 }
@@ -175,7 +177,13 @@ impl VolatilityHeatmap {
 
         // Run git log --name-status
         let output = Command::new("git")
-            .args(&["log", "--since", &since_str, "--name-status", "--pretty=format:%H|%an|%ai"])
+            .args([
+                "log",
+                "--since",
+                &since_str,
+                "--name-status",
+                "--pretty=format:%H|%an|%ai",
+            ])
             .current_dir(repo_path)
             .output()
             .await
@@ -208,10 +216,14 @@ impl VolatilityHeatmap {
                     current_time = Some(
                         DateTime::parse_from_str(parts[2], "%Y-%m-%d %H:%M:%S %z")
                             .map_err(|_| HeatmapError::ParseError(line.to_string()))?
-                            .with_timezone(&Utc)
+                            .with_timezone(&Utc),
                     );
                 }
-            } else if line.starts_with('A') || line.starts_with('M') || line.starts_with('D') || line.starts_with('R') {
+            } else if line.starts_with('A')
+                || line.starts_with('M')
+                || line.starts_with('D')
+                || line.starts_with('R')
+            {
                 // File change line
                 let mut parts = line.splitn(2, '\t');
                 let status = parts.next().unwrap_or("");
@@ -246,18 +258,18 @@ impl VolatilityHeatmap {
     fn identify_module(path: &PathBuf) -> ModuleId {
         // Try to identify module structure
         // For Rust projects: parent directory often indicates module
-        if let Some(parent) = path.parent() {
-            if parent.file_name().is_some() {
+        if let Some(parent) = path.parent()
+            && parent.file_name().is_some() {
                 // Use immediate parent as module
                 return ModuleId {
-                    name: parent.file_name()
+                    name: parent
+                        .file_name()
                         .and_then(|n| n.to_str())
                         .map(|s| s.to_string())
                         .unwrap_or_else(|| "root".to_string()),
                     path: parent.to_path_buf(),
                 };
             }
-        }
 
         ModuleId::from_path(path)
     }
@@ -287,7 +299,8 @@ impl VolatilityHeatmap {
         let score = self.module_frequency.get(module).copied().unwrap_or(0.0);
         let raw_count = self.raw_counts.get(module).copied().unwrap_or(0);
 
-        let recent_files: Vec<PathBuf> = self.recent_changes
+        let recent_files: Vec<PathBuf> = self
+            .recent_changes
             .iter()
             .filter(|c| {
                 let m = Self::identify_module(&c.path);
@@ -309,7 +322,7 @@ impl VolatilityHeatmap {
     pub fn get_high_volatility_modules(&self) -> Vec<ModuleVolatility> {
         self.module_frequency
             .iter()
-            .filter(|(_, &score)| score >= 0.3) // Above medium risk
+            .filter(|&(_, &score)| score >= 0.3) // Above medium risk
             .map(|(module, _)| self.get_module_volatility(module))
             .collect()
     }
@@ -327,7 +340,8 @@ impl VolatilityHeatmap {
         let score = self.module_frequency.get(&module).copied().unwrap_or(0.0);
 
         // Count recent changes
-        let recent_count = self.recent_changes
+        let recent_count = self
+            .recent_changes
             .iter()
             .filter(|c| {
                 let m = Self::identify_module(&c.path);
@@ -341,7 +355,8 @@ impl VolatilityHeatmap {
 
     /// Get all modules sorted by volatility
     pub fn get_modules_sorted(&self) -> Vec<ModuleVolatility> {
-        let mut modules: Vec<ModuleVolatility> = self.module_frequency
+        let mut modules: Vec<ModuleVolatility> = self
+            .module_frequency
             .keys()
             .map(|m| self.get_module_volatility(m))
             .collect();
@@ -424,7 +439,9 @@ mod tests {
                 high_volatility_threshold: 5,
                 normalization_factor: 1.0,
             }),
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
 
         // Should have some changes
         assert!(!heatmap.recent_changes.is_empty() || heatmap.raw_counts.is_empty());

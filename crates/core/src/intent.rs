@@ -4,10 +4,10 @@
 //! - Verdict: 决策引擎的裁决结果（含权限等级）
 //! - Effect: 声明的影响范围
 
+use crate::{AgentId, AgentRole, MemoryId, QualityCheckType, TaskId, TaskState, Timestamp};
 use serde::{Deserialize, Serialize};
-use crate::{AgentRole, AgentId, TaskId, TaskState, MemoryId, Timestamp, QualityCheckType};
-use std::path::PathBuf;
 use std::fmt;
+use std::path::PathBuf;
 
 /// Intent ID
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -75,13 +75,19 @@ pub enum Action {
     Git { operation: GitOp },
 
     /// 修改内存
-    ModifyMemory { memory_id: MemoryId, changes: String },
+    ModifyMemory {
+        memory_id: MemoryId,
+        changes: String,
+    },
 
     /// 创建任务
     CreateTask { task_spec: TaskSpec },
 
     /// 更新任务状态
-    UpdateTaskState { task_id: TaskId, new_state: TaskState },
+    UpdateTaskState {
+        task_id: TaskId,
+        new_state: TaskState,
+    },
 
     /// 搜索知识
     SearchKnowledge { query: String },
@@ -99,7 +105,10 @@ pub enum Action {
     RequestHuman { question: String, context: String },
 
     /// 其他动作
-    Other { name: String, params: serde_json::Value },
+    Other {
+        name: String,
+        params: serde_json::Value,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -149,10 +158,17 @@ pub enum Effect {
     FileOperation { path: PathBuf, operation: FileOp },
 
     /// 任务状态转换
-    TaskTransition { task_id: TaskId, from: TaskState, to: TaskState },
+    TaskTransition {
+        task_id: TaskId,
+        from: TaskState,
+        to: TaskState,
+    },
 
     /// 内存操作
-    MemoryOperation { memory_id: MemoryId, operation: MemoryOp },
+    MemoryOperation {
+        memory_id: MemoryId,
+        operation: MemoryOp,
+    },
 
     /// 工具调用
     ToolInvocation { tool: String, args: Vec<String> },

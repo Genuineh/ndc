@@ -74,6 +74,26 @@ pub enum InvariantSource {
     },
 }
 
+/// High-level source kind for querying/reporting
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum InvariantSourceKind {
+    HumanCorrection,
+    AutomatedTest,
+    SystemInference,
+    LineageTransfer,
+}
+
+impl InvariantSource {
+    pub fn kind(&self) -> InvariantSourceKind {
+        match self {
+            InvariantSource::HumanCorrection { .. } => InvariantSourceKind::HumanCorrection,
+            InvariantSource::AutomatedTest { .. } => InvariantSourceKind::AutomatedTest,
+            InvariantSource::SystemInference { .. } => InvariantSourceKind::SystemInference,
+            InvariantSource::LineageTransfer { .. } => InvariantSourceKind::LineageTransfer,
+        }
+    }
+}
+
 /// Scope where invariant applies
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InvariantScope {
@@ -131,6 +151,10 @@ pub struct GoldInvariant {
     /// Source of this invariant
     pub source: InvariantSource,
 
+    /// Optional dedupe key for system facts
+    #[serde(default)]
+    pub fact_key: Option<String>,
+
     /// Where this invariant applies
     pub scope: InvariantScope,
 
@@ -177,6 +201,7 @@ impl GoldInvariant {
                 original_error,
                 fix_description,
             },
+            fact_key: None,
             scope: InvariantScope {
                 scope_type: ScopeType::Global,
                 pattern: ".*".to_string(),
@@ -243,6 +268,9 @@ pub struct InvariantQuery {
     /// Filter by scope type
     pub scope_type: Option<ScopeType>,
 
+    /// Filter by source kind
+    pub source_kind: Option<InvariantSourceKind>,
+
     /// Filter by tags
     pub tags: Vec<String>,
 
@@ -253,8 +281,33 @@ pub struct InvariantQuery {
     pub min_validation_count: u32,
 }
 
+/// Canonical system fact payload used by the shared dedupe/merge engine.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemFactInput {
+    pub dedupe_key: String,
+    pub rule: String,
+    pub description: String,
+    pub scope_pattern: String,
+    pub priority: InvariantPriority,
+    pub tags: Vec<String>,
+    pub evidence: Vec<String>,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SystemFactUpsertStatus {
+    Created,
+    Updated,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemFactUpsertResult {
+    pub id: InvariantId,
+    pub status: SystemFactUpsertStatus,
+}
+
 /// Gold Memory - Persistent storage for invariants
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GoldMemory {
     /// All stored invariants
     invariants: Vec<GoldInvariant>,
@@ -267,6 +320,12 @@ pub struct GoldMemory {
 
     /// Index by tags
     tag_index: HashMap<String, Vec<usize>>,
+}
+
+impl Default for GoldMemory {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl GoldMemory {
@@ -289,8 +348,14 @@ impl GoldMemory {
 
         // Update indexes
         let inv = &self.invariants[idx];
-        self.scope_index.entry(inv.scope.scope_type).or_default().push(idx);
-        self.priority_index.entry(inv.priority).or_default().push(idx);
+        self.scope_index
+            .entry(inv.scope.scope_type)
+            .or_default()
+            .push(idx);
+        self.priority_index
+            .entry(inv.priority)
+            .or_default()
+            .push(idx);
         for tag in &inv.tags {
             self.tag_index.entry(tag.clone()).or_default().push(idx);
         }
@@ -310,33 +375,36 @@ impl GoldMemory {
 
     /// Find applicable invariants for a context
     pub fn find_applicable(&self, context: &InvariantContext) -> Vec<&GoldInvariant> {
-        self.invariants.iter()
+        self.invariants
+            .iter()
             .filter(|inv| inv.is_applicable(context))
             .collect()
     }
 
     /// Query invariants
     pub fn query(&self, query: &InvariantQuery) -> Vec<&GoldInvariant> {
-        self.invariants.iter()
+        self.invariants
+            .iter()
             .filter(|inv| {
                 if query.only_active && !inv.is_active {
                     return false;
                 }
-                if let Some(priority) = query.priority {
-                    if inv.priority != priority {
+                if let Some(priority) = query.priority
+                    && inv.priority != priority {
                         return false;
                     }
-                }
-                if let Some(scope_type) = query.scope_type {
-                    if inv.scope.scope_type != scope_type {
+                if let Some(scope_type) = query.scope_type
+                    && inv.scope.scope_type != scope_type {
                         return false;
                     }
-                }
-                if !query.tags.is_empty() {
-                    if !query.tags.iter().any(|t| inv.tags.contains(t)) {
+                if let Some(source_kind) = query.source_kind
+                    && inv.source.kind() != source_kind {
                         return false;
                     }
-                }
+                if !query.tags.is_empty()
+                    && !query.tags.iter().any(|t| inv.tags.contains(t)) {
+                        return false;
+                    }
                 if inv.validation_count < query.min_validation_count {
                     return false;
                 }
@@ -378,7 +446,7 @@ pub struct GoldMemorySummary {
 }
 
 /// Gold Memory Service - Higher-level operations
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GoldMemoryService {
     /// Storage for invariants
     gold_memory: GoldMemory,
@@ -403,11 +471,7 @@ impl GoldMemoryService {
         let error_clone = original_error.clone();
         let fix_clone = fix_description.clone();
 
-        let rule = format!(
-            "Human correction for: {}. Rule: {}",
-            error_clone,
-            fix_clone
-        );
+        let rule = format!("Human correction for: {}. Rule: {}", error_clone, fix_clone);
 
         let invariant = GoldInvariant::from_human_correction(
             corrector_id,
@@ -418,6 +482,113 @@ impl GoldMemoryService {
         );
 
         self.gold_memory.add_invariant(invariant)
+    }
+
+    /// Create an invariant from structured system facts (e.g. verification/discovery signals)
+    pub fn create_from_system_fact(
+        &mut self,
+        rule: String,
+        description: String,
+        scope_pattern: String,
+        priority: InvariantPriority,
+        tags: Vec<String>,
+        evidence: Vec<String>,
+    ) -> InvariantId {
+        self.upsert_system_fact(SystemFactInput {
+            dedupe_key: format!(
+                "legacy:{}:{}",
+                scope_pattern.to_ascii_lowercase().trim(),
+                rule.to_ascii_lowercase().trim()
+            ),
+            rule,
+            description,
+            scope_pattern,
+            priority,
+            tags,
+            evidence,
+            source: "structured-fact-mapping".to_string(),
+        })
+        .id
+    }
+
+    /// Shared rule engine for discovery/verifier system-fact dedupe + merge.
+    pub fn upsert_system_fact(&mut self, fact: SystemFactInput) -> SystemFactUpsertResult {
+        let canonical_key = fact.dedupe_key.trim().to_ascii_lowercase();
+
+        if let Some(existing) = self
+            .gold_memory
+            .invariants
+            .iter_mut()
+            .find(|inv| inv.fact_key.as_deref() == Some(canonical_key.as_str()))
+        {
+            existing.priority = existing.priority.max(fact.priority);
+            existing.rule = fact.rule;
+            existing.description = fact.description;
+            existing.scope.pattern = fact.scope_pattern;
+            existing.scope.scope_type = ScopeType::TaskPattern;
+
+            for tag in fact.tags {
+                if !existing.tags.contains(&tag) {
+                    existing.tags.push(tag);
+                }
+            }
+
+            if let InvariantSource::SystemInference {
+                analysis_method,
+                evidence,
+            } = &mut existing.source
+            {
+                if !analysis_method
+                    .split('+')
+                    .any(|token| token.eq_ignore_ascii_case(fact.source.as_str()))
+                {
+                    *analysis_method = format!("{}+{}", analysis_method, fact.source);
+                }
+                for item in fact.evidence {
+                    if !evidence.contains(&item) {
+                        evidence.push(item);
+                    }
+                }
+            }
+
+            return SystemFactUpsertResult {
+                id: existing.id.clone(),
+                status: SystemFactUpsertStatus::Updated,
+            };
+        }
+
+        let invariant = GoldInvariant {
+            id: InvariantId::default(),
+            rule: fact.rule,
+            description: fact.description,
+            source: InvariantSource::SystemInference {
+                analysis_method: fact.source,
+                evidence: fact.evidence,
+            },
+            fact_key: Some(canonical_key),
+            scope: InvariantScope {
+                scope_type: ScopeType::TaskPattern,
+                pattern: fact.scope_pattern,
+            },
+            priority: fact.priority,
+            version_constraints: Vec::new(),
+            tags: fact.tags,
+            validation_count: 0,
+            violation_count: 0,
+            last_validated: chrono::Utc::now(),
+            created_at: chrono::Utc::now(),
+            is_active: true,
+        };
+        let id = self.gold_memory.add_invariant(invariant);
+        SystemFactUpsertResult {
+            id,
+            status: SystemFactUpsertStatus::Created,
+        }
+    }
+
+    /// Query invariants as owned values.
+    pub fn query_invariants(&self, query: &InvariantQuery) -> Vec<GoldInvariant> {
+        self.gold_memory.query(query).into_iter().cloned().collect()
     }
 
     /// Get invariants for decomposition validation
@@ -434,7 +605,10 @@ impl GoldMemoryService {
     }
 
     /// Get invariants for working memory
-    pub fn get_invariants_for_working_memory(&self, context: &InvariantContext) -> Vec<&GoldInvariant> {
+    pub fn get_invariants_for_working_memory(
+        &self,
+        context: &InvariantContext,
+    ) -> Vec<&GoldInvariant> {
         self.gold_memory.find_applicable(context)
     }
 
@@ -456,18 +630,24 @@ impl GoldMemoryService {
 
     /// Mark invariant as validated
     pub fn mark_validated(&mut self, id: &InvariantId) -> bool {
-        self.gold_memory.get_mut(id).map(|inv| {
-            inv.mark_validated();
-            true
-        }).unwrap_or(false)
+        self.gold_memory
+            .get_mut(id)
+            .map(|inv| {
+                inv.mark_validated();
+                true
+            })
+            .unwrap_or(false)
     }
 
     /// Get mutable invariant by ID and mark as violated
     pub fn mark_violated(&mut self, id: &InvariantId) -> bool {
-        self.gold_memory.get_mut(id).map(|inv| {
-            inv.mark_violated();
-            true
-        }).unwrap_or(false)
+        self.gold_memory
+            .get_mut(id)
+            .map(|inv| {
+                inv.mark_violated();
+                true
+            })
+            .unwrap_or(false)
     }
 
     /// Get summary
@@ -559,7 +739,11 @@ mod tests {
                 format!("Rule {}", i),
                 format!("Description {}", i),
             );
-            inv.priority = if i < 3 { InvariantPriority::High } else { InvariantPriority::Low };
+            inv.priority = if i < 3 {
+                InvariantPriority::High
+            } else {
+                InvariantPriority::Low
+            };
             gm.add_invariant(inv);
         }
 
@@ -622,7 +806,78 @@ mod tests {
 
         assert_eq!(inv.priority, InvariantPriority::High);
         assert!(inv.is_active);
-        assert!(matches!(inv.source, InvariantSource::HumanCorrection { .. }));
+        assert!(matches!(
+            inv.source,
+            InvariantSource::HumanCorrection { .. }
+        ));
         assert!(inv.tags.contains(&"human-corrected".to_string()));
+    }
+
+    #[test]
+    fn test_upsert_system_fact_dedup_merge() {
+        let mut service = GoldMemoryService::new();
+        let first = service.upsert_system_fact(SystemFactInput {
+            dedupe_key: "task:1:quality_gate_failed".to_string(),
+            rule: "Quality gate must pass".to_string(),
+            description: "first failure".to_string(),
+            scope_pattern: "task-1".to_string(),
+            priority: InvariantPriority::High,
+            tags: vec!["verification".to_string()],
+            evidence: vec!["kind=quality_gate_failed".to_string()],
+            source: "verifier".to_string(),
+        });
+        let second = service.upsert_system_fact(SystemFactInput {
+            dedupe_key: "task:1:quality_gate_failed".to_string(),
+            rule: "Quality gate must pass".to_string(),
+            description: "second failure".to_string(),
+            scope_pattern: "task-1".to_string(),
+            priority: InvariantPriority::Critical,
+            tags: vec!["quality_gate".to_string()],
+            evidence: vec!["attempt=2".to_string()],
+            source: "executor_discovery".to_string(),
+        });
+
+        assert_eq!(first.id, second.id);
+        assert_eq!(second.status, SystemFactUpsertStatus::Updated);
+
+        let rows = service.query_invariants(&InvariantQuery::default());
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].priority, InvariantPriority::Critical);
+        assert!(rows[0].tags.contains(&"verification".to_string()));
+        assert!(rows[0].tags.contains(&"quality_gate".to_string()));
+    }
+
+    #[test]
+    fn test_query_by_source_kind() {
+        let mut service = GoldMemoryService::new();
+        service.create_from_human_correction(
+            "u1".to_string(),
+            "err".to_string(),
+            "fix".to_string(),
+            InvariantContext {
+                task_description: "task".to_string(),
+                files: Vec::new(),
+                modules: Vec::new(),
+                api_calls: Vec::new(),
+                min_priority: None,
+            },
+        );
+        service.upsert_system_fact(SystemFactInput {
+            dedupe_key: "task:1:discovery_failed".to_string(),
+            rule: "Discovery must pass".to_string(),
+            description: "failed".to_string(),
+            scope_pattern: "task-1".to_string(),
+            priority: InvariantPriority::High,
+            tags: vec!["discovery".to_string()],
+            evidence: vec!["kind=discovery_failed".to_string()],
+            source: "executor_discovery".to_string(),
+        });
+
+        let rows = service.query_invariants(&InvariantQuery {
+            source_kind: Some(InvariantSourceKind::SystemInference),
+            ..Default::default()
+        });
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].source.kind(), InvariantSourceKind::SystemInference);
     }
 }

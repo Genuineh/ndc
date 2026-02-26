@@ -77,13 +77,22 @@ pub enum StepAction {
     CreateFile { path: PathBuf },
 
     /// Modified a file
-    ModifyFile { path: PathBuf, backup: Option<String> },
+    ModifyFile {
+        path: PathBuf,
+        backup: Option<String>,
+    },
 
     /// Deleted a file
-    DeleteFile { path: PathBuf, backup: Option<String> },
+    DeleteFile {
+        path: PathBuf,
+        backup: Option<String>,
+    },
 
     /// Ran a shell command
-    RunCommand { command: String, working_dir: Option<PathBuf> },
+    RunCommand {
+        command: String,
+        working_dir: Option<PathBuf>,
+    },
 
     /// Made a git commit
     GitCommit { commit_hash: String, branch: String },
@@ -117,7 +126,10 @@ pub enum UndoAction {
     RemoveDependency { name: String },
 
     /// Custom compensation
-    Custom { handler: String, params: serde_json::Value },
+    Custom {
+        handler: String,
+        params: serde_json::Value,
+    },
 }
 
 /// Compensation action
@@ -183,10 +195,8 @@ impl SagaPlan {
         self.steps.push(step);
 
         if let Some(undo) = undo_action {
-            self.compensations.push(CompensationAction {
-                step_id,
-                undo,
-            });
+            self.compensations
+                .push(CompensationAction { step_id, undo });
         }
     }
 
@@ -215,19 +225,20 @@ impl SagaPlan {
         Fut: std::future::Future<Output = Result<(), String>>,
     {
         // Find the starting index
-        let start_idx = self.steps
+        let start_idx = self
+            .steps
             .iter()
             .position(|s| s.step_id == *from_step)
             .ok_or(RollbackError::StepNotFound(from_step.clone()))?;
 
         // Roll back in reverse order
         for step in self.steps[..=start_idx].iter().rev() {
-            if step.status == StepStatus::Completed {
-                if let Some(ref undo) = step.undo_action {
-                    executor(undo.clone()).await
-                        .map_err(|e| RollbackError::UndoFailed(e))?;
+            if step.status == StepStatus::Completed
+                && let Some(ref undo) = step.undo_action {
+                    executor(undo.clone())
+                        .await
+                        .map_err(RollbackError::UndoFailed)?;
                 }
-            }
         }
 
         Ok(())
@@ -239,7 +250,11 @@ impl SagaPlan {
             id: self.id.to_string(),
             root_task_id: self.root_task_id.clone(),
             total_steps: self.steps.len(),
-            completed_steps: self.steps.iter().filter(|s| s.status == StepStatus::Completed).count(),
+            completed_steps: self
+                .steps
+                .iter()
+                .filter(|s| s.status == StepStatus::Completed)
+                .count(),
             rollback_count: self.compensations.len(),
         }
     }
@@ -265,7 +280,7 @@ impl UndoAction {
     /// Create appropriate undo for file modification
     pub fn from_modify_file(path: &PathBuf, backup: &Option<String>) -> Self {
         match backup {
-            Some(ref b) => UndoAction::RestoreFile {
+            Some(b) => UndoAction::RestoreFile {
                 path: path.clone(),
                 backup: b.clone(),
             },
@@ -318,7 +333,13 @@ mod tests {
         let mut saga = SagaPlan::new("task-123".to_string());
         let step_id = StepId::default();
 
-        saga.add_step(step_id.clone(), StepAction::Other { description: "test".to_string() }, None);
+        saga.add_step(
+            step_id.clone(),
+            StepAction::Other {
+                description: "test".to_string(),
+            },
+            None,
+        );
         saga.mark_completed(&step_id);
 
         assert_eq!(saga.steps[0].status, StepStatus::Completed);
@@ -330,13 +351,21 @@ mod tests {
 
         saga.add_step(
             StepId::default(),
-            StepAction::CreateFile { path: PathBuf::from("a.rs") },
-            Some(UndoAction::DeleteFile { path: PathBuf::from("a.rs") }),
+            StepAction::CreateFile {
+                path: PathBuf::from("a.rs"),
+            },
+            Some(UndoAction::DeleteFile {
+                path: PathBuf::from("a.rs"),
+            }),
         );
         saga.add_step(
             StepId::default(),
-            StepAction::CreateFile { path: PathBuf::from("b.rs") },
-            Some(UndoAction::DeleteFile { path: PathBuf::from("b.rs") }),
+            StepAction::CreateFile {
+                path: PathBuf::from("b.rs"),
+            },
+            Some(UndoAction::DeleteFile {
+                path: PathBuf::from("b.rs"),
+            }),
         );
 
         // Clone the step_id before mark_completed

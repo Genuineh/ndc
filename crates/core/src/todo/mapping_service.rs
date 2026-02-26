@@ -131,10 +131,16 @@ impl Default for MappingConfig {
 
 /// Calculate string similarity (simple Jaccard index)
 fn calculate_similarity(s1: &str, s2: &str) -> f32 {
-    let set1: std::collections::HashSet<String> =
-        s1.to_lowercase().split_whitespace().map(|s| s.to_string()).collect();
-    let set2: std::collections::HashSet<String> =
-        s2.to_lowercase().split_whitespace().map(|s| s.to_string()).collect();
+    let set1: std::collections::HashSet<String> = s1
+        .to_lowercase()
+        .split_whitespace()
+        .map(|s| s.to_string())
+        .collect();
+    let set2: std::collections::HashSet<String> = s2
+        .to_lowercase()
+        .split_whitespace()
+        .map(|s| s.to_string())
+        .collect();
 
     if set1.is_empty() || set2.is_empty() {
         return 0.0;
@@ -142,8 +148,7 @@ fn calculate_similarity(s1: &str, s2: &str) -> f32 {
 
     let intersection: std::collections::HashSet<String> =
         set1.intersection(&set2).cloned().collect();
-    let union: std::collections::HashSet<String> =
-        set1.union(&set2).cloned().collect();
+    let union: std::collections::HashSet<String> = set1.union(&set2).cloned().collect();
 
     intersection.len() as f32 / union.len() as f32
 }
@@ -187,11 +192,20 @@ impl TodoMappingService {
     /// Extract action from request
     fn extract_action(request: &str) -> String {
         let action_patterns = [
-            ("add", vec!["add", "create", "implement", "introduce", "new"]),
+            (
+                "add",
+                vec!["add", "create", "implement", "introduce", "new"],
+            ),
             ("fix", vec!["fix", "repair", "resolve", "correct", "bug"]),
-            ("update", vec!["update", "modify", "change", "improve", "enhance"]),
+            (
+                "update",
+                vec!["update", "modify", "change", "improve", "enhance"],
+            ),
             ("remove", vec!["remove", "delete", "eliminate", "drop"]),
-            ("refactor", vec!["refactor", "restructure", "rewrite", "reorganize"]),
+            (
+                "refactor",
+                vec!["refactor", "restructure", "rewrite", "reorganize"],
+            ),
             ("test", vec!["test", "verify", "validate", "check"]),
             ("document", vec!["document", "docs", "comment", "explain"]),
             ("review", vec!["review", "examine", "analyze", "audit"]),
@@ -213,12 +227,18 @@ impl TodoMappingService {
         let target_patterns = [
             ("feature", vec!["feature", "functionality", "capability"]),
             ("bug", vec!["bug", "error", "issue", "problem", "crash"]),
-            ("test", vec!["test", "testing", "unit test", "integration test"]),
+            (
+                "test",
+                vec!["test", "testing", "unit test", "integration test"],
+            ),
             ("api", vec!["api", "endpoint", "interface"]),
             ("database", vec!["database", "db", "storage", "query"]),
             ("ui", vec!["ui", "interface", "button", "screen", "page"]),
             ("documentation", vec!["docs", "documentation", "readme"]),
-            ("performance", vec!["performance", "speed", "optimize", "fast"]),
+            (
+                "performance",
+                vec!["performance", "speed", "optimize", "fast"],
+            ),
             ("security", vec!["security", "auth", "permission", "secure"]),
             ("config", vec!["config", "configuration", "setting"]),
         ];
@@ -244,14 +264,13 @@ impl TodoMappingService {
 
         for (i, word) in words.iter().enumerate() {
             // Skip action words and indicators
-            if ["add", "fix", "update", "remove", "implement"].contains(word) {
-                if i + 1 < words.len() {
+            if ["add", "fix", "update", "remove", "implement"].contains(word)
+                && i + 1 < words.len() {
                     let next_word = words[i + 1];
                     if !subject_indicators.contains(&next_word) && next_word.len() > 2 {
                         return Some(next_word.to_string());
                     }
                 }
-            }
         }
 
         None
@@ -260,10 +279,22 @@ impl TodoMappingService {
     /// Extract priority from request
     fn extract_priority(request: &str) -> IntentPriority {
         let priority_patterns = [
-            (IntentPriority::Critical, vec!["critical", "urgent", "asap", "immediately", "emergency"]),
-            (IntentPriority::High, vec!["important", "high priority", "soon"]),
-            (IntentPriority::Medium, vec!["moderate", "normal", "when possible"]),
-            (IntentPriority::Low, vec!["low priority", "eventually", "nice to have"]),
+            (
+                IntentPriority::Critical,
+                vec!["critical", "urgent", "asap", "immediately", "emergency"],
+            ),
+            (
+                IntentPriority::High,
+                vec!["important", "high priority", "soon"],
+            ),
+            (
+                IntentPriority::Medium,
+                vec!["moderate", "normal", "when possible"],
+            ),
+            (
+                IntentPriority::Low,
+                vec!["low priority", "eventually", "nice to have"],
+            ),
         ];
 
         for (priority, patterns) in priority_patterns.iter() {
@@ -331,9 +362,14 @@ impl TodoMappingService {
     /// Create a TODO from an intent
     fn create_todo_from_intent(&self, intent: &UserIntent) -> TodoItem {
         let now = chrono::Utc::now();
-        let id = format!("todo-{}", uuid::Uuid::new_v4().to_string()[..8].to_string());
+        let id = format!("todo-{}", &uuid::Uuid::new_v4().to_string()[..8]);
 
-        let title = format!("{} {} {}", intent.action, intent.target, intent.subject.clone().unwrap_or_default());
+        let title = format!(
+            "{} {} {}",
+            intent.action,
+            intent.target,
+            intent.subject.clone().unwrap_or_default()
+        );
 
         let tags = vec![
             format!("action:{}", intent.action),
@@ -381,7 +417,10 @@ impl TodoMappingService {
 
         // Suggest checking related TODOs
         if !matched_todos.is_empty() {
-            suggestions.push(format!("There are {} related TODO(s) to consider", matched_todos.len()));
+            suggestions.push(format!(
+                "There are {} related TODO(s) to consider",
+                matched_todos.len()
+            ));
         }
 
         suggestions
@@ -399,12 +438,14 @@ impl TodoMappingService {
                     // Check tag overlap
                     let tag_overlap = t.tags.iter().any(|tag| todo.tags.contains(tag));
                     // Check related files
-                    let file_overlap = t.related_files.iter().any(|f| todo.related_files.contains(f));
+                    let file_overlap = t
+                        .related_files
+                        .iter()
+                        .any(|f| todo.related_files.contains(f));
 
                     tag_overlap || file_overlap
                 })
-                .cloned()
-                .take(self.config.max_related)
+                .take(self.config.max_related).cloned()
                 .collect()
         } else {
             vec![]
@@ -507,7 +548,8 @@ mod tests {
 
     #[test]
     fn test_parse_intent_with_priority() {
-        let intent = TodoMappingService::parse_intent("Update the API documentation - high priority");
+        let intent =
+            TodoMappingService::parse_intent("Update the API documentation - high priority");
 
         assert_eq!(intent.action, "update");
         assert_eq!(intent.target, "api");

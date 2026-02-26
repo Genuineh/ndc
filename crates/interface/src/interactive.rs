@@ -5,8 +5,8 @@
 //! - Agent status display
 //! - Progress indicators
 
-use std::io::Write;
 use indicatif::{ProgressBar, ProgressStyle};
+use std::io::Write;
 
 /// Streaming response display
 #[derive(Debug, Default)]
@@ -68,15 +68,22 @@ pub fn display_agent_status(
 
     println!();
     println!("+-----------------------------------------------------------------+");
-    println!("| {} Agent Status                                                   |", status_icon);
+    println!(
+        "| {} Agent Status                                                   |",
+        status_icon
+    );
     println!("+-----------------------------------------------------------------+");
     println!("| Agent:    {:50} |", agent_name);
-    println!("| Provider: {} @ {}                                     |",
+    println!(
+        "| Provider: {} @ {}                                     |",
         format!("{:<14}", provider),
         format!("{:<24}", model)
     );
     println!("| State:    {:50} |", state);
-    println!("| Progress: {}/{}                                            |", tasks_completed, tasks_total);
+    println!(
+        "| Progress: {}/{}                                            |",
+        tasks_completed, tasks_total
+    );
     println!("+-----------------------------------------------------------------+");
     println!();
 }
@@ -107,7 +114,7 @@ impl ProgressIndicator {
             .with_style(
                 ProgressStyle::default_bar()
                     .template("[{elapsed_precise}] {wide_bar} {pos}/{len}")
-                    .expect("valid template")
+                    .expect("valid template"),
             )
             .with_message(message.to_string());
 
@@ -171,7 +178,7 @@ impl MultiProgress {
             .with_style(
                 ProgressStyle::default_bar()
                     .template("[{elapsed_precise}] {}: {wide_bar} {pos}/{len}")
-                    .expect("valid template")
+                    .expect("valid template"),
             )
             .with_message(name.to_string());
         self.bars.push(bar.clone());

@@ -3,14 +3,17 @@
 #[cfg(test)]
 mod tests {
     use crate::cli::{CliError, OutputFormat};
-    use std::path::PathBuf;
     use std::error::Error;
+    use std::path::PathBuf;
 
     /// Test CliError display implementations
     #[test]
     fn test_cli_error_display() {
         let error = CliError::ExecutorInitFailed("test error".to_string());
-        assert_eq!(format!("{}", error), "Executor initialization failed: test error");
+        assert_eq!(
+            format!("{}", error),
+            "Executor initialization failed: test error"
+        );
 
         let error = CliError::StorageError("storage failed".to_string());
         assert_eq!(format!("{}", error), "Storage error: storage failed");

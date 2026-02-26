@@ -2,11 +2,11 @@
 //!
 //! 使用 tonic 框架提供 gRPC 服务
 
-use axum::Router;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::routing::get;
+use axum::Router;
 use futures::stream::Stream;
 use serde::Deserialize;
 use std::convert::Infallible;
@@ -23,7 +23,7 @@ use ndc_runtime::{ExecutionContext, Executor};
 
 use crate::agent_mode::{AgentModeConfig, AgentModeManager};
 use crate::daemon::NdcDaemon;
-use crate::redaction::{RedactionMode, sanitize_text};
+use crate::redaction::{sanitize_text, RedactionMode};
 
 // Re-export generated types from the proto
 pub use super::generated;
@@ -483,21 +483,18 @@ impl generated::agent_service_server::AgentService for AgentGrpcService {
 
         tokio::spawn(async move {
             while let Ok(Some(chat_request)) = stream.message().await {
-                match chat_request.request_type {
-                    Some(generated::chat_request::RequestType::Message(msg)) => {
-                        let response = generated::ChatResponse {
-                            response_type: Some(
-                                generated::chat_response::ResponseType::ContentChunk(
-                                    generated::ContentChunk {
-                                        content: format!("Agent: {}", msg.content),
-                                        is_complete: true,
-                                    },
-                                ),
+                if let Some(generated::chat_request::RequestType::Message(msg)) = chat_request.request_type {
+                    let response = generated::ChatResponse {
+                        response_type: Some(
+                            generated::chat_response::ResponseType::ContentChunk(
+                                generated::ContentChunk {
+                                    content: format!("Agent: {}", msg.content),
+                                    is_complete: true,
+                                },
                             ),
-                        };
-                        let _ = tx.send(Ok(response)).await;
-                    }
-                    _ => {}
+                        ),
+                    };
+                    let _ = tx.send(Ok(response)).await;
                 }
             }
         });
@@ -515,34 +512,31 @@ impl generated::agent_service_server::AgentService for AgentGrpcService {
 
         tokio::spawn(async move {
             while let Ok(Some(tool_request)) = stream.message().await {
-                match tool_request.request_type {
-                    Some(generated::tool_request::RequestType::Execute(exec)) => {
-                        // 简单的工具执行响应
-                        let response = generated::ToolResponse {
-                            response_type: Some(generated::tool_response::ResponseType::Output(
-                                generated::ToolOutput {
-                                    stream_id: "1".to_string(),
-                                    chunk: format!("Executed: {}", exec.tool_name),
-                                    is_stdout: true,
-                                },
-                            )),
-                        };
-                        let _ = tx.send(Ok(response)).await;
+                if let Some(generated::tool_request::RequestType::Execute(exec)) = tool_request.request_type {
+                    // 简单的工具执行响应
+                    let response = generated::ToolResponse {
+                        response_type: Some(generated::tool_response::ResponseType::Output(
+                            generated::ToolOutput {
+                                stream_id: "1".to_string(),
+                                chunk: format!("Executed: {}", exec.tool_name),
+                                is_stdout: true,
+                            },
+                        )),
+                    };
+                    let _ = tx.send(Ok(response)).await;
 
-                        // 发送完成信号
-                        let complete = generated::ToolResponse {
-                            response_type: Some(generated::tool_response::ResponseType::Complete(
-                                generated::ToolComplete {
-                                    success: true,
-                                    output: "Tool executed successfully".to_string(),
-                                    exit_code: 0,
-                                    duration_ms: 100,
-                                },
-                            )),
-                        };
-                        let _ = tx.send(Ok(complete)).await;
-                    }
-                    _ => {}
+                    // 发送完成信号
+                    let complete = generated::ToolResponse {
+                        response_type: Some(generated::tool_response::ResponseType::Complete(
+                            generated::ToolComplete {
+                                success: true,
+                                output: "Tool executed successfully".to_string(),
+                                exit_code: 0,
+                                duration_ms: 100,
+                            },
+                        )),
+                    };
+                    let _ = tx.send(Ok(complete)).await;
                 }
             }
         });
@@ -1233,15 +1227,15 @@ mod tests {
             .collect::<Vec<_>>();
         for (key, value) in updates {
             match value {
-                Some(v) => std::env::set_var(key, v),
-                None => std::env::remove_var(key),
+                Some(v) => unsafe { std::env::set_var(key, v) },
+                None => unsafe { std::env::remove_var(key) },
             }
         }
         let result = f();
         for (key, old) in previous {
             match old {
-                Some(v) => std::env::set_var(&key, v),
-                None => std::env::remove_var(&key),
+                Some(v) => unsafe { std::env::set_var(&key, v) },
+                None => unsafe { std::env::remove_var(&key) },
             }
         }
         result
@@ -1694,11 +1688,9 @@ mod tests {
                 .await
                 .unwrap();
         assert!(ok_head.starts_with("HTTP/1.1 200"));
-        assert!(
-            ok_head
-                .to_ascii_lowercase()
-                .contains("content-type: text/event-stream")
-        );
+        assert!(ok_head
+            .to_ascii_lowercase()
+            .contains("content-type: text/event-stream"));
 
         let inactive_same_project_head = read_http_response_head(
             sse_addr,
@@ -1912,14 +1904,16 @@ mod tests {
 
         let archive_path = temp.path().join("session_archive.json");
         let index_path = temp.path().join("project_index.json");
-        std::env::set_var(
-            "NDC_SESSION_ARCHIVE_FILE",
-            archive_path.to_string_lossy().to_string(),
-        );
-        std::env::set_var(
-            "NDC_PROJECT_INDEX_FILE",
-            index_path.to_string_lossy().to_string(),
-        );
+        unsafe {
+            std::env::set_var(
+                "NDC_SESSION_ARCHIVE_FILE",
+                archive_path.to_string_lossy().to_string(),
+            );
+            std::env::set_var(
+                "NDC_PROJECT_INDEX_FILE",
+                index_path.to_string_lossy().to_string(),
+            );
+        }
 
         let session_id = "persisted-permission-session";
         let session = build_persisted_permission_session(project_root.as_path(), session_id);
@@ -1955,33 +1949,27 @@ mod tests {
             .into_inner();
 
         assert_eq!(response.events.len(), 3);
-        assert!(
-            response
-                .events
-                .iter()
-                .all(|event| event.kind == "PermissionAsked")
-        );
-        assert!(
-            response
-                .events
-                .iter()
-                .any(|event| event.message.contains("permission_asked:"))
-        );
-        assert!(
-            response
-                .events
-                .iter()
-                .any(|event| event.message.contains("permission_approved:"))
-        );
-        assert!(
-            response
-                .events
-                .iter()
-                .any(|event| event.message.contains("permission_rejected:"))
-        );
+        assert!(response
+            .events
+            .iter()
+            .all(|event| event.kind == "PermissionAsked"));
+        assert!(response
+            .events
+            .iter()
+            .any(|event| event.message.contains("permission_asked:")));
+        assert!(response
+            .events
+            .iter()
+            .any(|event| event.message.contains("permission_approved:")));
+        assert!(response
+            .events
+            .iter()
+            .any(|event| event.message.contains("permission_rejected:")));
 
-        std::env::remove_var("NDC_PROJECT_INDEX_FILE");
-        std::env::remove_var("NDC_SESSION_ARCHIVE_FILE");
+        unsafe {
+            std::env::remove_var("NDC_PROJECT_INDEX_FILE");
+            std::env::remove_var("NDC_SESSION_ARCHIVE_FILE");
+        }
     }
 
     #[tokio::test]
@@ -1998,14 +1986,16 @@ mod tests {
 
         let archive_path = temp.path().join("session_archive.json");
         let index_path = temp.path().join("project_index.json");
-        std::env::set_var(
-            "NDC_SESSION_ARCHIVE_FILE",
-            archive_path.to_string_lossy().to_string(),
-        );
-        std::env::set_var(
-            "NDC_PROJECT_INDEX_FILE",
-            index_path.to_string_lossy().to_string(),
-        );
+        unsafe {
+            std::env::set_var(
+                "NDC_SESSION_ARCHIVE_FILE",
+                archive_path.to_string_lossy().to_string(),
+            );
+            std::env::set_var(
+                "NDC_PROJECT_INDEX_FILE",
+                index_path.to_string_lossy().to_string(),
+            );
+        }
 
         let session_id = "persisted-permission-session";
         let session = build_persisted_permission_session(project_root.as_path(), session_id);
@@ -2048,7 +2038,9 @@ mod tests {
         assert!(body.contains("permission_rejected:"));
 
         server.abort();
-        std::env::remove_var("NDC_PROJECT_INDEX_FILE");
-        std::env::remove_var("NDC_SESSION_ARCHIVE_FILE");
+        unsafe {
+            std::env::remove_var("NDC_PROJECT_INDEX_FILE");
+            std::env::remove_var("NDC_SESSION_ARCHIVE_FILE");
+        }
     }
 }

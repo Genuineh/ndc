@@ -6,13 +6,14 @@
 //! - 管理提示词模板
 //! - 集成 Knowledge Injectors (WorkingMemory, Invariants, Lineage)
 
-use serde_json::Value as JsonValue;
-use super::injectors::working_memory::WorkingMemoryInjector;
 use super::injectors::invariant::InvariantInjector;
 use super::injectors::lineage::LineageInjector;
+use super::injectors::working_memory::WorkingMemoryInjector;
+use serde_json::Value as JsonValue;
 
 /// 增强的提示词上下文 - 包含知识注入
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct EnhancedPromptContext {
     /// 可用工具列表 (JSON Schema)
     pub available_tools: Vec<JsonValue>,
@@ -36,19 +37,6 @@ pub struct EnhancedPromptContext {
     pub context_patterns: Vec<String>,
 }
 
-impl Default for EnhancedPromptContext {
-    fn default() -> Self {
-        Self {
-            available_tools: Vec::new(),
-            active_task_id: None,
-            working_dir: None,
-            working_memory: None,
-            invariants: None,
-            lineage: None,
-            context_patterns: Vec::new(),
-        }
-    }
-}
 
 /// 提示词上下文
 #[derive(Debug, Clone)]
@@ -67,12 +55,6 @@ pub struct PromptContext {
 pub struct PromptBuilder {
     /// 基础模板
     base_template: String,
-
-    /// 工具描述模板
-    tools_template: String,
-
-    /// 反馈模板
-    feedback_template: String,
 }
 
 impl PromptBuilder {
@@ -80,8 +62,6 @@ impl PromptBuilder {
     pub fn new() -> Self {
         Self {
             base_template: include_str!("prompts/base_system.txt").to_string(),
-            tools_template: include_str!("prompts/tools_description.txt").to_string(),
-            feedback_template: include_str!("prompts/feedback.txt").to_string(),
         }
     }
 
@@ -95,6 +75,17 @@ impl PromptBuilder {
             prompt = prompt.replace("{{TOOLS}}", &tools_desc);
         } else {
             prompt = prompt.replace("{{TOOLS}}", "No tools available.");
+        }
+
+        if let Some(working_dir) = context.working_dir.as_ref() {
+            prompt.push_str("\n\n## Project Context\n");
+            prompt.push_str(&format!(
+                "Current working directory: {}\n",
+                working_dir.display()
+            ));
+            prompt.push_str(
+                "Treat this directory as the primary project scope for file/system operations.\n",
+            );
         }
 
         prompt
@@ -112,13 +103,23 @@ impl PromptBuilder {
             prompt = prompt.replace("{{TOOLS}}", "No tools available.");
         }
 
+        if let Some(working_dir) = context.working_dir.as_ref() {
+            prompt.push_str("\n\n## Project Context\n");
+            prompt.push_str(&format!(
+                "Current working directory: {}\n",
+                working_dir.display()
+            ));
+            prompt.push_str(
+                "Treat this directory as the primary project scope for file/system operations.\n",
+            );
+        }
+
         // 2. 注入 Working Memory
-        if let Some(ref wm) = context.working_memory {
-            if wm.has_context() {
+        if let Some(ref wm) = context.working_memory
+            && wm.has_context() {
                 let wm_injection = wm.inject();
                 prompt = format!("{}\n\n{}", wm_injection, prompt);
             }
-        }
 
         // 3. 注入 Invariants (Gold Memory)
         if let Some(ref inv) = context.invariants {
@@ -127,12 +128,11 @@ impl PromptBuilder {
         }
 
         // 4. 注入 Task Lineage
-        if let Some(ref lineage) = context.lineage {
-            if let Some(ref task_id) = context.active_task_id {
+        if let Some(ref lineage) = context.lineage
+            && let Some(ref task_id) = context.active_task_id {
                 let lineage_injection = lineage.inject(&task_id.to_string());
                 prompt = format!("{}\n\n{}", lineage_injection, prompt);
             }
-        }
 
         prompt
     }
@@ -142,11 +142,10 @@ impl PromptBuilder {
         let mut parts: Vec<String> = Vec::new();
 
         // Working Memory
-        if let Some(ref wm) = context.working_memory {
-            if wm.has_context() {
+        if let Some(ref wm) = context.working_memory
+            && wm.has_context() {
                 parts.push(wm.inject());
             }
-        }
 
         // Invariants
         if let Some(ref inv) = context.invariants {
@@ -154,11 +153,10 @@ impl PromptBuilder {
         }
 
         // Lineage
-        if let Some(ref lineage) = context.lineage {
-            if let Some(ref task_id) = context.active_task_id {
+        if let Some(ref lineage) = context.lineage
+            && let Some(ref task_id) = context.active_task_id {
                 parts.push(lineage.inject(&task_id.to_string()));
             }
-        }
 
         parts.join("\n\n")
     }
@@ -169,11 +167,13 @@ impl PromptBuilder {
 
         for tool in tools {
             if let Some(function) = tool.get("function") {
-                let name = function.get("name")
+                let name = function
+                    .get("name")
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown");
 
-                let description = function.get("description")
+                let description = function
+                    .get("description")
                     .and_then(|v| v.as_str())
                     .unwrap_or("No description");
 
@@ -279,6 +279,18 @@ mod tests {
     }
 
     #[test]
+    fn test_build_system_prompt_includes_working_dir_context() {
+        let context = PromptContext {
+            available_tools: vec![],
+            active_task_id: None,
+            working_dir: Some(std::path::PathBuf::from("/tmp/demo")),
+        };
+        let prompt = build_system_prompt(&context);
+        assert!(prompt.contains("Project Context"));
+        assert!(prompt.contains("/tmp/demo"));
+    }
+
+    #[test]
     fn test_build_continuation_prompt() {
         let feedback = build_continuation_prompt("Test failed");
         assert!(feedback.contains("Test failed"));
@@ -294,7 +306,9 @@ mod tests {
 
     #[test]
     fn test_build_enhanced_prompt_with_injectors() {
-        use crate::ai_agent::injectors::invariant::{InvariantEntry, InvariantInjector, InvariantPriority};
+        use crate::ai_agent::injectors::invariant::{
+            InvariantEntry, InvariantInjector, InvariantPriority,
+        };
 
         let tool = serde_json::json!({
             "type": "function",

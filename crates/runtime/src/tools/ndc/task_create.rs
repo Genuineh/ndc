@@ -2,28 +2,38 @@
 //!
 //! Allows AI to create new tasks with title and description.
 
+use ndc_storage::{create_memory_storage, SharedStorage};
 use async_trait::async_trait;
-use ndc_core::{Task, AgentRole, TaskPriority};
-use serde_json::json;
+use ndc_core::{AgentRole, Task, TaskPriority};
 
-use super::super::{Tool, ToolResult, ToolError, ToolMetadata};
 use super::super::schema::ToolSchemaBuilder;
+use super::super::{Tool, ToolError, ToolMetadata, ToolResult};
 
 /// Task Create Tool - 创建新任务
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct TaskCreateTool {
-    // TODO: Add storage reference when integrating
+    storage: SharedStorage,
 }
 
 impl TaskCreateTool {
     pub fn new() -> Self {
-        Self { }
+        Self::with_storage(create_memory_storage())
+    }
+
+    pub fn with_storage(storage: SharedStorage) -> Self {
+        Self { storage }
     }
 }
 
 impl Default for TaskCreateTool {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl std::fmt::Debug for TaskCreateTool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TaskCreateTool").finish()
     }
 }
 
@@ -41,7 +51,8 @@ impl Tool for TaskCreateTool {
         let start = std::time::Instant::now();
 
         // 提取参数
-        let title = params.get("title")
+        let title = params
+            .get("title")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArgument("Missing 'title' parameter".to_string()))?;
 
@@ -55,11 +66,13 @@ impl Tool for TaskCreateTool {
             });
         }
 
-        let description = params.get("description")
+        let description = params
+            .get("description")
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        let priority_str = params.get("priority")
+        let priority_str = params
+            .get("priority")
             .and_then(|v| v.as_str())
             .unwrap_or("normal");
 
@@ -73,7 +86,8 @@ impl Tool for TaskCreateTool {
         };
 
         // 获取创建者角色 (默认为 Implementer)
-        let created_by = params.get("created_by")
+        let created_by = params
+            .get("created_by")
             .and_then(|v| v.as_str())
             .and_then(|r| match r.to_lowercase().as_str() {
                 "planner" => Some(AgentRole::Planner),
@@ -89,13 +103,16 @@ impl Tool for TaskCreateTool {
         // 创建任务
         let mut task = Task::new(title.to_string(), description.to_string(), created_by);
         task.metadata.priority = priority;
+        task.metadata.updated_at = chrono::Utc::now();
 
-        // TODO: 实际保存到存储
-        // 目前返回模拟的任务 ID
-        let task_id = task.id.to_string();
+        self.storage
+            .save_task(&task)
+            .await
+            .map_err(ToolError::ExecutionFailed)?;
 
         // 构建任务摘要
-        let mut output = format!("✅ Task created successfully!\n\n");
+        let task_id = task.id.to_string();
+        let mut output = "✅ Task created successfully!\n\n".to_string();
         output.push_str(&format!("Task ID: {}\n", task_id));
         output.push_str(&format!("Title: {}\n", task.title));
         if !description.is_empty() {
@@ -141,6 +158,7 @@ impl Tool for TaskCreateTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[tokio::test]
     async fn test_task_create_basic() {
@@ -157,7 +175,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_task_create_with_description() {
-        let tool = TaskCreateTool::new();
+        let storage = create_memory_storage();
+        let tool = TaskCreateTool::with_storage(storage);
         let params = json!({
             "title": "Implement feature",
             "description": "Add new authentication endpoint"
@@ -171,7 +190,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_task_create_with_priority() {
-        let tool = TaskCreateTool::new();
+        let storage = create_memory_storage();
+        let tool = TaskCreateTool::with_storage(storage);
         let params = json!({
             "title": "Urgent bug fix",
             "priority": "high"
@@ -184,7 +204,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_task_create_title_too_long() {
-        let tool = TaskCreateTool::new();
+        let storage = create_memory_storage();
+        let tool = TaskCreateTool::with_storage(storage);
         let long_title = "a".repeat(201);
         let params = json!({
             "title": long_title
@@ -197,7 +218,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_task_create_missing_title() {
-        let tool = TaskCreateTool::new();
+        let storage = create_memory_storage();
+        let tool = TaskCreateTool::with_storage(storage);
         let params = json!({
             "description": "Test"
         });
@@ -226,5 +248,30 @@ mod tests {
         // title should be required
         let required = schema.get("required").unwrap().as_array().unwrap();
         assert!(required.contains(&serde_json::json!("title")));
+    }
+
+    #[tokio::test]
+    async fn test_task_create_persists_to_storage() {
+        let storage = create_memory_storage();
+        let tool = TaskCreateTool::with_storage(storage.clone());
+        let params = json!({
+            "title": "Persist me",
+            "description": "Ensure task is saved"
+        });
+
+        let result = tool.execute(&params).await.unwrap();
+        assert!(result.success);
+
+        let id_line = result
+            .output
+            .lines()
+            .find(|line| line.starts_with("Task ID: "))
+            .expect("task id line missing");
+        let id_str = id_line.trim_start_matches("Task ID: ").trim();
+        let task_id: ndc_core::TaskId = id_str.parse().unwrap();
+
+        let stored = storage.get_task(&task_id).await.unwrap();
+        assert!(stored.is_some());
+        assert_eq!(stored.unwrap().title, "Persist me");
     }
 }

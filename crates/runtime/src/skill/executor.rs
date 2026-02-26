@@ -41,7 +41,11 @@ pub trait LlmProvider: Send + Sync {
 #[async_trait::async_trait]
 pub trait ToolRegistryProvider: Send + Sync {
     async fn list_tools(&self) -> Vec<String>;
-    async fn execute_tool(&self, name: &str, args: &serde_json::Value) -> Result<serde_json::Value, String>;
+    async fn execute_tool(
+        &self,
+        name: &str,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, String>;
 }
 
 /// A single execution step
@@ -131,7 +135,8 @@ impl SkillExecutor {
         // Execute skill content
         let output = {
             let context = self.context.as_ref().unwrap();
-            self.execute_skill_content(&skill, context, &mut steps).await?
+            self.execute_skill_content(&skill, context, &mut steps)
+                .await?
         };
 
         let execution_time_ms = start_time.elapsed().as_millis() as u64;
@@ -166,9 +171,7 @@ impl SkillExecutor {
 
     /// Check if skill is LLM-powered
     fn is_llm_skill(&self, content: &str) -> bool {
-        content.contains("{{llm.")
-            || content.contains("{{thought}}")
-            || content.contains("@")
+        content.contains("{{llm.") || content.contains("{{thought}}") || content.contains("@")
     }
 
     /// Execute LLM-powered skill
@@ -178,7 +181,9 @@ impl SkillExecutor {
         context: &mut SkillExecutionContext,
         steps: &mut Vec<SkillExecutionStep>,
     ) -> Result<String, String> {
-        let provider = context.llm_provider.as_ref()
+        let provider = context
+            .llm_provider
+            .as_ref()
             .ok_or_else(|| "LLM provider required for AI skill".to_string())?;
 
         // Substitute variables
@@ -193,7 +198,9 @@ impl SkillExecutor {
         });
 
         // Call LLM
-        let result = provider.complete(&processed).await
+        let result = provider
+            .complete(&processed)
+            .await
             .map_err(|e| format!("LLM call failed: {}", e))?;
 
         // Add observation step
@@ -249,21 +256,30 @@ impl SkillExecutor {
         let mut result = content.to_string();
 
         // Variable substitution: {{variable}}
-        if let Some(re) = Regex::new(r"\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}").ok().as_ref() {
-            result = re.replace_all(&result, |caps: &regex::Captures| {
-                let var_name = caps.get(1).map(|m| m.as_str()).unwrap_or("");
-                context.variables.get(var_name)
-                    .map(|s| s.as_str())
-                    .unwrap_or("")
-            }).to_string();
+        if let Some(re) = Regex::new(r"\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}")
+            .ok()
+            .as_ref()
+        {
+            result = re
+                .replace_all(&result, |caps: &regex::Captures| {
+                    let var_name = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+                    context
+                        .variables
+                        .get(var_name)
+                        .map(|s| s.as_str())
+                        .unwrap_or("")
+                })
+                .to_string();
         }
 
         // Environment variables: {{env.VAR}}
         if let Some(re) = Regex::new(r"\{\{env\.([A-Z_][A-Z0-9_]*)\}\}").ok().as_ref() {
-            result = re.replace_all(&result, |caps: &regex::Captures| {
-                let var_name = caps.get(1).map(|m| m.as_str()).unwrap_or("");
-                std::env::var(var_name).ok().unwrap_or_default()
-            }).to_string();
+            result = re
+                .replace_all(&result, |caps: &regex::Captures| {
+                    let var_name = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+                    std::env::var(var_name).ok().unwrap_or_default()
+                })
+                .to_string();
         }
 
         // Built-in variables
@@ -300,13 +316,16 @@ impl SkillExecutor {
         let mut params = HashMap::new();
 
         // Simple key=value parsing
-        if let Some(re) = Regex::new(r"--([a-zA-Z_][a-zA-Z0-9_]*)\s+(\S+)").ok().as_ref() {
-            if let Some(cap) = re.captures(invocation) {
-                if let (Some(key_match), Some(value_match)) = (cap.get(1), cap.get(2)) {
-                    params.insert(key_match.as_str().to_string(), value_match.as_str().to_string());
+        if let Some(re) = Regex::new(r"--([a-zA-Z_][a-zA-Z0-9_]*)\s+(\S+)")
+            .ok()
+            .as_ref()
+            && let Some(cap) = re.captures(invocation)
+                && let (Some(key_match), Some(value_match)) = (cap.get(1), cap.get(2)) {
+                    params.insert(
+                        key_match.as_str().to_string(),
+                        value_match.as_str().to_string(),
+                    );
                 }
-            }
-        }
 
         // Check required parameters
         for param in &skill.parameters {
@@ -354,8 +373,8 @@ impl Default for SkillExecutionContext {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::SkillParameter;
+    use super::*;
 
     fn create_test_skill(name: &str, content: &str) -> Skill {
         Skill {
@@ -393,7 +412,10 @@ mod tests {
         let executor = SkillExecutor::new(registry).with_context(context);
 
         assert!(executor.context.is_some());
-        assert_eq!(executor.context.as_ref().unwrap().working_dir, std::path::PathBuf::from("/tmp"));
+        assert_eq!(
+            executor.context.as_ref().unwrap().working_dir,
+            std::path::PathBuf::from("/tmp")
+        );
     }
 
     #[tokio::test]
@@ -410,7 +432,10 @@ mod tests {
     #[tokio::test]
     async fn test_skill_execution() {
         let registry = Arc::new(RwLock::new(SkillRegistry::new()));
-        registry.write().await.add_discovery_path(std::path::PathBuf::from("."));
+        registry
+            .write()
+            .await
+            .add_discovery_path(std::path::PathBuf::from("."));
 
         let skill = create_test_skill(
             "test-skill",
@@ -424,7 +449,11 @@ This is a test skill content.
 "#,
         );
 
-        registry.write().await.skills.insert(skill.name.clone(), skill);
+        registry
+            .write()
+            .await
+            .skills
+            .insert(skill.name.clone(), skill);
 
         let mut executor = SkillExecutor::new(Arc::clone(&registry));
         let result = executor.execute("test-skill", HashMap::new()).await;
@@ -442,8 +471,12 @@ This is a test skill content.
 
         let content = "Hello {{name}}, you are from {{city}}!";
         let mut context = SkillExecutionContext::default();
-        context.variables.insert("name".to_string(), "Alice".to_string());
-        context.variables.insert("city".to_string(), "Beijing".to_string());
+        context
+            .variables
+            .insert("name".to_string(), "Alice".to_string());
+        context
+            .variables
+            .insert("city".to_string(), "Beijing".to_string());
 
         let result = executor.substitute_variables(content, &context);
 
@@ -503,14 +536,12 @@ This is a test skill content.
             description: "test".to_string(),
             category: None,
             tags: vec![],
-            parameters: vec![
-                SkillParameter {
-                    name: "path".to_string(),
-                    r#type: "string".to_string(),
-                    description: "Path to file".to_string(),
-                    required: true,
-                },
-            ],
+            parameters: vec![SkillParameter {
+                name: "path".to_string(),
+                r#type: "string".to_string(),
+                description: "Path to file".to_string(),
+                required: true,
+            }],
             examples: vec![],
             content: "test".to_string(),
         };
@@ -524,7 +555,10 @@ This is a test skill content.
     #[tokio::test]
     async fn test_llm_skill_requires_provider() {
         let registry = Arc::new(RwLock::new(SkillRegistry::new()));
-        registry.write().await.add_discovery_path(std::path::PathBuf::from("."));
+        registry
+            .write()
+            .await
+            .add_discovery_path(std::path::PathBuf::from("."));
 
         let skill = create_test_skill(
             "llm-skill",
@@ -534,7 +568,11 @@ This is a test skill content.
 "#,
         );
 
-        registry.write().await.skills.insert(skill.name.clone(), skill);
+        registry
+            .write()
+            .await
+            .skills
+            .insert(skill.name.clone(), skill);
 
         let mut executor = SkillExecutor::new(Arc::clone(&registry));
         let result = executor.execute("llm-skill", HashMap::new()).await;
@@ -545,7 +583,10 @@ This is a test skill content.
     #[tokio::test]
     async fn test_execution_steps() {
         let registry = Arc::new(RwLock::new(SkillRegistry::new()));
-        registry.write().await.add_discovery_path(std::path::PathBuf::from("."));
+        registry
+            .write()
+            .await
+            .add_discovery_path(std::path::PathBuf::from("."));
 
         let skill = create_test_skill(
             "step-skill",
@@ -555,7 +596,11 @@ Just content.
 "#,
         );
 
-        registry.write().await.skills.insert(skill.name.clone(), skill);
+        registry
+            .write()
+            .await
+            .skills
+            .insert(skill.name.clone(), skill);
 
         let mut executor = SkillExecutor::new(Arc::clone(&registry));
         let result = executor.execute("step-skill", HashMap::new()).await;
@@ -563,13 +608,16 @@ Just content.
         assert!(result.is_ok());
         let result = result.unwrap();
         assert!(result.success);
-        assert!(result.execution_time_ms >= 0);
+        assert!(result.execution_time_ms < 60_000);
     }
 
     #[tokio::test]
     async fn test_execute_with_example() {
         let registry = Arc::new(RwLock::new(SkillRegistry::new()));
-        registry.write().await.add_discovery_path(std::path::PathBuf::from("."));
+        registry
+            .write()
+            .await
+            .add_discovery_path(std::path::PathBuf::from("."));
 
         let skill = create_test_skill(
             "example-skill",
@@ -579,13 +627,16 @@ Path: {{path}}
 "#,
         );
 
-        registry.write().await.skills.insert(skill.name.clone(), skill);
+        registry
+            .write()
+            .await
+            .skills
+            .insert(skill.name.clone(), skill);
 
         let executor = SkillExecutor::new(Arc::clone(&registry));
-        let result = executor.execute_with_example(
-            "example-skill",
-            r#"@example-skill --path /test/path"#,
-        ).await;
+        let result = executor
+            .execute_with_example("example-skill", r#"@example-skill --path /test/path"#)
+            .await;
 
         assert!(result.is_ok());
         let result = result.unwrap();
