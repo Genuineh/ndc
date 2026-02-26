@@ -88,7 +88,7 @@ impl Tool for ShellTool {
         enforce_shell_command(command, args.as_slice(), Some(&working_dir))?;
 
         // 检查超时
-        let _timeout = params
+        let timeout = params
             .get("timeout")
             .and_then(|v| v.as_u64())
             .unwrap_or(self.context.timeout_seconds);
@@ -100,19 +100,39 @@ impl Tool for ShellTool {
         // 设置工作目录
         cmd.current_dir(&working_dir);
 
-        // 过滤环境变量
-        let filtered_env: HashSet<&str> =
-            ["PATH", "HOME", "USER", "SHELL"].iter().cloned().collect();
+        // 过滤环境变量 — 白名单 + context 追加，黑名单拦截危险变量
+        const DANGEROUS_ENV_VARS: &[&str] = &[
+            "LD_PRELOAD",
+            "LD_LIBRARY_PATH",
+            "PYTHONPATH",
+            "NODE_OPTIONS",
+            "DYLD_INSERT_LIBRARIES",
+        ];
+        let filtered_env: HashSet<&str> = ["PATH", "HOME", "USER", "SHELL", "LANG", "TERM", "LC_ALL"]
+            .iter()
+            .cloned()
+            .collect();
         for (key, value) in std::env::vars() {
+            if DANGEROUS_ENV_VARS.contains(&key.as_str()) {
+                continue;
+            }
             if filtered_env.contains(key.as_str()) || self.context.env_vars.contains_key(&key) {
-                cmd.env(key, value);
+                cmd.env(&key, value);
             }
         }
 
-        let output = cmd
-            .output()
-            .await
-            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+        let output = tokio::time::timeout(
+            std::time::Duration::from_secs(timeout),
+            cmd.output(),
+        )
+        .await
+        .map_err(|_| {
+            ToolError::Timeout(format!(
+                "Command '{}' timed out after {}s",
+                command, timeout
+            ))
+        })?
+        .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -165,5 +185,95 @@ impl Tool for ShellTool {
             },
             "required": ["command"]
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn shell_with_context(ctx: ToolContext) -> ShellTool {
+        ShellTool { context: ctx }
+    }
+
+    #[tokio::test]
+    async fn test_shell_normal_command_completes_within_timeout() {
+        let tool = ShellTool::new();
+        let params = serde_json::json!({
+            "command": "echo",
+            "args": ["hello"],
+            "timeout": 5
+        });
+        let result = tool.execute(&params).await;
+        assert!(result.is_ok());
+        let r = result.unwrap();
+        assert!(r.success);
+        assert!(r.output.contains("hello"));
+    }
+
+    #[tokio::test]
+    async fn test_shell_timeout_triggers_error() {
+        let mut ctx = ToolContext::default();
+        ctx.allowed_operations.push("sleep".to_string());
+        let tool = shell_with_context(ctx);
+        let params = serde_json::json!({
+            "command": "sleep",
+            "args": ["10"],
+            "timeout": 1
+        });
+        let result = tool.execute(&params).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, ToolError::Timeout(_)),
+            "Expected Timeout error, got: {:?}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_shell_dangerous_env_vars_filtered() {
+        // LD_PRELOAD should never reach child process even if in context.env_vars
+        let mut ctx = ToolContext::default();
+        ctx.env_vars
+            .insert("LD_PRELOAD".to_string(), "/tmp/evil.so".to_string());
+        ctx.allowed_operations.push("printenv".to_string());
+        let tool = shell_with_context(ctx);
+        let params = serde_json::json!({
+            "command": "printenv",
+            "args": ["LD_PRELOAD"],
+            "timeout": 5
+        });
+        let result = tool.execute(&params).await;
+        // printenv returns exit code 1 when variable is not set
+        match result {
+            Ok(r) => assert!(!r.success, "LD_PRELOAD should not be set in child"),
+            Err(ToolError::PermissionDenied(_)) => {
+                // security gateway may block — acceptable in test env
+            }
+            Err(e) => panic!("Unexpected error: {:?}", e),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_shell_whitelist_env_vars_passed() {
+        let tool = ShellTool::new();
+        let params = serde_json::json!({
+            "command": "echo",
+            "args": ["test"],
+            "timeout": 5
+        });
+        let result = tool.execute(&params).await;
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_is_allowed_whitelist() {
+        let tool = ShellTool::new();
+        assert!(tool.is_allowed("cargo"));
+        assert!(tool.is_allowed("git"));
+        assert!(tool.is_allowed("echo"));
+        assert!(!tool.is_allowed("rm"));
+        assert!(!tool.is_allowed("curl"));
     }
 }

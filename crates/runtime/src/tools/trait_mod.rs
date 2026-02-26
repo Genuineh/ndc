@@ -52,6 +52,9 @@ pub enum ToolError {
 
     #[error("参数错误: {0}")]
     InvalidArgument(String),
+
+    #[error("执行超时: {0}")]
+    Timeout(String),
 }
 
 /// 工具参数（JSON 序列化）
