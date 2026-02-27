@@ -153,14 +153,14 @@ impl DocUpdater {
     /// Record a fact
     pub fn record_fact(&self, fact: Fact) {
         let statement = fact.statement.clone();
-        let mut facts = self.facts.write().unwrap();
+        let mut facts = self.facts.write().expect("facts RwLock poisoned");
         facts.push(fact);
         debug!("Recorded fact: {}", statement);
     }
 
     /// Get facts by category
     pub fn get_facts_by_category(&self, category: FactCategory) -> Vec<Fact> {
-        let facts = self.facts.read().unwrap();
+        let facts = self.facts.read().expect("facts RwLock poisoned");
         facts
             .iter()
             .filter(|f| f.category == category)
@@ -188,7 +188,7 @@ impl DocUpdater {
             created_at: chrono::Utc::now(),
         };
 
-        let mut narratives = self.narratives.write().unwrap();
+        let mut narratives = self.narratives.write().expect("narratives RwLock poisoned");
         narratives.push(narrative.clone());
 
         debug!("Generated narrative: {}", narrative.title);
@@ -348,7 +348,7 @@ impl DocUpdater {
             if let Some(end_line) = after_fn.find('\n') {
                 let fn_signature = &after_fn[..end_line];
                 if fn_signature.contains('{') {
-                    let brace_pos = fn_signature.find('{').unwrap();
+                    let brace_pos = fn_signature.find('{').expect("brace confirmed by contains");
                     let insertion_point = pos + brace_pos + 1;
                     let mut new_content = content[..insertion_point].to_string();
                     new_content.push_str("\n    ");
@@ -451,13 +451,13 @@ impl DocUpdater {
 
     /// List all narratives
     pub fn list_narratives(&self) -> Vec<Narrative> {
-        let narratives = self.narratives.read().unwrap();
+        let narratives = self.narratives.read().expect("narratives RwLock poisoned");
         narratives.clone()
     }
 
     /// List all facts
     pub fn list_facts(&self) -> Vec<Fact> {
-        let facts = self.facts.read().unwrap();
+        let facts = self.facts.read().expect("facts RwLock poisoned");
         facts.clone()
     }
 }

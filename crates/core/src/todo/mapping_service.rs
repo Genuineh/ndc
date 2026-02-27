@@ -310,7 +310,7 @@ impl TodoMappingService {
 
     /// Map an intent to existing TODOs
     pub async fn map_intent(&self, intent: &UserIntent) -> MappingResult {
-        let todos = self.todos.read().unwrap();
+        let todos = self.todos.read().expect("todo RwLock poisoned");
         let todos_vec: Vec<TodoItem> = todos.values().cloned().collect();
 
         // Find matching TODOs
@@ -428,7 +428,7 @@ impl TodoMappingService {
 
     /// Find related TODOs for a TODO
     pub async fn find_related_todos(&self, todo_id: &str) -> Vec<TodoItem> {
-        let todos = self.todos.read().unwrap();
+        let todos = self.todos.read().expect("todo RwLock poisoned");
 
         if let Some(todo) = todos.get(todo_id) {
             todos
@@ -467,7 +467,7 @@ impl TodoMappingService {
 
         // Store all TODOs
         {
-            let mut todos = self.todos.write().unwrap();
+            let mut todos = self.todos.write().expect("todo RwLock poisoned");
             for t in &chain {
                 todos.insert(t.id.clone(), t.clone());
             }
@@ -478,25 +478,25 @@ impl TodoMappingService {
 
     /// Add a TODO to the service
     pub fn add_todo(&self, todo: TodoItem) {
-        let mut todos = self.todos.write().unwrap();
+        let mut todos = self.todos.write().expect("todo RwLock poisoned");
         todos.insert(todo.id.clone(), todo);
     }
 
     /// Get a TODO by ID
     pub fn get_todo(&self, id: &str) -> Option<TodoItem> {
-        let todos = self.todos.read().unwrap();
+        let todos = self.todos.read().expect("todo RwLock poisoned");
         todos.get(id).cloned()
     }
 
     /// List all TODOs
     pub fn list_todos(&self) -> Vec<TodoItem> {
-        let todos = self.todos.read().unwrap();
+        let todos = self.todos.read().expect("todo RwLock poisoned");
         todos.values().cloned().collect()
     }
 
     /// Update a TODO
     pub fn update_todo(&self, id: &str, updates: TodoUpdate) -> Option<TodoItem> {
-        let mut todos = self.todos.write().unwrap();
+        let mut todos = self.todos.write().expect("todo RwLock poisoned");
 
         if let Some(todo) = todos.get_mut(id) {
             if let Some(status) = updates.status {

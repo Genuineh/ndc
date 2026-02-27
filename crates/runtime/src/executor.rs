@@ -270,7 +270,7 @@ impl Executor {
             .steps
             .iter()
             .position(|s| s.step_id == step.step_id)
-            .unwrap();
+            .expect("step must exist in task");
         task.steps[step_idx].status = StepStatus::Completed;
         task.steps[step_idx].result = Some(result_val);
 

@@ -134,7 +134,7 @@ impl SkillExecutor {
 
         // Execute skill content
         let output = {
-            let context = self.context.as_ref().unwrap();
+            let context = self.context.as_ref().expect("context set above");
             self.execute_skill_content(&skill, context, &mut steps)
                 .await?
         };
