@@ -90,27 +90,11 @@
 
 ### 🟠 P0-SEC-Short（一周内修复）
 
-#### SEC-C4 Session 三锁竞态
+#### ✅ SEC-C4 Session 三锁竞态 — `ae0e1fd`
 
-- **位置**: `crates/core/src/ai_agent/orchestrator.rs` L203-226, L524-530, L609-620
-- **现状**:
-  - `AgentOrchestrator` 持有 3 个独立 `Arc<Mutex<HashMap>>>`：`sessions`(L214), `project_sessions`(L217), `project_last_root_session`(L220)
-  - `save_session()`(L524)：先锁 `sessions` 写入，释放后调 `index_session()`
-  - `index_session()`(L609)：依次锁 `project_sessions`(L610) 和 `project_last_root_session`(L618)
-  - **竞态窗口**：线程 A 释放 `sessions` 锁后、获取 `project_sessions` 锁前，线程 B 可修改 `sessions`，导致索引指向已过期/不存在的 session
-- **修复步骤**:
-  1. Red: 并发测试 — 两个线程同时 `save_session` 不同 project → 索引一致性断言
-  2. Green: 合并三个 HashMap 为单一 `SessionStore` 结构，用单一 `Arc<Mutex<SessionStore>>` 保护
-     ```rust
-     struct SessionStore {
-         sessions: HashMap<String, AgentSession>,
-         project_sessions: HashMap<String, Vec<String>>,
-         project_last_root: HashMap<String, String>,
-     }
-     ```
-  3. 重构 `save_session` / `index_session` 在同一锁内完成所有操作
-- **影响范围**: `AgentOrchestrator` 所有 session 相关方法（~10 个方法）
-- **现有测试**: ⚠️ 有 session 测试但无并发场景
+- **位置**: `crates/core/src/ai_agent/orchestrator.rs`
+- **修复**: 合并 3 个独立 `Arc<Mutex<HashMap>>>` (sessions, project_sessions, project_last_root_session) 为单一 `Arc<Mutex<SessionStore>>` 结构体；`SessionStore::index_session()` 在同一锁作用域内调用；所有 ~10 个 session 方法更新为使用统一 store 锁
+- **测试**: +1 并发测试（4 项目 × 10 会话并发写入一致性断言）
 
 #### ✅ SEC-C5 MemoryStorage 容量限制 — `bf99bc9`
 
@@ -124,23 +108,11 @@
 - **修复**: 新增 sanitize_tool_output()：超过 100K 字符截断 + [truncated] 标记；工具输出用 <tool_output>...</tool_output> XML 标签包裹；messages 和 session_state 均使用 sanitized 内容
 - **测试**: +3 新测试（短内容/超限截断/临界值）
 
-#### SEC-H2 gRPC 无限并发流
+#### ✅ SEC-H2 gRPC 无限并发流 — `fbcd209`
 
-- **位置**: `crates/interface/src/grpc.rs` L1091-1118
-- **现状**:
-  - `tonic::transport::Server::builder()` 直接 `.serve()`，未加任何 tower 中间件(L1111-1118)
-  - 流式端点 `subscribe_session_timeline`(L324-367) 每连接 `tokio::spawn` 新任务 + `mpsc::channel(100)`，无并发上限
-  - 攻击者可创建无限流连接耗尽内存和文件描述符
-- **修复步骤**:
-  1. Red: 测试超过 `MAX_CONCURRENT_STREAMS` 连接 → 拒绝新连接
-  2. Green:
-     - 引入 `tower::ServiceBuilder` 中间件栈
-     - 添加 `tower::limit::ConcurrencyLimitLayer::new(64)` 限制并发
-     - 添加 `tower::timeout::TimeoutLayer` 限制流存活时间
-     - tonic server 设置 `.http2_max_pending_accept_reset_streams(Some(64))`
-  3. 考虑按 IP 限流（需 tonic 扩展或 tower 中间件）
-- **影响范围**: gRPC server 启动代码，所有流式端点间接受益
-- **现有测试**: ❌ 无并发/压力测试
+- **位置**: `crates/interface/src/grpc.rs`, `crates/interface/Cargo.toml`
+- **修复**: 添加 tower ConcurrencyLimitLayer(64) 限制并发请求；tonic .timeout(300s) 请求级超时；.http2_max_pending_accept_reset_streams(Some(64))；tower 作为可选依赖加入 grpc feature gate
+- **常量**: MAX_CONCURRENT_GRPC_REQUESTS=64, GRPC_REQUEST_TIMEOUT_SECS=300
 
 #### ✅ SEC-H4 文件写入非原子 — `48333c3`
 
@@ -182,17 +154,11 @@
 - **修复**: YamlLlmConfig::validate()（temperature 0.0..=2.0, max_tokens 1..=1M, timeout 1..=3600）；YamlReplConfig::validate()（max_history 1..=100K, session_timeout 1..=86400）；AgentConfig::validate()（max_tool_calls 1..=200, max_retries 0..=10, timeout_secs 1..=3600）；NdcConfigLoader::load() 加载后自动调用 validate_config()；新增 AgentError::ConfigError 变体
 - **测试**: +13 新测试（LLM/REPL/AgentConfig 各项边界）
 
-#### SEC-M2 Storage 用 std::sync::Mutex
+#### ✅ SEC-M2 Storage 用 std::sync::Mutex — `e7eaae6`
 
-- **位置**: `crates/storage/src/memory.rs` L7, L15-16
-- **现状**: `use std::sync::Mutex`，在 `#[async_trait] impl Storage` 中使用
-- **风险**: 虽未跨 `.await` 持锁，但 std Mutex 阻塞 tokio worker thread，高争用时降低吞吐
-- **修复步骤**:
-  1. Red: 现有测试仍通过（纯重构不改行为）
-  2. Green: `std::sync::Mutex` → `tokio::sync::Mutex`，`.lock().map_err(...)` → `.lock().await`
-  3. 移除 `map_err(|e| e.to_string())` 对 PoisonError 的处理（tokio Mutex 不会 poison）
-- **影响范围**: `MemoryStorage` 全部方法
-- **现有测试**: ❌ 无（结合 SEC-C5 一起补）
+- **位置**: `crates/storage/src/memory.rs`
+- **修复**: `std::sync::Mutex` → `tokio::sync::Mutex`；`.lock().map_err(...)` → `.lock().await`；移除 PoisonError 处理（tokio Mutex 不 poison）
+- **测试**: 4 个已有测试全绿
 
 #### SEC-M3 SQLite 无连接池
 
@@ -208,36 +174,17 @@
 - **影响范围**: `SqliteStorage` 初始化 + `run_sqlite` 辅助函数
 - **现有测试**: ⚠️ 8 个基础 CRUD 测试
 
-#### SEC-M5 消息历史无限增长
+#### ✅ SEC-M5 消息历史无限增长 — `ae47d55`
 
-- **位置**: `crates/core/src/ai_agent/orchestrator.rs` L639-1100（`run_main_loop`）
-- **现状**:
-  - `messages: Vec<Message>` 在循环中仅增不减：每轮 +1 assistant + N tool_results + 可能 verification
-  - `max_tool_calls: 50` 默认值下，单 session 可积累 200-500 条消息，每条可数 KB
-  - 无滑动窗口、无摘要压缩、无 token 计数上限检查
-- **修复步骤**:
-  1. Red: 测试消息超过阈值后 → 旧消息被压缩/移除（保留 system prompt + 最近 N 轮）
-  2. Green: 在 LLM 调用前添加 `truncate_messages(&mut messages, max_context_tokens)`:
-     - 保留 system prompt（首条）
-     - 保留最近 `N` 轮对话（默认 20 轮）
-     - 中间区域替换为 `[earlier conversation summarized]` 占位
-  3. 可选进阶：调用 LLM 做摘要压缩（需评估成本）
-- **影响范围**: `run_main_loop` 中 LLM 调用前的消息列表
-- **现有测试**: ❌ 无消息管理测试
+- **位置**: `crates/core/src/ai_agent/orchestrator.rs`
+- **修复**: 新增 `truncate_messages()` 函数在每次 LLM 调用前裁剪消息历史；保留系统提示(首条) + 最近 MAX_CONVERSATION_MESSAGES(40) 条非系统消息；超出部分替换为占位符
+- **测试**: +4 新测试（未达上限/超限/无系统提示/恰好临界）
 
-#### SEC-M7 生产代码 `.unwrap()` 清理
+#### ✅ SEC-M7 生产代码 `.unwrap()` 清理 — `9fd5fa6`
 
-- **位置**: 全项目 659 处，重点清理：
-  - `orchestrator.rs` L1038/1050：verification_result（已在 SEC-H7 覆盖）
-  - `todo/mapping_service.rs` L313/431/470：`RwLock.read().unwrap()` / `.write().unwrap()` — 锁中毒后级联 panic
-  - `anthropic.rs` L60-65：已在 SEC-C3 覆盖
-  - `shell.rs` L81：`.unwrap_or(self.context.timeout_seconds)` — 安全（有默认值）
-- **修复步骤**:
-  1. 按 crate 分批次清理，优先级：core > runtime > interface > storage
-  2. `RwLock.unwrap()` → `.map_err(|_| XxxError::LockPoisoned)?` 或 `expect("reason")`
-  3. 每批次对应一个原子提交
-- **影响范围**: 逐步覆盖，不一次性改动
-- **现有测试**: 各 crate 现有测试确保重构不破坏行为
+- **位置**: `crates/core/src/todo/mapping_service.rs`, `crates/runtime/src/documentation/mod.rs`, `crates/runtime/src/skill/executor.rs`, `crates/runtime/src/executor.rs`
+- **修复**: mapping_service.rs 7 处 RwLock `.unwrap()` → `.expect("todo RwLock poisoned")`；documentation/mod.rs 6 处 RwLock `.unwrap()` → 描述性 `.expect()`，`find('{').unwrap()` → `expect("brace confirmed by contains")`；skill/executor.rs context `.unwrap()` → `.expect("context set above")`；executor.rs `position().unwrap()` → `.expect("step must exist in task")`
+- **测试**: 全部 471 core+runtime 测试通过
 
 #### ✅ SEC-M8 文件读取大小限制 — `76802a6`
 
