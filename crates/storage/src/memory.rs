@@ -4,55 +4,203 @@
 
 use async_trait::async_trait;
 use ndc_core::{MemoryEntry, MemoryId, Task, TaskId};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use crate::trait_::{SharedStorage, Storage};
 
-/// In-memory storage implementation
-#[derive(Debug, Default)]
+/// Default capacity limits
+const DEFAULT_MAX_TASKS: usize = 10_000;
+const DEFAULT_MAX_MEMORIES: usize = 10_000;
+
+/// In-memory storage implementation with capacity limits (FIFO eviction)
+#[derive(Debug)]
 pub struct MemoryStorage {
-    tasks: Mutex<HashMap<TaskId, Task>>,
-    memories: Mutex<HashMap<MemoryId, MemoryEntry>>,
+    tasks: Mutex<(HashMap<TaskId, Task>, VecDeque<TaskId>)>,
+    memories: Mutex<(HashMap<MemoryId, MemoryEntry>, VecDeque<MemoryId>)>,
+    max_tasks: usize,
+    max_memories: usize,
+}
+
+impl Default for MemoryStorage {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MemoryStorage {
     pub fn new() -> Self {
-        Self::default()
+        Self::with_capacity(DEFAULT_MAX_TASKS, DEFAULT_MAX_MEMORIES)
+    }
+
+    pub fn with_capacity(max_tasks: usize, max_memories: usize) -> Self {
+        Self {
+            tasks: Mutex::new((HashMap::new(), VecDeque::new())),
+            memories: Mutex::new((HashMap::new(), VecDeque::new())),
+            max_tasks,
+            max_memories,
+        }
     }
 }
 
 #[async_trait]
 impl Storage for MemoryStorage {
     async fn save_task(&self, task: &Task) -> Result<(), String> {
-        let mut tasks = self.tasks.lock().map_err(|e| e.to_string())?;
-        tasks.insert(task.id, task.clone());
+        let mut guard = self.tasks.lock().map_err(|e| e.to_string())?;
+        let (map, order) = &mut *guard;
+        if !map.contains_key(&task.id) {
+            // Evict oldest if at capacity
+            while map.len() >= self.max_tasks {
+                if let Some(oldest) = order.pop_front() {
+                    map.remove(&oldest);
+                } else {
+                    break;
+                }
+            }
+            order.push_back(task.id);
+        }
+        map.insert(task.id, task.clone());
         Ok(())
     }
 
     async fn get_task(&self, task_id: &TaskId) -> Result<Option<Task>, String> {
-        let tasks = self.tasks.lock().map_err(|e| e.to_string())?;
-        Ok(tasks.get(task_id).cloned())
+        let guard = self.tasks.lock().map_err(|e| e.to_string())?;
+        Ok(guard.0.get(task_id).cloned())
     }
 
     async fn list_tasks(&self) -> Result<Vec<Task>, String> {
-        let tasks = self.tasks.lock().map_err(|e| e.to_string())?;
-        Ok(tasks.values().cloned().collect())
+        let guard = self.tasks.lock().map_err(|e| e.to_string())?;
+        Ok(guard.0.values().cloned().collect())
     }
 
     async fn save_memory(&self, memory: &MemoryEntry) -> Result<(), String> {
-        let mut memories = self.memories.lock().map_err(|e| e.to_string())?;
-        memories.insert(memory.id, memory.clone());
+        let mut guard = self.memories.lock().map_err(|e| e.to_string())?;
+        let (map, order) = &mut *guard;
+        if !map.contains_key(&memory.id) {
+            // Evict oldest if at capacity
+            while map.len() >= self.max_memories {
+                if let Some(oldest) = order.pop_front() {
+                    map.remove(&oldest);
+                } else {
+                    break;
+                }
+            }
+            order.push_back(memory.id);
+        }
+        map.insert(memory.id, memory.clone());
         Ok(())
     }
 
     async fn get_memory(&self, memory_id: &MemoryId) -> Result<Option<MemoryEntry>, String> {
-        let memories = self.memories.lock().map_err(|e| e.to_string())?;
-        Ok(memories.get(memory_id).cloned())
+        let guard = self.memories.lock().map_err(|e| e.to_string())?;
+        Ok(guard.0.get(memory_id).cloned())
     }
 }
 
 /// Create a new shared in-memory storage
 pub fn create_memory_storage() -> SharedStorage {
     Arc::new(MemoryStorage::new())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ndc_core::{AgentId, AgentRole, AccessControl, MemoryContent, MemoryMetadata, MemoryStability};
+
+    fn make_task() -> Task {
+        Task::new(
+            "test".to_string(),
+            "desc".to_string(),
+            AgentRole::Implementer,
+        )
+    }
+
+    fn make_memory() -> MemoryEntry {
+        let agent_id = AgentId::new();
+        let source_task = TaskId::new();
+        MemoryEntry {
+            id: MemoryId::new(),
+            content: MemoryContent::General {
+                text: "test fact".to_string(),
+                metadata: String::new(),
+            },
+            embedding: vec![],
+            relations: vec![],
+            metadata: MemoryMetadata {
+                stability: MemoryStability::Ephemeral,
+                created_at: chrono::Utc::now(),
+                created_by: agent_id.clone(),
+                source_task,
+                version: 1,
+                modified_at: None,
+                tags: vec![],
+            },
+            access_control: AccessControl::new(agent_id, MemoryStability::Ephemeral),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_save_and_get_task() {
+        let storage = MemoryStorage::new();
+        let task = make_task();
+        storage.save_task(&task).await.unwrap();
+        let got = storage.get_task(&task.id).await.unwrap();
+        assert!(got.is_some());
+        assert_eq!(got.unwrap().id, task.id);
+    }
+
+    #[tokio::test]
+    async fn test_task_capacity_eviction() {
+        let storage = MemoryStorage::with_capacity(3, 100);
+        let mut ids = vec![];
+        for _ in 0..5 {
+            let task = make_task();
+            ids.push(task.id);
+            storage.save_task(&task).await.unwrap();
+        }
+        // Only 3 should remain
+        let all = storage.list_tasks().await.unwrap();
+        assert_eq!(all.len(), 3);
+        // First 2 should be evicted
+        assert!(storage.get_task(&ids[0]).await.unwrap().is_none());
+        assert!(storage.get_task(&ids[1]).await.unwrap().is_none());
+        // Last 3 should remain
+        assert!(storage.get_task(&ids[2]).await.unwrap().is_some());
+        assert!(storage.get_task(&ids[3]).await.unwrap().is_some());
+        assert!(storage.get_task(&ids[4]).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_update_existing_task_no_eviction() {
+        let storage = MemoryStorage::with_capacity(2, 100);
+        let task = make_task();
+        storage.save_task(&task).await.unwrap();
+        // Update same task should not trigger eviction
+        let mut updated = task.clone();
+        updated.title = "updated".to_string();
+        storage.save_task(&updated).await.unwrap();
+        assert_eq!(storage.list_tasks().await.unwrap().len(), 1);
+        let got = storage.get_task(&task.id).await.unwrap().unwrap();
+        assert_eq!(got.title, "updated");
+    }
+
+    #[tokio::test]
+    async fn test_memory_capacity_eviction() {
+        let storage = MemoryStorage::with_capacity(100, 2);
+        let m1 = make_memory();
+        let m2 = make_memory();
+        let m3 = make_memory();
+        let id1 = m1.id;
+        let id2 = m2.id;
+        let id3 = m3.id;
+
+        storage.save_memory(&m1).await.unwrap();
+        storage.save_memory(&m2).await.unwrap();
+        storage.save_memory(&m3).await.unwrap();
+
+        // m1 should be evicted
+        assert!(storage.get_memory(&id1).await.unwrap().is_none());
+        assert!(storage.get_memory(&id2).await.unwrap().is_some());
+        assert!(storage.get_memory(&id3).await.unwrap().is_some());
+    }
 }
