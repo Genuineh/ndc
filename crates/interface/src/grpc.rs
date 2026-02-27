@@ -1120,6 +1120,9 @@ pub async fn run_grpc_server(address: SocketAddr) -> Result<(), Box<dyn std::err
     }
 
     tonic::transport::Server::builder()
+        .layer(tower::limit::ConcurrencyLimitLayer::new(MAX_CONCURRENT_GRPC_REQUESTS))
+        .timeout(std::time::Duration::from_secs(GRPC_REQUEST_TIMEOUT_SECS))
+        .http2_max_pending_accept_reset_streams(Some(64))
         .add_service(generated::ndc_service_server::NdcServiceServer::new(
             ndc_service,
         ))
@@ -1131,6 +1134,12 @@ pub async fn run_grpc_server(address: SocketAddr) -> Result<(), Box<dyn std::err
 
     Ok(())
 }
+
+/// Maximum concurrent gRPC requests
+const MAX_CONCURRENT_GRPC_REQUESTS: usize = 64;
+
+/// gRPC request timeout in seconds
+const GRPC_REQUEST_TIMEOUT_SECS: u64 = 300;
 
 #[cfg(test)]
 mod tests {

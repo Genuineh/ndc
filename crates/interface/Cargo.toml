@@ -55,10 +55,11 @@ tonic = { version = "0.12", optional = true }
 prost = { version = "0.13", optional = true }
 axum = { version = "0.7", optional = true }
 async-stream = { version = "0.3", optional = true }
+tower = { version = "0.5", optional = true, features = ["limit", "timeout"] }
 
 [features]
 default = []
-grpc = ["tonic", "prost", "axum", "async-stream"]
+grpc = ["tonic", "prost", "axum", "async-stream", "tower"]
 
 [dev-dependencies]
 tempfile = "3"
