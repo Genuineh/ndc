@@ -17,6 +17,7 @@ pub mod injectors;
 pub mod orchestrator;
 pub mod prompts;
 pub mod session;
+pub(crate) mod session_store;
 pub mod verifier;
 
 pub use orchestrator::{
