@@ -10,13 +10,101 @@
 //! - Timeout limits
 //! - Environment variable filtering
 
+use super::security::{PERMISSION_SHELL_UNLISTED, ask_message, has_override};
 use super::{Tool, ToolContext, ToolError, ToolResult, enforce_shell_command};
 use std::collections::HashSet;
 use tokio::process::Command;
 use tracing::debug;
 
-/// Allowed commands whitelist
-const ALLOWED_COMMANDS: &[&str] = &["cargo", "git", "ls", "cat", "echo", "pwd", "cd"];
+/// Allowed commands whitelist — common development tools
+const ALLOWED_COMMANDS: &[&str] = &[
+    // Build tools
+    "cargo",
+    "make",
+    "cmake",
+    "ninja",
+    "meson",
+    // Version control
+    "git",
+    // Node.js ecosystem
+    "npm",
+    "npx",
+    "node",
+    "yarn",
+    "pnpm",
+    "bun",
+    "deno",
+    // Python ecosystem
+    "python",
+    "python3",
+    "pip",
+    "pip3",
+    "uv",
+    "poetry",
+    "pipenv",
+    // Ruby / Go / Java
+    "ruby",
+    "gem",
+    "bundle",
+    "go",
+    "java",
+    "javac",
+    "mvn",
+    "gradle",
+    // Common UNIX utilities
+    "ls",
+    "cat",
+    "echo",
+    "pwd",
+    "cd",
+    "mkdir",
+    "cp",
+    "mv",
+    "touch",
+    "head",
+    "tail",
+    "wc",
+    "sort",
+    "uniq",
+    "tr",
+    "cut",
+    "tee",
+    "find",
+    "grep",
+    "sed",
+    "awk",
+    "diff",
+    "patch",
+    "xargs",
+    "which",
+    "whoami",
+    "env",
+    "printenv",
+    "date",
+    "file",
+    "stat",
+    "basename",
+    "dirname",
+    "realpath",
+    "readlink",
+    // Archive / compression
+    "tar",
+    "gzip",
+    "gunzip",
+    "zip",
+    "unzip",
+    // Rust tooling
+    "rustup",
+    "rustc",
+    "rustfmt",
+    "clippy-driver",
+    // Other dev tools
+    "docker",
+    "curl",
+    "wget",
+    "jq",
+    "yq",
+];
 
 /// Shell tool
 #[derive(Debug)]
@@ -60,11 +148,18 @@ impl Tool for ShellTool {
             .ok_or_else(|| ToolError::InvalidArgument("Missing command".to_string()))?;
 
         // 检查命令是否在白名单中
-        if !self.is_allowed(command) {
-            tracing::warn!("Blocked command: {}", command);
-            return Err(ToolError::PermissionDenied(format!(
-                "Command not allowed: {}",
+        if !self.is_allowed(command) && !has_override(PERMISSION_SHELL_UNLISTED) {
+            tracing::warn!(
+                "Command not in allowed list, requesting confirmation: {}",
                 command
+            );
+            return Err(ToolError::PermissionDenied(ask_message(
+                PERMISSION_SHELL_UNLISTED,
+                "medium",
+                &format!(
+                    "command '{}' is not in the allowed list and requires approval",
+                    command
+                ),
             )));
         }
 
@@ -271,7 +366,12 @@ mod tests {
         assert!(tool.is_allowed("cargo"));
         assert!(tool.is_allowed("git"));
         assert!(tool.is_allowed("echo"));
+        assert!(tool.is_allowed("curl"));
+        assert!(tool.is_allowed("npm"));
+        assert!(tool.is_allowed("python3"));
+        assert!(tool.is_allowed("mkdir"));
+        // rm is not in the static whitelist
         assert!(!tool.is_allowed("rm"));
-        assert!(!tool.is_allowed("curl"));
+        assert!(!tool.is_allowed("shutdown"));
     }
 }

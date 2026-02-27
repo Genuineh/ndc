@@ -17,6 +17,7 @@ pub const PERMISSION_EXTERNAL_DIRECTORY: &str = "external_directory";
 pub const PERMISSION_SHELL_HIGH_RISK: &str = "shell_high_risk";
 pub const PERMISSION_SHELL_MEDIUM_RISK: &str = "shell_medium_risk";
 pub const PERMISSION_GIT_COMMIT: &str = "git_commit";
+pub const PERMISSION_SHELL_UNLISTED: &str = "shell_unlisted_command";
 
 tokio::task_local! {
     static SECURITY_OVERRIDE_PERMISSIONS: RefCell<HashSet<String>>;
@@ -93,14 +94,14 @@ fn env_security_overrides() -> HashSet<String> {
         .unwrap_or_default()
 }
 
-fn has_override(permission: &str) -> bool {
+pub fn has_override(permission: &str) -> bool {
     SECURITY_OVERRIDE_PERMISSIONS
         .try_with(|overrides| overrides.borrow().contains(permission))
         .unwrap_or(false)
         || env_security_overrides().contains(permission)
 }
 
-fn ask_message(permission: &str, risk: &str, detail: &str) -> String {
+pub fn ask_message(permission: &str, risk: &str, detail: &str) -> String {
     format!(
         "requires_confirmation permission={} risk={} {}",
         permission, risk, detail

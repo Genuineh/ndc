@@ -94,8 +94,9 @@ pub use bash_parsing::{
 pub mod security;
 pub use security::{
     PERMISSION_EXTERNAL_DIRECTORY, PERMISSION_GIT_COMMIT, PERMISSION_SHELL_HIGH_RISK,
-    PERMISSION_SHELL_MEDIUM_RISK, enforce_git_operation, enforce_path_boundary,
-    enforce_shell_command, extract_confirmation_permission, with_security_overrides,
+    PERMISSION_SHELL_MEDIUM_RISK, PERMISSION_SHELL_UNLISTED, enforce_git_operation,
+    enforce_path_boundary, enforce_shell_command, extract_confirmation_permission, has_override,
+    with_security_overrides,
 };
 
 use ndc_storage::{SharedStorage, create_memory_storage};
@@ -463,7 +464,8 @@ mod tests {
         let result = tool.execute(&params).await;
         match result {
             Err(ToolError::PermissionDenied(msg)) => {
-                assert!(msg.contains("not allowed"));
+                // Unlisted commands now use requires_confirmation format
+                assert!(msg.contains("requires_confirmation") || msg.contains("not allowed"));
             }
             _ => panic!("Expected PermissionDenied error"),
         }
