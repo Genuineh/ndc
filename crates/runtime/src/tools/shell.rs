@@ -103,8 +103,22 @@ impl Tool for ShellTool {
             .unwrap_or(self.context.timeout_seconds);
 
         let start = std::time::Instant::now();
-        let mut cmd = Command::new(command);
-        cmd.args(&args);
+
+        // When command contains spaces/shell metacharacters and no separate args
+        // are provided, the caller passed a full shell command string (e.g. "echo hello"
+        // or "cargo test --workspace"). Execute via `sh -c` so the shell interprets it,
+        // rather than treating the whole string as an executable name.
+        let needs_shell = args.is_empty() && command.contains(|c: char| c.is_whitespace() || "|&;<>()$`\"'\\!{}*?[]#~".contains(c));
+
+        let mut cmd = if needs_shell {
+            let mut c = Command::new("sh");
+            c.arg("-c").arg(command);
+            c
+        } else {
+            let mut c = Command::new(command);
+            c.args(&args);
+            c
+        };
 
         // 设置工作目录
         cmd.current_dir(&working_dir);
@@ -289,5 +303,52 @@ mod tests {
         assert!(!tool.is_denied("rm"));
         assert!(!tool.is_denied("npm"));
         assert!(!tool.is_denied("curl"));
+    }
+
+    #[tokio::test]
+    async fn test_shell_command_string_without_args() {
+        // When command is a full shell string like "echo hello" without separate args,
+        // it should be executed via sh -c instead of treating the whole string as executable name.
+        let tool = ShellTool::new();
+        let params = serde_json::json!({
+            "command": "echo hello",
+            "timeout": 5
+        });
+        let result = tool.execute(&params).await;
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
+        let r = result.unwrap();
+        assert!(r.success, "Command should succeed");
+        assert!(r.output.contains("hello"), "Output should contain 'hello', got: {}", r.output);
+    }
+
+    #[tokio::test]
+    async fn test_shell_command_with_pipe() {
+        // Pipes require a shell interpreter
+        let tool = ShellTool::new();
+        let params = serde_json::json!({
+            "command": "echo hello | cat",
+            "timeout": 5
+        });
+        let result = tool.execute(&params).await;
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
+        let r = result.unwrap();
+        assert!(r.success, "Command should succeed");
+        assert!(r.output.contains("hello"));
+    }
+
+    #[tokio::test]
+    async fn test_shell_single_executable_with_args_still_works() {
+        // When command is a single executable and args are provided separately, it should still work
+        let tool = ShellTool::new();
+        let params = serde_json::json!({
+            "command": "echo",
+            "args": ["world"],
+            "timeout": 5
+        });
+        let result = tool.execute(&params).await;
+        assert!(result.is_ok());
+        let r = result.unwrap();
+        assert!(r.success);
+        assert!(r.output.contains("world"));
     }
 }
