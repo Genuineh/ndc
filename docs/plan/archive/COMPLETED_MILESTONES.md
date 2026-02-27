@@ -1,6 +1,6 @@
 # NDC 已完成里程碑归档
 
-> 从 `docs/TODO.md` 归档于 2026-02-26  
+> 从 `docs/TODO.md` 归档于 2026-02-27  
 > 此文件记录已完成功能的详细实现记录，供回溯参考。活跃待办请见 `docs/TODO.md`。
 
 ---
@@ -204,3 +204,20 @@
 - `Executor` 执行 intent 步骤结果回写修复。
 - 安全边界判定 `working_dir/project_root` 提示避免误判。
 - `USER_GUIDE` 修正会话订阅语义。
+
+## P0-SEC（已完成：深度安全审计修复，2026-02-26）
+
+全项目深度审计（52,505 LOC / 665 tests），修复 20+ 安全/健壮性/架构问题，新增 80+ 测试。
+
+详细修复清单见 `docs/TODO.md` P0-SEC 章节。
+
+主要修复分类：
+- **Immediate**（6 项）：Shell 超时失效、路径遍历绕过、API Key 泄露、权限默认放行、SSRF 防护、环境变量控制
+- **Short**（7 项）：Session 竞态、存储容量限制、工具输出注入、gRPC 并发限制、文件原子写、验证 panic、事件丢弃、LSP 超时、Session ID 校验
+- **Medium**（4 项）：Config 范围校验、Storage Mutex 替换、SQLite 连接池、消息历史限制、unwrap 清理、文件大小限制
+- **Structural**（4 项）：God Object 拆分（orchestrator/agent_mode/repl 三大模块）、管线缺口评估、死代码清理、CI 工作流、关键路径测试补充
+
+## BugFix（2026-02-27）
+
+- Shell 执行命令修复 `ca066da`：完整命令字符串（如 `"echo test"`）通过 `sh -c` 委托执行，支持管道/重定向。
+- Ctrl+C 中断运行任务 `4ac083c`：处理中按 Ctrl+C 中断当前任务而非退出 REPL；新增 `AgentError::Cancelled`；状态栏动态提示。

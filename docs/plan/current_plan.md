@@ -1,43 +1,24 @@
 # NDC 架构排查与重规划（2026-02-12）
 
-> 最新同步：2026-02-25  
-> 当前阶段：`P0-D`（安全边界与项目级会话隔离）  
-> 上一阶段：`P0-C`（Workflow-Native REPL 与实时可观测）已完成
+> 最新同步：2026-02-27  
+> 当前阶段：`P1`（核心自治能力与治理）  
+> 上一阶段：`P0-SEC`（深度安全审计修复）已完成
 
-## 当前快照（2026-02-25）
+## 当前快照（2026-02-27）
 
 1. 工程治理重构已完成：
    - 移除 8 个空占位 crate 目录（cli, context, daemon, execution, observability, plugins, repl, task）
    - 从 runtime 抽取独立 `ndc-storage` crate（Storage trait + MemoryStorage + SqliteStorage）
    - 全 workspace 统一 Rust edition 2024（`edition.workspace = true`）
-2. P0-C 已完成并通过核心回归：
-   - REPL/gRPC/SSE 统一 workflow + token 可观测语义
-   - `/workflow compact|verbose`、timeline replay、订阅一致性测试已落地
-2. 稳定性修复已补齐：
-   - MiniMax 别名 provider 的配置凭证查找回退已修复（支持 `minimax` 键）
-   - `ndc_task_update` 非法状态迁移已改为严格拒绝（不再强制覆盖状态）
-   - `Executor` intent 执行路径已修复步骤丢失（去除 `task.clone()` 误用）
-   - 运行时安全边界已支持 `working_dir/project_root` 根提示，减少 `external_directory` 误判
-3. P0-D 已启动并完成首批落地：
-   - `ProjectIdentity` + session 项目元数据 + REPL 项目标识已接入
-   - `orchestrator` 项目会话索引与最近会话游标已接入
-   - REPL `/new`、`/resume` 与 CLI `run --continue/--session`（含跨项目默认拒绝）已接入
-   - daemon/gRPC timeline 会话校验已对齐到同一 session 归属语义（同项目可切换，跨项目默认拒绝）
-   - runtime 工具主链已接入首批统一权限网关（shell/fs/git/read/write/edit/list/glob/grep）
-   - runtime `ask` 已落地 REPL 确认重试闭环（`requires_confirmation` + 单次授权覆盖）
-   - REPL 状态栏新增权限可观测字段：`perm_state/perm_type/perm_risk`
-   - orchestrator 已接入权限事件闭环：`permission_asked -> permission_approved/rejected`
-   - gRPC/SSE 首批一致性回归已补齐：权限生命周期事件映射/序列化与 replay message 一致性断言
-   - 非交互通道确认策略已落地：无 TTY 场景不阻塞 stdin，返回 `non_interactive confirmation required`
-   - REPL 项目导航已落地：启动展示当前项目与最近会话，支持 `/project status|list|pick|use|sessions`
-   - TUI 项目选择已强化：`Ctrl+P` 直达选择器，active 项优先展示并带状态标记
-   - 跨进程项目索引已持久化：`discover/known_project_ids` 可在新进程恢复已知项目
-   - 跨进程会话归档已持久化：`enable` 启动会 hydrate 已归档会话并恢复当前项目最近 session（含 timeline）
-   - `process_input` 成功后会回写 session 快照，支持重启后的多轮上下文与 timeline 连续性
-   - 项目切换执行上下文已补齐：`shell/fs` 使用当前项目 `working_dir`，并同步 `Project Context` 提示
-4. 下一步：
-   - 执行 P0-D Gate A/B/C/D 全量验收回归并归档证据
-   - P1-UX：REPL TUI 布局与体验重设计（详见 `docs/design/p1-repl-ux-redesign.md`）
+2. P0-A/B/C/D 已全部完成，P1-UX-1~6 已全部完成。
+3. P0-SEC 深度安全审计已全部完成（Immediate/Short/Medium/Structural 四层 20+ 修复项，+80 新测试）。
+4. 最近 BugFix：
+   - Shell 执行命令修复（`sh -c` 委托执行完整命令字符串）
+   - Ctrl+C 中断运行任务（不再直接退出 REPL）
+5. 下一步：
+   - P1 核心自治能力（GoldMemory Top-K 注入、失败分类重试、执行前 invariant 检查）
+   - P1 Telemetry 首批指标（autonomous_rate / intervention_cost / token_efficiency）
+   - P1 MCP/Skills 工具发现与权限治理
 
 ## 0. 基础愿景（统一口径）
 
