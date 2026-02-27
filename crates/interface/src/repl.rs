@@ -40,7 +40,6 @@ use ratatui::widgets::{
 use crate::agent_mode::{AgentModeConfig, AgentModeManager, PermissionRequest, handle_agent_command};
 use crate::redaction::{RedactionMode, sanitize_text};
 
-const TUI_MAX_LOG_LINES: usize = 3000;
 const TUI_SCROLL_STEP: usize = 3;
 const TIMELINE_CACHE_MAX_EVENTS: usize = 1_000;
 const AVAILABLE_PROVIDERS: &[&str] = &[
@@ -371,7 +370,6 @@ struct ToolCallCard {
     output_preview: Option<String>,
     is_error: bool,
     collapsed: bool,
-    round: usize,
 }
 
 /// A single structured entry in the conversation log.
@@ -407,14 +405,6 @@ enum ChatEntry {
     PermissionNote(String),
     /// Permission hint
     PermissionHint(String),
-}
-
-/// A complete conversation turn grouping a user message and the agent's
-/// response cycle (events + assistant reply).
-#[derive(Debug, Clone)]
-struct ChatTurn {
-    turn_id: usize,
-    entries: Vec<ChatEntry>,
 }
 
 const TUI_MAX_CHAT_ENTRIES: usize = 3000;
@@ -774,7 +764,6 @@ fn event_to_entries(
             }
         }
         ndc_core::AgentExecutionEventKind::Reasoning => {
-            let collapsed = !viz_state.show_thinking;
             if viz_state.show_thinking {
                 entries.push(ChatEntry::ReasoningBlock {
                     round: event.round,
@@ -822,7 +811,6 @@ fn event_to_entries(
                 output_preview: None,
                 is_error: false,
                 collapsed: !viz_state.expand_tool_cards,
-                round: event.round,
             }));
         }
         ndc_core::AgentExecutionEventKind::ToolCallEnd => {
@@ -860,7 +848,6 @@ fn event_to_entries(
                 output_preview,
                 is_error: event.is_error,
                 collapsed: !viz_state.expand_tool_cards,
-                round: event.round,
             }));
         }
         ndc_core::AgentExecutionEventKind::TokenUsage => {
@@ -1147,7 +1134,7 @@ struct ReplCommandCompletionState {
 #[derive(Debug, Clone, Copy)]
 struct SlashCommandSpec {
     command: &'static str,
-    summary: &'static str,
+    _summary: &'static str,
 }
 
 impl Default for TuiSessionViewState {
@@ -1163,91 +1150,91 @@ impl Default for TuiSessionViewState {
 const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     SlashCommandSpec {
         command: "/help",
-        summary: "show help",
+        _summary: "show help",
     },
     SlashCommandSpec {
         command: "/provider",
-        summary: "switch provider",
+        _summary: "switch provider",
     },
     SlashCommandSpec {
         command: "/providers",
-        summary: "alias of /provider",
+        _summary: "alias of /provider",
     },
     SlashCommandSpec {
         command: "/model",
-        summary: "switch model",
+        _summary: "switch model",
     },
     SlashCommandSpec {
         command: "/agent",
-        summary: "agent controls",
+        _summary: "agent controls",
     },
     SlashCommandSpec {
         command: "/status",
-        summary: "show status",
+        _summary: "show status",
     },
     SlashCommandSpec {
         command: "/thinking",
-        summary: "toggle thinking",
+        _summary: "toggle thinking",
     },
     SlashCommandSpec {
         command: "/details",
-        summary: "toggle details",
+        _summary: "toggle details",
     },
     SlashCommandSpec {
         command: "/cards",
-        summary: "toggle tool cards",
+        _summary: "toggle tool cards",
     },
     SlashCommandSpec {
         command: "/verbosity",
-        summary: "compact/normal/verbose",
+        _summary: "compact/normal/verbose",
     },
     SlashCommandSpec {
         command: "/stream",
-        summary: "stream on/off/status",
+        _summary: "stream on/off/status",
     },
     SlashCommandSpec {
         command: "/workflow",
-        summary: "workflow overview",
+        _summary: "workflow overview",
     },
     SlashCommandSpec {
         command: "/tokens",
-        summary: "usage metrics",
+        _summary: "usage metrics",
     },
     SlashCommandSpec {
         command: "/metrics",
-        summary: "runtime metrics",
+        _summary: "runtime metrics",
     },
     SlashCommandSpec {
         command: "/timeline",
-        summary: "show timeline",
+        _summary: "show timeline",
     },
     SlashCommandSpec {
         command: "/clear",
-        summary: "clear panel",
+        _summary: "clear panel",
     },
     SlashCommandSpec {
         command: "/copy",
-        summary: "save session to file",
+        _summary: "save session to file",
     },
     SlashCommandSpec {
         command: "/resume",
-        summary: "resume latest session",
+        _summary: "resume latest session",
     },
     SlashCommandSpec {
         command: "/new",
-        summary: "start new session",
+        _summary: "start new session",
     },
     SlashCommandSpec {
         command: "/session",
-        summary: "list sessions for current project",
+        _summary: "list sessions for current project",
     },
     SlashCommandSpec {
         command: "/project",
-        summary: "list or switch project",
+        _summary: "list or switch project",
     },
     SlashCommandSpec {
         command: "/exit",
-        summary: "exit repl",
+        _summary: "exit repl",
     },
 ];
 
@@ -1261,18 +1248,6 @@ impl ReplTuiKeymap {
             show_timeline: env_char("NDC_REPL_KEY_SHOW_TIMELINE", 'i'),
             clear_panel: env_char("NDC_REPL_KEY_CLEAR_PANEL", 'l'),
         }
-    }
-
-    fn hint(&self) -> String {
-        format!(
-            "Ctrl+{} thinking, Ctrl+{} details, Ctrl+{} cards, Ctrl+{} recent thinking, Ctrl+{} timeline, Ctrl+{} clear",
-            self.toggle_thinking.to_ascii_uppercase(),
-            self.toggle_details.to_ascii_uppercase(),
-            self.toggle_tool_cards.to_ascii_uppercase(),
-            self.show_recent_thinking.to_ascii_uppercase(),
-            self.show_timeline.to_ascii_uppercase(),
-            self.clear_panel.to_ascii_uppercase()
-        )
     }
 }
 
@@ -1470,7 +1445,7 @@ fn build_input_hint_lines(
         }
         let items = matches
             .iter()
-            .map(|spec| format!("{} ({})", spec.command, spec.summary))
+            .map(|spec| format!("{} ({})", spec.command, spec._summary))
             .collect::<Vec<_>>()
             .join(" | ");
         let mut lines = vec![
@@ -1527,7 +1502,7 @@ fn build_input_hint_lines(
         SLASH_COMMAND_SPECS
             .iter()
             .find(|spec| spec.command == canonical)
-            .map(|spec| spec.summary)
+            .map(|spec| spec._summary)
             .unwrap_or("no predefined hint")
     )];
     match canonical {
@@ -2287,471 +2262,6 @@ fn handle_session_scroll_mouse(
         }
         _ => false,
     }
-}
-
-fn style_session_log_lines(logs: &[String]) -> Vec<Line<'static>> {
-    let theme = TuiTheme::default_dark();
-    logs.iter()
-        .map(|line| style_session_log_line(line, &theme))
-        .collect()
-}
-
-fn style_session_log_line(line: &str, theme: &TuiTheme) -> Line<'static> {
-    let plain = || Line::from(Span::raw(line.to_string()));
-    let muted = Style::default().fg(theme.text_muted);
-    let subtle = Style::default().fg(theme.text_base);
-    let title = Style::default()
-        .fg(theme.assistant_accent)
-        .add_modifier(Modifier::BOLD);
-    let success = Style::default()
-        .fg(theme.success)
-        .add_modifier(Modifier::BOLD);
-    let warning = Style::default()
-        .fg(theme.warning)
-        .add_modifier(Modifier::BOLD);
-    let danger = Style::default()
-        .fg(theme.danger)
-        .add_modifier(Modifier::BOLD);
-
-    if line == "You:" {
-        return Line::from(vec![
-            Span::styled("▌ ", Style::default().fg(theme.user_accent)),
-            Span::styled(
-                "You",
-                Style::default()
-                    .fg(theme.user_accent)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]);
-    }
-    if line == "Assistant:" {
-        return Line::from(vec![
-            Span::styled("▌ ", Style::default().fg(theme.assistant_accent)),
-            Span::styled("Assistant", title),
-        ]);
-    }
-    if let Some(text) = line.strip_prefix("You: ") {
-        return Line::from(vec![
-            Span::styled("▌ ", Style::default().fg(theme.user_accent)),
-            Span::styled(
-                "You  ",
-                Style::default()
-                    .fg(theme.user_accent)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(text.to_string(), Style::default().fg(theme.text_strong)),
-        ]);
-    }
-    if line.starts_with("[Agent] processing") {
-        return Line::from(vec![
-            Span::styled("  ◆ ", Style::default().fg(theme.warning)),
-            Span::styled(
-                line.strip_prefix("[Agent] ").unwrap_or(line).to_string(),
-                Style::default().fg(theme.warning),
-            ),
-        ]);
-    }
-    if line.starts_with("[Error]") || line.starts_with("[Error][") {
-        return Line::from(vec![
-            Span::styled("  ✗ ", danger),
-            Span::styled(
-                line.strip_prefix("[Error] ").unwrap_or(line).to_string(),
-                Style::default().fg(theme.danger),
-            ),
-        ]);
-    }
-    if line.starts_with("[Permission]") {
-        return Line::from(vec![
-            Span::styled("  ⚠ ", warning),
-            Span::styled(
-                line.strip_prefix("[Permission] ")
-                    .unwrap_or(line)
-                    .to_string(),
-                Style::default().fg(theme.warning),
-            ),
-        ]);
-    }
-    // ── New verbosity-aware line formats ──
-    if let Some(rest) = line.strip_prefix("[RoundSep] ") {
-        return Line::from(Span::styled(
-            format!("  {}", rest),
-            Style::default()
-                .fg(theme.text_dim)
-                .add_modifier(Modifier::DIM),
-        ));
-    }
-    if let Some(rest) = line.strip_prefix("[Stage] ") {
-        return Line::from(vec![
-            Span::styled("  ◆ ", Style::default().fg(theme.primary)),
-            Span::styled(
-                rest.to_string(),
-                Style::default()
-                    .fg(theme.primary)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]);
-    }
-    if let Some(rest) = line.strip_prefix("[ToolRun] ") {
-        return Line::from(vec![
-            Span::styled("  ▸ ", Style::default().fg(theme.tool_accent)),
-            Span::styled(rest.to_string(), Style::default().fg(theme.tool_accent)),
-        ]);
-    }
-    if let Some(rest) = line.strip_prefix("[ToolEnd] ") {
-        let (icon, style) = if rest.starts_with('✗') {
-            ("  ✗ ", danger)
-        } else {
-            ("  ✓ ", success)
-        };
-        // Skip the icon character + space from the rest
-        let body = if rest.len() > 2 { &rest[4..] } else { rest };
-        return Line::from(vec![
-            Span::styled(icon, style),
-            Span::styled(body.to_string(), style),
-        ]);
-    }
-    if let Some(rest) = line.strip_prefix("[PermBlock] ") {
-        return Line::from(vec![
-            Span::styled("  ⚠ ", warning),
-            Span::styled(rest.to_string(), Style::default().fg(theme.warning)),
-        ]);
-    }
-    if let Some(rest) = line.strip_prefix("[PermHint] ") {
-        return Line::from(Span::styled(
-            format!("    {}", rest),
-            Style::default().fg(theme.text_muted),
-        ));
-    }
-    if line.starts_with("[Tool]") {
-        let (icon, style) = if line.contains(" failed ") {
-            ("  ✗ ", danger)
-        } else if line.contains(" done ") {
-            ("  ✓ ", success)
-        } else {
-            ("  ▸ ", Style::default().fg(theme.tool_accent))
-        };
-        return Line::from(vec![
-            Span::styled(icon, style),
-            Span::styled(
-                line.strip_prefix("[Tool]").unwrap_or(line).to_string(),
-                style,
-            ),
-        ]);
-    }
-    if line.starts_with("[Workflow]") {
-        return Line::from(vec![
-            Span::styled("  ◇ ", Style::default().fg(theme.primary)),
-            Span::styled(
-                line.strip_prefix("[Workflow] ").unwrap_or(line).to_string(),
-                Style::default()
-                    .fg(theme.primary)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]);
-    }
-    if line.starts_with("[Usage]") {
-        return Line::from(vec![
-            Span::styled("  ", Style::default()),
-            Span::styled(
-                line.strip_prefix("[Usage] ").unwrap_or(line).to_string(),
-                Style::default().fg(theme.success),
-            ),
-        ]);
-    }
-    if line.starts_with("[Thinking]") {
-        return Line::from(vec![
-            Span::styled("  ◌ ", Style::default().fg(theme.thinking_accent)),
-            Span::styled(
-                line.strip_prefix("[Thinking] ").unwrap_or(line).to_string(),
-                Style::default().fg(theme.thinking_accent),
-            ),
-        ]);
-    }
-    if line.starts_with("[Step]") {
-        return Line::from(vec![
-            Span::styled("  → ", Style::default().fg(theme.primary)),
-            Span::styled(
-                line.strip_prefix("[Step] ").unwrap_or(line).to_string(),
-                Style::default().fg(theme.primary),
-            ),
-        ]);
-    }
-    if line.trim_start().starts_with("[stage:") {
-        return Line::from(vec![
-            Span::styled("  ◆ ", Style::default().fg(theme.primary)),
-            Span::styled(
-                line.to_string(),
-                Style::default()
-                    .fg(theme.primary)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]);
-    }
-    if line.starts_with("[Agent][") {
-        return Line::from(Span::styled(
-            line.to_string(),
-            Style::default().fg(theme.warning),
-        ));
-    }
-    if line.starts_with("[OK]") {
-        return Line::from(vec![
-            Span::styled("  ✓ ", success),
-            Span::styled(
-                line.strip_prefix("[OK] ").unwrap_or(line).to_string(),
-                Style::default().fg(theme.success),
-            ),
-        ]);
-    }
-    if line.starts_with("[Tip]") || line.starts_with("[Warning]") {
-        return Line::from(Span::styled(line.to_string(), warning));
-    }
-    if line.starts_with("Recent Thinking") || line.starts_with("Recent Execution Timeline") {
-        return Line::from(Span::styled(line.to_string(), title));
-    }
-    if line.starts_with("  - r") {
-        return Line::from(Span::styled(line.to_string(), subtle));
-    }
-    if line.starts_with("  (") {
-        return Line::from(Span::styled(line.to_string(), muted));
-    }
-    if let Some(value) = line.strip_prefix("  ├─ input : ") {
-        return Line::from(vec![
-            Span::styled("  ├─ ", subtle),
-            Span::styled(
-                "input",
-                Style::default()
-                    .fg(theme.primary)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" : ", subtle),
-            Span::raw(value.to_string()),
-        ]);
-    }
-    if let Some(value) = line.strip_prefix("  ├─ output: ") {
-        let (display, truncated) = truncate_output(value, 200);
-        let mut spans = vec![
-            Span::styled("  ├─ ", subtle),
-            Span::styled(
-                "output",
-                Style::default()
-                    .fg(theme.success)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(": ", subtle),
-            Span::raw(display),
-        ];
-        if truncated {
-            spans.push(Span::styled(
-                " … (truncated)",
-                Style::default().fg(theme.text_dim),
-            ));
-        }
-        return Line::from(spans);
-    }
-    if let Some(value) = line.strip_prefix("  ├─ error : ") {
-        return Line::from(vec![
-            Span::styled("  ├─ ", subtle),
-            Span::styled(
-                "error",
-                Style::default()
-                    .fg(theme.danger)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" : ", subtle),
-            Span::raw(value.to_string()),
-        ]);
-    }
-    if let Some(value) = line.strip_prefix("  └─ meta  : ") {
-        return Line::from(vec![
-            Span::styled("  └─ ", subtle),
-            Span::styled(
-                "meta",
-                Style::default()
-                    .fg(theme.thinking_accent)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("  : ", subtle),
-            Span::raw(value.to_string()),
-        ]);
-    }
-    if line.starts_with("  └─ (collapsed card") {
-        return Line::from(Span::styled(line.to_string(), muted));
-    }
-    if line.starts_with("Shortcuts:") {
-        return Line::from(Span::styled(line.to_string(), muted));
-    }
-    // Simple Markdown rendering for assistant output (indented lines)
-    if line.starts_with("  ")
-        && !line.starts_with("  ├")
-        && !line.starts_with("  └")
-        && !line.starts_with("  (")
-        && !line.starts_with("  - r")
-    {
-        return render_inline_markdown(line, theme);
-    }
-    plain()
-}
-
-/// Render simple inline Markdown: `code`, **bold**, *italic*, # headers, - bullets
-fn render_inline_markdown<'a>(line: &str, theme: &TuiTheme) -> Line<'a> {
-    let trimmed = line.trim_start();
-    let indent = &line[..line.len() - trimmed.len()];
-
-    // Code fence lines (``` language)
-    if trimmed.starts_with("```") {
-        return Line::from(vec![
-            Span::raw(indent.to_string()),
-            Span::styled(trimmed.to_string(), Style::default().fg(theme.text_muted)),
-        ]);
-    }
-
-    // Headers (# ## ###)
-    if let Some(rest) = trimmed.strip_prefix("### ") {
-        return Line::from(vec![
-            Span::raw(indent.to_string()),
-            Span::styled(
-                format!("   {}", rest),
-                Style::default()
-                    .fg(theme.primary)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]);
-    }
-    if let Some(rest) = trimmed.strip_prefix("## ") {
-        return Line::from(vec![
-            Span::raw(indent.to_string()),
-            Span::styled(
-                format!("  {}", rest),
-                Style::default()
-                    .fg(theme.primary)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]);
-    }
-    if let Some(rest) = trimmed.strip_prefix("# ") {
-        return Line::from(vec![
-            Span::raw(indent.to_string()),
-            Span::styled(
-                rest.to_string(),
-                Style::default()
-                    .fg(theme.text_strong)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]);
-    }
-
-    // Bullet lists
-    if let Some(rest) = trimmed.strip_prefix("- ") {
-        let mut spans = vec![
-            Span::raw(indent.to_string()),
-            Span::styled("  • ", Style::default().fg(theme.text_muted)),
-        ];
-        spans.extend(parse_inline_spans(rest, theme));
-        return Line::from(spans);
-    }
-    if let Some(rest) = trimmed.strip_prefix("* ") {
-        let mut spans = vec![
-            Span::raw(indent.to_string()),
-            Span::styled("  • ", Style::default().fg(theme.text_muted)),
-        ];
-        spans.extend(parse_inline_spans(rest, theme));
-        return Line::from(spans);
-    }
-
-    // Regular line with inline formatting
-    let mut spans = vec![Span::raw(indent.to_string())];
-    spans.extend(parse_inline_spans(trimmed, theme));
-    Line::from(spans)
-}
-
-/// Parse inline Markdown spans: `code`, **bold**, *italic*
-fn parse_inline_spans<'a>(text: &str, theme: &TuiTheme) -> Vec<Span<'a>> {
-    let mut spans = Vec::new();
-    let mut remaining = text;
-
-    while !remaining.is_empty() {
-        // Find the next special marker
-        let next_backtick = remaining.find('`');
-        let next_double_star = remaining.find("**");
-        let next_star = remaining.find('*');
-
-        // Find the earliest marker
-        let earliest = [
-            next_backtick.map(|p| (p, '`')),
-            next_double_star.map(|p| (p, 'B')), // B = bold **
-            next_star
-                .filter(|&p| next_double_star != Some(p))
-                .map(|p| (p, '*')),
-        ]
-        .into_iter()
-        .flatten()
-        .min_by_key(|(pos, _)| *pos);
-
-        match earliest {
-            None => {
-                // No more markers, push the rest
-                spans.push(Span::raw(remaining.to_string()));
-                break;
-            }
-            Some((pos, '`')) => {
-                if pos > 0 {
-                    spans.push(Span::raw(remaining[..pos].to_string()));
-                }
-                let after = &remaining[pos + 1..];
-                if let Some(end) = after.find('`') {
-                    spans.push(Span::styled(
-                        after[..end].to_string(),
-                        Style::default()
-                            .fg(theme.primary)
-                            .bg(Color::Rgb(40, 40, 40)),
-                    ));
-                    remaining = &after[end + 1..];
-                } else {
-                    spans.push(Span::raw(remaining[pos..].to_string()));
-                    break;
-                }
-            }
-            Some((pos, 'B')) => {
-                if pos > 0 {
-                    spans.push(Span::raw(remaining[..pos].to_string()));
-                }
-                let after = &remaining[pos + 2..];
-                if let Some(end) = after.find("**") {
-                    spans.push(Span::styled(
-                        after[..end].to_string(),
-                        Style::default()
-                            .fg(theme.text_strong)
-                            .add_modifier(Modifier::BOLD),
-                    ));
-                    remaining = &after[end + 2..];
-                } else {
-                    spans.push(Span::raw(remaining[pos..].to_string()));
-                    break;
-                }
-            }
-            Some((pos, '*')) => {
-                if pos > 0 {
-                    spans.push(Span::raw(remaining[..pos].to_string()));
-                }
-                let after = &remaining[pos + 1..];
-                if let Some(end) = after.find('*') {
-                    spans.push(Span::styled(
-                        after[..end].to_string(),
-                        Style::default().add_modifier(Modifier::ITALIC),
-                    ));
-                    remaining = &after[end + 1..];
-                } else {
-                    spans.push(Span::raw(remaining[pos..].to_string()));
-                    break;
-                }
-            }
-            _ => {
-                spans.push(Span::raw(remaining.to_string()));
-                break;
-            }
-        }
-    }
-    spans
 }
 
 async fn run_repl_tui(
@@ -3677,74 +3187,6 @@ fn append_timeline_events(
         let overflow = timeline.len() - capacity;
         timeline.drain(0..overflow);
     }
-}
-
-fn push_log_line(logs: &mut Vec<String>, line: &str) {
-    if line.contains('\n') {
-        for part in line.lines() {
-            logs.push(part.to_string());
-        }
-    } else {
-        logs.push(line.to_string());
-    }
-    if logs.len() > TUI_MAX_LOG_LINES {
-        let overflow = logs.len() - TUI_MAX_LOG_LINES;
-        logs.drain(0..overflow);
-    }
-}
-
-fn drain_live_execution_events(
-    receiver: &mut Option<tokio::sync::broadcast::Receiver<ndc_core::AgentSessionExecutionEvent>>,
-    expected_session_id: Option<&str>,
-    viz_state: &mut ReplVisualizationState,
-    logs: &mut Vec<String>,
-) -> bool {
-    let Some(rx) = receiver.as_mut() else {
-        return false;
-    };
-    let mut rendered = false;
-    loop {
-        match rx.try_recv() {
-            Ok(message) => {
-                if expected_session_id
-                    .map(|sid| sid != message.session_id)
-                    .unwrap_or(false)
-                {
-                    continue;
-                }
-                append_timeline_events(
-                    &mut viz_state.timeline_cache,
-                    std::slice::from_ref(&message.event),
-                    TIMELINE_CACHE_MAX_EVENTS,
-                );
-                for line in event_to_lines(&message.event, viz_state) {
-                    push_log_line(logs, &line);
-                }
-                rendered = true;
-            }
-            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
-            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(skipped)) => {
-                push_log_line(
-                    logs,
-                    &format!(
-                        "[Warning] realtime stream lagged, dropped {} event(s)",
-                        skipped
-                    ),
-                );
-                rendered = true;
-            }
-            Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
-                *receiver = None;
-                push_log_line(
-                    logs,
-                    "[Warning] realtime stream closed, fallback to polling",
-                );
-                rendered = true;
-                break;
-            }
-        }
-    }
-    rendered
 }
 
 fn event_to_lines(
@@ -5377,86 +4819,6 @@ mod tests {
     }
 
     #[test]
-    fn test_push_log_line_capped() {
-        let mut logs = Vec::new();
-        for i in 0..(TUI_MAX_LOG_LINES + 5) {
-            push_log_line(&mut logs, &format!("line-{}", i));
-        }
-        assert_eq!(logs.len(), TUI_MAX_LOG_LINES);
-        assert_eq!(logs.first().map(String::as_str), Some("line-5"));
-    }
-
-    #[test]
-    fn test_drain_live_execution_events_renders_matching_session() {
-        let (tx, rx) = tokio::sync::broadcast::channel(8);
-        // Use ToolCallStart which produces output in all verbosity modes
-        let event = ndc_core::AgentExecutionEvent {
-            kind: ndc_core::AgentExecutionEventKind::ToolCallStart,
-            timestamp: chrono::Utc::now(),
-            message: "tool_call_start: read | args_preview: {\"path\":\".\"}".to_string(),
-            round: 1,
-            tool_name: Some("read".to_string()),
-            tool_call_id: Some("call-1".to_string()),
-            duration_ms: None,
-            is_error: false,
-            workflow_stage: None,
-            workflow_detail: None,
-            workflow_stage_index: None,
-            workflow_stage_total: None,
-        };
-        tx.send(ndc_core::AgentSessionExecutionEvent {
-            session_id: "session-a".to_string(),
-            event: event.clone(),
-        })
-        .unwrap();
-
-        let mut recv = Some(rx);
-        let mut viz = ReplVisualizationState::new(false);
-        let mut logs = Vec::new();
-        let rendered =
-            drain_live_execution_events(&mut recv, Some("session-a"), &mut viz, &mut logs);
-        assert!(rendered);
-        assert_eq!(viz.timeline_cache.len(), 1);
-        assert_eq!(viz.timeline_cache[0].message, event.message);
-        assert!(
-            logs.iter()
-                .any(|l| l.contains("[ToolRun]") && l.contains("read"))
-        );
-    }
-
-    #[test]
-    fn test_drain_live_execution_events_ignores_other_sessions() {
-        let (tx, rx) = tokio::sync::broadcast::channel(8);
-        tx.send(ndc_core::AgentSessionExecutionEvent {
-            session_id: "session-b".to_string(),
-            event: ndc_core::AgentExecutionEvent {
-                kind: ndc_core::AgentExecutionEventKind::StepStart,
-                timestamp: chrono::Utc::now(),
-                message: "llm_round_1_start".to_string(),
-                round: 1,
-                tool_name: None,
-                tool_call_id: None,
-                duration_ms: None,
-                is_error: false,
-                workflow_stage: None,
-                workflow_detail: None,
-                workflow_stage_index: None,
-                workflow_stage_total: None,
-            },
-        })
-        .unwrap();
-
-        let mut recv = Some(rx);
-        let mut viz = ReplVisualizationState::new(false);
-        let mut logs = Vec::new();
-        let rendered =
-            drain_live_execution_events(&mut recv, Some("session-a"), &mut viz, &mut logs);
-        assert!(!rendered);
-        assert!(viz.timeline_cache.is_empty());
-        assert!(logs.is_empty());
-    }
-
-    #[test]
     fn test_append_recent_thinking_to_logs() {
         let mut viz = ReplVisualizationState::new(false);
         viz.timeline_limit = 10;
@@ -5892,25 +5254,6 @@ mod tests {
     }
 
     #[test]
-    fn test_keymap_hint() {
-        let map = ReplTuiKeymap {
-            toggle_thinking: 't',
-            toggle_details: 'd',
-            toggle_tool_cards: 'e',
-            show_recent_thinking: 'y',
-            show_timeline: 'i',
-            clear_panel: 'l',
-        };
-        let hint = map.hint();
-        assert!(hint.contains("Ctrl+T"));
-        assert!(hint.contains("Ctrl+D"));
-        assert!(hint.contains("Ctrl+E"));
-        assert!(hint.contains("Ctrl+Y"));
-        assert!(hint.contains("Ctrl+I"));
-        assert!(hint.contains("Ctrl+L"));
-    }
-
-    #[test]
     fn test_tui_layout_constraints_fixed_input_panel() {
         let constraints = tui_layout_constraints(false, 1);
         assert_eq!(
@@ -6190,24 +5533,6 @@ mod tests {
             workflow_progress_descriptor(Some("executing"), Some(3), Some(5)),
             "60%(3/5)"
         );
-    }
-
-    #[test]
-    fn test_style_session_log_line_tool_and_partitions() {
-        let theme = TuiTheme::default_dark();
-        let tool = style_session_log_line("[Tool][r1] failed read (3ms)", &theme);
-        assert_eq!(tool.spans[0].content.as_ref(), "  ✗ ");
-        assert_eq!(tool.spans[0].style.fg, Some(Color::Red));
-
-        let input = style_session_log_line("  ├─ input : {\"path\":\"README.md\"}", &theme);
-        assert_eq!(line_plain(&input), "  ├─ input : {\"path\":\"README.md\"}");
-        assert_eq!(input.spans[1].content.as_ref(), "input");
-        assert_eq!(input.spans[1].style.fg, Some(Color::Cyan));
-
-        let output = style_session_log_line("  ├─ output: ok", &theme);
-        assert_eq!(line_plain(&output), "  ├─ output: ok");
-        assert_eq!(output.spans[1].content.as_ref(), "output");
-        assert_eq!(output.spans[1].style.fg, Some(Color::Green));
     }
 
     #[test]
@@ -6813,129 +6138,6 @@ mod tests {
         assert_eq!(text, "中文");
         assert!(truncated);
     }
-
-    // --- parse_inline_spans ---
-
-    #[test]
-    fn test_parse_inline_spans_plain() {
-        let theme = TuiTheme::default_dark();
-        let spans = parse_inline_spans("hello world", &theme);
-        assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].content.as_ref(), "hello world");
-    }
-
-    #[test]
-    fn test_parse_inline_spans_backtick_code() {
-        let theme = TuiTheme::default_dark();
-        let spans = parse_inline_spans("use `cargo build` here", &theme);
-        assert_eq!(spans.len(), 3);
-        assert_eq!(spans[0].content.as_ref(), "use ");
-        assert_eq!(spans[1].content.as_ref(), "cargo build");
-        assert_eq!(spans[2].content.as_ref(), " here");
-        // code span should have background color
-        assert!(spans[1].style.bg.is_some());
-    }
-
-    #[test]
-    fn test_parse_inline_spans_bold() {
-        let theme = TuiTheme::default_dark();
-        let spans = parse_inline_spans("this is **bold** text", &theme);
-        assert_eq!(spans.len(), 3);
-        assert_eq!(spans[1].content.as_ref(), "bold");
-        assert!(spans[1].style.add_modifier.contains(Modifier::BOLD));
-    }
-
-    #[test]
-    fn test_parse_inline_spans_italic() {
-        let theme = TuiTheme::default_dark();
-        let spans = parse_inline_spans("this is *italic* text", &theme);
-        assert_eq!(spans.len(), 3);
-        assert_eq!(spans[1].content.as_ref(), "italic");
-        assert!(spans[1].style.add_modifier.contains(Modifier::ITALIC));
-    }
-
-    #[test]
-    fn test_parse_inline_spans_unclosed_backtick() {
-        let theme = TuiTheme::default_dark();
-        let spans = parse_inline_spans("unclosed `code", &theme);
-        assert_eq!(spans.len(), 2);
-        assert_eq!(spans[0].content.as_ref(), "unclosed ");
-        assert_eq!(spans[1].content.as_ref(), "`code");
-    }
-
-    // --- render_inline_markdown ---
-
-    #[test]
-    fn test_render_inline_markdown_header_h2() {
-        let theme = TuiTheme::default_dark();
-        let line = render_inline_markdown("## Section Title", &theme);
-        let text = line_plain(&line);
-        assert!(text.contains("Section Title"));
-    }
-
-    #[test]
-    fn test_render_inline_markdown_bullet_dash() {
-        let theme = TuiTheme::default_dark();
-        let line = render_inline_markdown("- list item", &theme);
-        let text = line_plain(&line);
-        assert!(text.contains("•"));
-        assert!(text.contains("list item"));
-    }
-
-    #[test]
-    fn test_render_inline_markdown_bullet_star() {
-        let theme = TuiTheme::default_dark();
-        let line = render_inline_markdown("* another item", &theme);
-        let text = line_plain(&line);
-        assert!(text.contains("•"));
-        assert!(text.contains("another item"));
-    }
-
-    #[test]
-    fn test_render_inline_markdown_code_fence() {
-        let theme = TuiTheme::default_dark();
-        let line = render_inline_markdown("```rust", &theme);
-        let text = line_plain(&line);
-        assert!(text.contains("```rust"));
-    }
-
-    #[test]
-    fn test_render_inline_markdown_plain_with_inline_code() {
-        let theme = TuiTheme::default_dark();
-        let line = render_inline_markdown("run `cargo test`", &theme);
-        let text = line_plain(&line);
-        assert_eq!(text, "run cargo test");
-    }
-
-    #[test]
-    fn test_render_inline_markdown_preserves_indent() {
-        let theme = TuiTheme::default_dark();
-        let line = render_inline_markdown("    indented text", &theme);
-        let text = line_plain(&line);
-        assert!(text.starts_with("    "));
-    }
-
-    // --- style_session_log_line truncation ---
-
-    #[test]
-    fn test_style_session_log_line_output_truncation() {
-        let long_output = format!("  ├─ output: {}", "x".repeat(300));
-        let theme = TuiTheme::default_dark();
-        let line = style_session_log_line(&long_output, &theme);
-        let text = line_plain(&line);
-        assert!(text.contains("truncated"));
-        assert!(text.len() < 300);
-    }
-
-    #[test]
-    fn test_style_session_log_line_output_no_truncation_short() {
-        let theme = TuiTheme::default_dark();
-        let line = style_session_log_line("  ├─ output: ok", &theme);
-        let text = line_plain(&line);
-        assert!(!text.contains("truncated"));
-        assert!(text.contains("ok"));
-    }
-
     // --- InputHistory multiline ---
 
     #[test]
@@ -7422,7 +6624,6 @@ mod tests {
             output_preview: Some("success".to_string()),
             is_error: false,
             collapsed: true,
-            round: 1,
         };
         let entry = ChatEntry::ToolCard(card);
         let rendered = entry_lines_plain(&entry);
@@ -7444,7 +6645,6 @@ mod tests {
             output_preview: Some("success".to_string()),
             is_error: false,
             collapsed: false,
-            round: 1,
         };
         let entry = ChatEntry::ToolCard(card);
         let rendered = entry_lines_plain(&entry);
@@ -7469,7 +6669,6 @@ mod tests {
             output_preview: Some("permission denied".to_string()),
             is_error: true,
             collapsed: false,
-            round: 1,
         };
         let entry = ChatEntry::ToolCard(card);
         let rendered = entry_lines_plain(&entry);
@@ -7493,7 +6692,6 @@ mod tests {
             output_preview: None,
             is_error: false,
             collapsed: false,
-            round: 1,
         };
         let entry = ChatEntry::ToolCard(card);
         let rendered = entry_lines_plain(&entry);
@@ -7599,7 +6797,6 @@ mod tests {
                 output_preview: Some("o".to_string()),
                 is_error: false,
                 collapsed: true,
-                round: 1,
             })),
             1
         );
@@ -7614,7 +6811,6 @@ mod tests {
                 output_preview: Some("o".to_string()),
                 is_error: false,
                 collapsed: false,
-                round: 1,
             })),
             3
         );
@@ -7680,7 +6876,6 @@ mod tests {
                 output_preview: None,
                 is_error: false,
                 collapsed: true,
-                round: 1,
             }),
             ChatEntry::SystemNote("note".to_string()),
             ChatEntry::ToolCard(ToolCallCard {
@@ -7691,7 +6886,6 @@ mod tests {
                 output_preview: None,
                 is_error: false,
                 collapsed: true,
-                round: 1,
             }),
         ];
         toggle_all_tool_cards(&mut entries);
@@ -8013,7 +7207,6 @@ mod tests {
                 output_preview: None,
                 is_error: false,
                 collapsed: true,
-                round: 1,
             }),
             ChatEntry::AssistantMessage {
                 content: "Done!".to_string(),
@@ -8031,31 +7224,6 @@ mod tests {
         assert!(plain.iter().any(|l| l.contains("shell")));
         assert!(plain.iter().any(|l| l.contains("Assistant [#1]")));
         assert!(plain.iter().any(|l| l.contains("Done!")));
-    }
-
-    #[test]
-    fn test_chat_turn_grouping() {
-        let turn = ChatTurn {
-            turn_id: 1,
-            entries: vec![
-                ChatEntry::UserMessage {
-                    content: "hello".to_string(),
-                    turn_id: 1,
-                },
-                ChatEntry::SystemNote("processing...".to_string()),
-                ChatEntry::AssistantMessage {
-                    content: "hi".to_string(),
-                    turn_id: 1,
-                },
-            ],
-        };
-        assert_eq!(turn.turn_id, 1);
-        assert_eq!(turn.entries.len(), 3);
-        // Rendering the turn's entries should work
-        let lines = style_chat_entries(&turn.entries);
-        let plain: Vec<String> = lines.iter().map(line_plain).collect();
-        assert!(plain.iter().any(|l| l.contains("You [#1]")));
-        assert!(plain.iter().any(|l| l.contains("hi")));
     }
 
     #[test]

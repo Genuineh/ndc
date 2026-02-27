@@ -12,13 +12,9 @@
 #[cfg(feature = "grpc")]
 use std::fmt;
 #[cfg(feature = "grpc")]
-use std::sync::Arc;
-#[cfg(feature = "grpc")]
-use std::time::{Duration, Instant};
+use std::time::Duration;
 #[cfg(feature = "grpc")]
 use thiserror::Error;
-#[cfg(feature = "grpc")]
-use tokio::sync::Mutex;
 #[cfg(feature = "grpc")]
 use tonic::transport::Channel;
 
@@ -107,34 +103,12 @@ pub enum ClientError {
 }
 
 #[cfg(feature = "grpc")]
-#[derive(Debug)]
-struct PooledChannel {
-    created_at: Instant,
-    last_used: Instant,
-}
-
-#[cfg(feature = "grpc")]
-impl PooledChannel {
-    fn new() -> Self {
-        Self {
-            created_at: Instant::now(),
-            last_used: Instant::now(),
-        }
-    }
-
-    fn is_stale(&self, max_idle: Duration) -> bool {
-        self.last_used.elapsed() > max_idle
-    }
-}
-
-#[cfg(feature = "grpc")]
 /// NDC gRPC Client
 ///
 /// Provides a client SDK for connecting to NDC gRPC daemon.
 #[derive(Debug, Clone)]
 pub struct NdcClient {
     config: ClientConfig,
-    pool: Arc<Mutex<Vec<PooledChannel>>>,
 }
 
 #[cfg(feature = "grpc")]
@@ -150,7 +124,6 @@ impl NdcClient {
     pub fn with_config(config: ClientConfig) -> Self {
         Self {
             config,
-            pool: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -176,14 +149,6 @@ impl NdcClient {
 
     fn request_timeout(&self) -> Duration {
         self.config.request_timeout
-    }
-
-    /// Calculate delay with exponential backoff
-    async fn delay(&self, attempt: u32) {
-        let multiplier: u64 = 2u64.pow(attempt);
-        let delay_ms = self.config.base_retry_delay.as_millis() as u64 * multiplier;
-        let delay = std::cmp::min(Duration::from_millis(delay_ms), Duration::from_secs(5));
-        tokio::time::sleep(delay).await;
     }
 
     /// Health check
@@ -383,15 +348,6 @@ impl NdcClient {
     }
 }
 
-/// Check if error is retryable
-fn is_retryable_error(error: &str) -> bool {
-    error.contains("connection refused")
-        || error.contains("timeout")
-        || error.contains("temporarily unavailable")
-        || error.contains("try again")
-        || error.contains("service unavailable")
-}
-
 /// Map gRPC status to client error
 fn map_error(error: &str) -> ClientError {
     if error.contains("not found") {
@@ -452,15 +408,6 @@ mod tests {
     }
 
     #[test]
-    fn test_is_retryable_error() {
-        assert!(is_retryable_error("connection refused"));
-        assert!(is_retryable_error("timeout occurred"));
-        assert!(is_retryable_error("service unavailable"));
-        assert!(!is_retryable_error("not found"));
-        assert!(!is_retryable_error("invalid argument"));
-    }
-
-    #[test]
     fn test_map_error() {
         let not_found = map_error("task not found");
         assert!(matches!(not_found, ClientError::NotFound(_)));
@@ -485,17 +432,6 @@ mod tests {
             last_error: "test".to_string(),
         };
         assert_eq!(format!("{}", err), "Max retries exceeded: 3 attempts");
-    }
-
-    #[test]
-    fn test_pooled_channel_stale() {
-        let channel = PooledChannel::new();
-
-        // Fresh channel should not be stale
-        assert!(!channel.is_stale(Duration::from_secs(60)));
-
-        // Zero duration should be stale
-        assert!(channel.is_stale(Duration::ZERO));
     }
 
     #[tokio::test]
