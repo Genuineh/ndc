@@ -104,6 +104,31 @@ impl Default for AgentConfig {
     }
 }
 
+impl AgentConfig {
+    /// Validate all numeric fields are within sane ranges
+    pub fn validate(&self) -> Result<(), AgentError> {
+        if self.max_tool_calls == 0 || self.max_tool_calls > 200 {
+            return Err(AgentError::ConfigError(format!(
+                "max_tool_calls must be 1..=200, got {}",
+                self.max_tool_calls
+            )));
+        }
+        if self.max_retries > 10 {
+            return Err(AgentError::ConfigError(format!(
+                "max_retries must be 0..=10, got {}",
+                self.max_retries
+            )));
+        }
+        if self.timeout_secs == 0 || self.timeout_secs > 3600 {
+            return Err(AgentError::ConfigError(format!(
+                "timeout_secs must be 1..=3600, got {}",
+                self.timeout_secs
+            )));
+        }
+        Ok(())
+    }
+}
+
 /// Agent 请求
 #[derive(Debug, Clone)]
 pub struct AgentRequest {
@@ -939,19 +964,20 @@ impl AgentOrchestrator {
                 // 添加助手消息和工具结果到历史
                 messages.push(assistant_message.clone());
                 for result in &tool_results {
+                    let sanitized = sanitize_tool_output(&result.content);
                     messages.push(Message {
                         role: MessageRole::Tool,
-                        content: result.content.clone(),
+                        content: sanitized.clone(),
                         // We use `name` to carry tool_call_id for provider adapters.
                         name: Some(result.tool_call_id.clone()),
                         tool_calls: None,
                     });
                     session_state.add_message(AgentMessage {
                         role: MessageRole::Tool,
-                        content: result.content.clone(),
+                        content: sanitized.clone(),
                         timestamp: chrono::Utc::now(),
                         tool_calls: None,
-                        tool_results: Some(vec![result.content.clone()]),
+                        tool_results: Some(vec![sanitized]),
                         tool_call_id: Some(result.tool_call_id.clone()),
                     });
                 }
@@ -1550,6 +1576,21 @@ fn truncate_for_event(content: &str, max: usize) -> String {
     let mut out = trimmed.chars().take(max).collect::<String>();
     out.push_str("...");
     out
+}
+
+/// Maximum characters for tool output before truncation
+const MAX_TOOL_OUTPUT_CHARS: usize = 100_000;
+
+/// Sanitize tool output: truncate if too long, wrap with XML boundary tags
+fn sanitize_tool_output(content: &str) -> String {
+    let truncated = if content.len() > MAX_TOOL_OUTPUT_CHARS {
+        let mut out = content.chars().take(MAX_TOOL_OUTPUT_CHARS).collect::<String>();
+        out.push_str("\n[truncated — output exceeded limit]");
+        out
+    } else {
+        content.to_string()
+    };
+    format!("<tool_output>\n{}\n</tool_output>", truncated)
 }
 
 fn is_confirmation_permission_error(message: &str) -> bool {
@@ -3148,5 +3189,73 @@ mod tests {
             },
         });
         assert!(result.is_err(), "Send with no receivers should return Err");
+    }
+
+    #[test]
+    fn test_sanitize_tool_output_short() {
+        let content = "Hello world";
+        let sanitized = sanitize_tool_output(content);
+        assert!(sanitized.starts_with("<tool_output>"));
+        assert!(sanitized.ends_with("</tool_output>"));
+        assert!(sanitized.contains("Hello world"));
+        assert!(!sanitized.contains("[truncated"));
+    }
+
+    #[test]
+    fn test_sanitize_tool_output_truncated() {
+        let content = "x".repeat(MAX_TOOL_OUTPUT_CHARS + 1000);
+        let sanitized = sanitize_tool_output(&content);
+        assert!(sanitized.starts_with("<tool_output>"));
+        assert!(sanitized.ends_with("</tool_output>"));
+        assert!(sanitized.contains("[truncated"));
+        // The inner content should be at most MAX_TOOL_OUTPUT_CHARS + truncation marker
+        let inner = sanitized
+            .strip_prefix("<tool_output>\n")
+            .unwrap()
+            .strip_suffix("\n</tool_output>")
+            .unwrap();
+        assert!(inner.len() < content.len());
+    }
+
+    #[test]
+    fn test_sanitize_tool_output_exactly_at_limit() {
+        let content = "a".repeat(MAX_TOOL_OUTPUT_CHARS);
+        let sanitized = sanitize_tool_output(&content);
+        assert!(!sanitized.contains("[truncated"));
+        assert!(sanitized.contains(&content));
+    }
+
+    #[test]
+    fn test_agent_config_validate_valid() {
+        let config = AgentConfig::default();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_agent_config_validate_max_tool_calls_zero() {
+        let mut config = AgentConfig::default();
+        config.max_tool_calls = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_agent_config_validate_max_tool_calls_too_large() {
+        let mut config = AgentConfig::default();
+        config.max_tool_calls = 300;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_agent_config_validate_max_retries_too_large() {
+        let mut config = AgentConfig::default();
+        config.max_retries = 50;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_agent_config_validate_timeout_zero() {
+        let mut config = AgentConfig::default();
+        config.timeout_secs = 0;
+        assert!(config.validate().is_err());
     }
 }
