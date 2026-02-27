@@ -160,19 +160,11 @@
 - **修复**: `std::sync::Mutex` → `tokio::sync::Mutex`；`.lock().map_err(...)` → `.lock().await`；移除 PoisonError 处理（tokio Mutex 不 poison）
 - **测试**: 4 个已有测试全绿
 
-#### SEC-M3 SQLite 无连接池
+#### ✅ SEC-M3 SQLite 连接池 — `34152f4`
 
-- **位置**: `crates/storage/src/sqlite.rs` L120-138
-- **现状**: `run_sqlite()` 辅助函数每次调用做 `rusqlite::Connection::open(&path)` 新建连接，通过 `spawn_blocking` 执行
-- **修复步骤**:
-  1. Red: 测试并发 10 次 save_task → 全部成功（当前也应通过，做 baseline）
-  2. Green:
-     - 引入 `r2d2_sqlite` 连接池，`SqliteStorage` 持有 `r2d2::Pool<SqliteConnectionManager>`
-     - `run_sqlite` 改为从 pool 获取连接：`pool.get().map_err(...)?`
-     - 配置池大小 `max_size = 4`（SQLite WAL 模式支持并发读）
-  3. Cargo.toml 添加 `r2d2 = "0.8"`, `r2d2_sqlite = "0.24"`（feature-gated）
-- **影响范围**: `SqliteStorage` 初始化 + `run_sqlite` 辅助函数
-- **现有测试**: ⚠️ 8 个基础 CRUD 测试
+- **位置**: `crates/storage/src/sqlite.rs`
+- **修复**: 自定义 `SqliteConnectionManager` 实现 `r2d2::ManageConnection`（connect 打开连接 + WAL pragma，is_valid 执行 `SELECT 1`）；`SqliteStorage` 持有 `Pool<SqliteConnectionManager>`（max_size=4）；`run_sqlite()` 从 pool 获取连接替代每次 `Connection::open()`
+- **测试**: +2 新测试（10 并发写入 / 5 次顺序复用），全部 12 测试通过
 
 #### ✅ SEC-M5 消息历史无限增长 — `ae47d55`
 
@@ -196,26 +188,17 @@
 
 ### 🔵 P0-SEC-Structural（持续改进）
 
-#### SEC-S3 清理旧管线死代码
+#### ✅ SEC-S3 清理旧管线死代码 — `5d3bf2a`
 
-- **位置**: `crates/interface/src/repl.rs`
-  - `push_log_line()`(L3632)：仅被死代码链调用
-  - `drain_live_execution_events()`(L3646)：无活跃调用方
-  - `event_to_lines()`(L3700)：仅被 drain 和测试调用
-  - `style_session_log_lines()`(L2282)：仅被测试调用
-- **修复步骤**:
-  1. 删除 4 个函数及其关联测试（`test_push_log_line_capped` 等）
-  2. `cargo check` 确认 12 条 dead_code 警告消除
-  3. 若 `event_to_lines` 仍在 `render_execution_events`(L4446) 使用，则保留并仅删除 drain/push
-- **预估**: 删除 ~400 行 + 相关测试 ~100 行
+- **位置**: `crates/interface/src/repl.rs`, `crates/interface/src/grpc_client.rs`
+- **修复**: repl.rs 删除 ~750 行（TUI_MAX_LOG_LINES 常量、ToolCallCard.round 字段、ChatTurn 结构体、hint() 方法、style_session_log_lines/style_session_log_line/render_inline_markdown/parse_inline_spans/push_log_line/drain_live_execution_events 函数 + 18 个关联死测试）；grpc_client.rs 删除 ~70 行（PooledChannel/delay/is_retryable_error + 关联测试）；SlashCommandSpec.summary 重命名为 _summary
+- **注意**: `event_to_lines` 保留（被 `render_execution_events` 生产代码调用）
+- **测试**: 全部 242 接口测试通过
 
-#### SEC-S5 CI 添加 cargo audit
+#### ✅ SEC-S5 CI 添加 cargo audit — `03f4b14`
 
-- **现状**: 项目无 `.github/workflows/` 目录，无 CI 配置文件
-- **修复步骤**:
-  1. 创建 `.github/workflows/ci.yml`
-  2. 包含：`cargo check` / `cargo test` / `cargo clippy` / `cargo audit` / `cargo fmt --check`
-  3. 可选：`cargo deny check` 做更全面的许可证 + 漏洞扫描
+- **位置**: `.github/workflows/ci.yml`
+- **修复**: 创建 GitHub Actions CI 工作流，包含 4 个 job：cargo fmt --check / cargo clippy -D warnings / cargo test --workspace / rustsec/audit-check；push to main 和 PR 触发
 
 #### SEC-S1 拆分三大 God Object
 
