@@ -204,4 +204,105 @@ mod tests {
         assert!(storage.get_memory(&id2).await.unwrap().is_some());
         assert!(storage.get_memory(&id3).await.unwrap().is_some());
     }
+
+    #[tokio::test]
+    async fn test_save_and_get_memory() {
+        let storage = MemoryStorage::new();
+        let mem = make_memory();
+        let id = mem.id;
+        storage.save_memory(&mem).await.unwrap();
+        let got = storage.get_memory(&id).await.unwrap();
+        assert!(got.is_some());
+        assert_eq!(got.unwrap().id, id);
+    }
+
+    #[tokio::test]
+    async fn test_memory_update_existing_no_eviction() {
+        let storage = MemoryStorage::with_capacity(100, 2);
+        let mut mem = make_memory();
+        let id = mem.id;
+        storage.save_memory(&mem).await.unwrap();
+        // Update same memory
+        mem.content = MemoryContent::General {
+            text: "updated fact".to_string(),
+            metadata: String::new(),
+        };
+        storage.save_memory(&mem).await.unwrap();
+        // Should still have only one entry, no extra eviction slot consumed
+        let got = storage.get_memory(&id).await.unwrap().unwrap();
+        match &got.content {
+            MemoryContent::General { text, .. } => assert_eq!(text, "updated fact"),
+            _ => panic!("unexpected content variant"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_list_tasks_returns_all() {
+        let storage = MemoryStorage::new();
+        let t1 = make_task();
+        let t2 = make_task();
+        let id1 = t1.id;
+        let id2 = t2.id;
+        storage.save_task(&t1).await.unwrap();
+        storage.save_task(&t2).await.unwrap();
+        let all = storage.list_tasks().await.unwrap();
+        assert_eq!(all.len(), 2);
+        assert!(all.iter().any(|t| t.id == id1));
+        assert!(all.iter().any(|t| t.id == id2));
+    }
+
+    #[tokio::test]
+    async fn test_get_nonexistent_returns_none() {
+        let storage = MemoryStorage::new();
+        assert!(storage.get_task(&TaskId::new()).await.unwrap().is_none());
+        assert!(storage.get_memory(&MemoryId::new()).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_saves() {
+        use std::sync::Arc;
+        let storage = Arc::new(MemoryStorage::new());
+        let mut handles = vec![];
+        for _ in 0..20 {
+            let s = storage.clone();
+            handles.push(tokio::spawn(async move {
+                let task = make_task();
+                s.save_task(&task).await.unwrap();
+                task.id
+            }));
+        }
+        let mut ids = Vec::new();
+        for h in handles {
+            ids.push(h.await.unwrap());
+        }
+        let all = storage.list_tasks().await.unwrap();
+        assert_eq!(all.len(), 20);
+        for id in &ids {
+            assert!(storage.get_task(id).await.unwrap().is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_zero_capacity_evicts_immediately() {
+        let storage = MemoryStorage::with_capacity(0, 0);
+        let task = make_task();
+        // save should succeed but item is immediately evicted on next insert
+        // With capacity 0, the loop `while map.len() >= 0` always evicts
+        // Actually: if capacity is 0, every new item triggers eviction of itself
+        // Let's verify: inserting and then getting should show eviction behavior
+        storage.save_task(&task).await.unwrap();
+        // capacity 0 means map.len() (1) >= max_tasks (0), so next insert evicts
+        // But the first insert: map is empty (0 >= 0 is true), it tries to evict but nothing in order
+        // Then it inserts. So first item stays.
+        let got = storage.get_task(&task.id).await.unwrap();
+        // Because while 0 >= 0, it pops from order (empty), breaks, then inserts.
+        // So actually the item IS stored.
+        assert!(got.is_some());
+
+        // Second insert should evict the first
+        let task2 = make_task();
+        storage.save_task(&task2).await.unwrap();
+        assert!(storage.get_task(&task.id).await.unwrap().is_none());
+        assert!(storage.get_task(&task2.id).await.unwrap().is_some());
+    }
 }

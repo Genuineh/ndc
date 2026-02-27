@@ -3404,4 +3404,110 @@ mod tests {
             assert!(guard.project_last_root.contains_key(&key));
         }
     }
+
+    #[tokio::test]
+    async fn test_concurrent_get_or_create_same_project_no_data_loss() {
+        let provider = Arc::new(ScriptedProvider::new(vec![]));
+        let tool_executor = Arc::new(MockToolExecutor::new());
+        let verifier = Arc::new(TaskVerifier::new(Arc::new(MockStorage)));
+        let orchestrator = Arc::new(AgentOrchestrator::new(
+            provider,
+            tool_executor,
+            verifier,
+            AgentConfig::default(),
+        ));
+
+        let project = make_temp_project_path("concurrent-project");
+        let mut handles = Vec::new();
+        for i in 0..10 {
+            let orch = orchestrator.clone();
+            let proj = project.clone();
+            handles.push(tokio::spawn(async move {
+                let session_id = format!("concurrent-sess-{}", i);
+                orch.get_or_create_session(&session_id, Some(proj))
+                    .await
+                    .expect("create session")
+            }));
+        }
+
+        let sessions: Vec<AgentSession> = {
+            let mut results = Vec::new();
+            for h in handles {
+                results.push(h.await.unwrap());
+            }
+            results
+        };
+
+        // All sessions should share the same project_id
+        let project_id = &sessions[0].project_id;
+        assert!(sessions.iter().all(|s| &s.project_id == project_id));
+
+        // All 10 should be tracked
+        let list = orchestrator
+            .session_ids_for_project(project_id, Some(20))
+            .await;
+        assert_eq!(list.len(), 10);
+
+        // Latest should be one of the sessions
+        let latest = orchestrator
+            .latest_session_id_for_project(project_id)
+            .await
+            .expect("latest");
+        assert!(sessions.iter().any(|s| s.id == latest));
+
+        std::fs::remove_dir_all(project).ok();
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_save_session_latest_tracking() {
+        let provider = Arc::new(ScriptedProvider::new(vec![]));
+        let tool_executor = Arc::new(MockToolExecutor::new());
+        let verifier = Arc::new(TaskVerifier::new(Arc::new(MockStorage)));
+        let orchestrator = Arc::new(AgentOrchestrator::new(
+            provider,
+            tool_executor,
+            verifier,
+            AgentConfig::default(),
+        ));
+
+        let project = make_temp_project_path("save-race");
+        // Create 5 sessions sequentially
+        let mut sessions = Vec::new();
+        for i in 0..5 {
+            let s = orchestrator
+                .get_or_create_session(&format!("save-race-{}", i), Some(project.clone()))
+                .await
+                .unwrap();
+            sessions.push(s);
+        }
+
+        // Concurrently save all sessions
+        let mut handles = Vec::new();
+        for s in &sessions {
+            let orch = orchestrator.clone();
+            let session = s.clone();
+            handles.push(tokio::spawn(async move {
+                orch.save_session(session).await;
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        // All sessions should still be retrievable
+        let project_id = &sessions[0].project_id;
+        let list = orchestrator
+            .session_ids_for_project(project_id, Some(20))
+            .await;
+        assert_eq!(list.len(), 5);
+
+        // Latest should be one of the saved sessions
+        let latest = orchestrator
+            .latest_session_id_for_project(project_id)
+            .await
+            .unwrap();
+        assert!(sessions.iter().any(|s| s.id == latest));
+
+        std::fs::remove_dir_all(project).ok();
+    }
 }

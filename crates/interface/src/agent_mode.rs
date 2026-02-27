@@ -3186,4 +3186,73 @@ mod tests {
         assert!(!result);
         responder.await.unwrap();
     }
+
+    #[test]
+    fn test_resolve_permission_wildcard_fallback() {
+        let mut permissions = HashMap::new();
+        permissions.insert("file_read".to_string(), PermissionRule::Allow);
+        permissions.insert("*".to_string(), PermissionRule::Deny);
+
+        let executor = ReplToolExecutor::new(
+            Arc::new(ToolRegistry::new()),
+            permissions,
+            Arc::new(tokio::sync::Mutex::new(None)),
+        );
+
+        // Exact match
+        assert_eq!(executor.resolve_permission_rule("file_read"), PermissionRule::Allow);
+        // Wildcard fallback
+        assert_eq!(executor.resolve_permission_rule("shell_execute"), PermissionRule::Deny);
+        assert_eq!(executor.resolve_permission_rule("network"), PermissionRule::Deny);
+    }
+
+    #[test]
+    fn test_resolve_permission_no_wildcard_defaults_to_ask() {
+        let mut permissions = HashMap::new();
+        permissions.insert("file_read".to_string(), PermissionRule::Allow);
+        // No "*" entry
+
+        let executor = ReplToolExecutor::new(
+            Arc::new(ToolRegistry::new()),
+            permissions,
+            Arc::new(tokio::sync::Mutex::new(None)),
+        );
+
+        // Known key
+        assert_eq!(executor.resolve_permission_rule("file_read"), PermissionRule::Allow);
+        // Unknown key with no wildcard → defaults to Ask
+        assert_eq!(executor.resolve_permission_rule("shell_execute"), PermissionRule::Ask);
+    }
+
+    #[test]
+    fn test_classify_unknown_tool_uses_wildcard_key() {
+        let executor = ReplToolExecutor::new(
+            Arc::new(ToolRegistry::new()),
+            HashMap::new(),
+            Arc::new(tokio::sync::Mutex::new(None)),
+        );
+
+        let (key, desc) = executor.classify_permission("some_custom_tool", &serde_json::json!({}));
+        assert_eq!(key, "*");
+        assert!(desc.contains("some_custom_tool"));
+    }
+
+    #[test]
+    fn test_classify_git_commit_vs_other_operation() {
+        let executor = ReplToolExecutor::new(
+            Arc::new(ToolRegistry::new()),
+            HashMap::new(),
+            Arc::new(tokio::sync::Mutex::new(None)),
+        );
+
+        // git commit → "git_commit"
+        let (key, desc) = executor.classify_permission("git", &serde_json::json!({"operation": "commit"}));
+        assert_eq!(key, "git_commit");
+        assert_eq!(desc, "git commit");
+
+        // git push → "git"
+        let (key, desc) = executor.classify_permission("git", &serde_json::json!({"operation": "push"}));
+        assert_eq!(key, "git");
+        assert_eq!(desc, "git push");
+    }
 }

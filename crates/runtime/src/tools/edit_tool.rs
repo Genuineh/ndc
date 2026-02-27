@@ -458,4 +458,42 @@ mod tests {
         let tmp_path = file_path.with_extension("tmp");
         assert!(!tmp_path.exists(), ".tmp file should not remain after atomic edit");
     }
+
+    #[tokio::test]
+    async fn test_edit_line_trimmed_fallback() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("trimmed.txt");
+        // File has trailing spaces that oldString doesn't
+        std::fs::write(&file_path, "hello world   \nsecond line  ").unwrap();
+
+        let tool = EditTool::new();
+        let params = serde_json::json!({
+            "path": file_path.to_string_lossy(),
+            "oldString": "hello world",
+            "newString": "goodbye world"
+        });
+        let result = tool.execute(&params).await.unwrap();
+        assert!(result.success);
+        let content = std::fs::read_to_string(&file_path).unwrap();
+        assert!(content.contains("goodbye world"));
+    }
+
+    #[tokio::test]
+    async fn test_edit_empty_new_string_deletes_content() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("delete.txt");
+        std::fs::write(&file_path, "keep this\nremove this\nkeep this too").unwrap();
+
+        let tool = EditTool::new();
+        let params = serde_json::json!({
+            "path": file_path.to_string_lossy(),
+            "oldString": "remove this\n",
+            "newString": ""
+        });
+        let result = tool.execute(&params).await.unwrap();
+        assert!(result.success);
+        let content = std::fs::read_to_string(&file_path).unwrap();
+        assert!(!content.contains("remove this"));
+        assert!(content.contains("keep this"));
+    }
 }

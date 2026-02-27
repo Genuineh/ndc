@@ -356,4 +356,59 @@ mod tests {
             err
         );
     }
+
+    #[tokio::test]
+    async fn test_read_empty_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("empty.txt");
+        std::fs::write(&file_path, "").unwrap();
+
+        let tool = ReadTool::new();
+        let params = serde_json::json!({
+            "path": file_path.to_str().unwrap()
+        });
+        let result = tool.execute(&params).await.unwrap();
+        assert!(result.success);
+        assert!(result.output.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_read_single_line_no_newline() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("single.txt");
+        std::fs::write(&file_path, "no newline at end").unwrap();
+
+        let tool = ReadTool::new();
+        let params = serde_json::json!({
+            "path": file_path.to_str().unwrap()
+        });
+        let result = tool.execute(&params).await.unwrap();
+        assert!(result.success);
+        assert_eq!(result.output, "no newline at end");
+    }
+
+    #[tokio::test]
+    async fn test_read_binary_file_returns_error() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("binary.dat");
+        std::fs::write(&file_path, &[0x00, 0xFF, 0x80, 0xFE, 0x01]).unwrap();
+
+        let tool = ReadTool::new();
+        let params = serde_json::json!({
+            "path": file_path.to_str().unwrap()
+        });
+        let result = tool.execute(&params).await;
+        // read_to_string will fail on invalid UTF-8
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_read_nonexistent_path() {
+        let tool = ReadTool::new();
+        let params = serde_json::json!({
+            "path": "/tmp/nonexistent_file_12345.txt"
+        });
+        let result = tool.execute(&params).await;
+        assert!(result.is_err());
+    }
 }
