@@ -14,6 +14,7 @@ pub mod agent_mode;
 pub mod cli;
 pub mod daemon;
 pub mod interactive;
+pub(crate) mod permission_engine;
 pub(crate) mod project_index;
 pub(crate) mod provider_config;
 pub mod redaction;
