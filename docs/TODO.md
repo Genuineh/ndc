@@ -37,7 +37,7 @@
 
 ### P1-UX 延期项
 
-- [ ] 权限区独立交互（y/n/a 快捷键）— 需 async channel 重构（当前权限确认走 stdin 阻塞）
+- [x] 权限区独立交互（y/n/a 快捷键）— `baaf076` mpsc+oneshot channel 替换 stdin 阻塞
 
 ---
 
@@ -164,62 +164,23 @@
 - **影响范围**: gRPC server 启动代码，所有流式端点间接受益
 - **现有测试**: ❌ 无并发/压力测试
 
-#### SEC-H4 文件写入非原子
+#### ✅ SEC-H4 文件写入非原子 — `48333c3`
 
-- **位置**:
-  - `crates/runtime/src/tools/write_tool.rs` L66-89：`fs::write(&path, content)` 直接覆写
-  - `crates/runtime/src/tools/edit_tool.rs` L295：`fs::write(&path, &result.0)` 直接覆写
-- **现状**:
-  - 写入中断（断电/panic）→ 文件损坏，内容丢失无备份
-  - append 模式先 `read_to_string` 再 `write`：TOCTOU（读写间文件可被其他进程修改）
-- **修复步骤**:
-  1. Red: 测试写入后文件内容正确 / 模拟写入中断（temp 文件存在但未 rename）
-  2. Green: 新增 `atomic_write(path, content)` 辅助函数：
-     ```rust
-     async fn atomic_write(path: &Path, content: &str) -> io::Result<()> {
-         let tmp = path.with_extension("tmp");
-         fs::write(&tmp, content).await?;
-         fs::rename(&tmp, path).await?;
-         Ok(())
-     }
-     ```
-  3. write_tool / edit_tool 共用此函数
-- **影响范围**: `WriteTool::execute()` + `EditTool::execute()`
-- **现有测试**: ⚠️ 有基础写入测试，无原子性/中断场景
+- **位置**: `crates/runtime/src/tools/write_tool.rs` + `edit_tool.rs`
+- **修复**: 新增 `atomic_write(path, content)` 辅助函数（write-tmp + rename），WriteTool/EditTool 均改用
+- **测试**: +6 新测试（atomic_write helper 基础/覆写、write 原子/覆写/append、edit 原子）
 
-#### SEC-H7 验证结果 unwrap panic
+#### ✅ SEC-H7 验证结果 unwrap panic — `6790864`
 
-- **位置**: `crates/core/src/ai_agent/orchestrator.rs` L1038, L1050
-- **现状**:
-  - L1038: `verification_result.as_ref().unwrap()` → 调 `generate_continuation_prompt`
-  - L1050: `verification_result.as_ref().unwrap()` → 调 `generate_feedback_message`
-  - 当 `should_verify = false` 时 `verification_result = None`，但 `needs_continuation` 在 `_ => false` 分支匹配 None → 不触发 unwrap
-  - **隐性风险**: 逻辑分支变化（如新增 VerificationResult 变体）可能导致 match 未覆盖 → panic
-- **修复步骤**:
-  1. Red: 测试 `verification_result = None` 时不 panic
-  2. Green: 将 `unwrap()` 替换为 `if let Some(vr) = verification_result.as_ref()` guard
-  3. 或重构为 match arm 内直接解构 `Some(vr)`
-- **影响范围**: 验证续跑逻辑，2 处 unwrap
-- **现有测试**: ⚠️ 有验证测试但未覆盖 None 路径
+- **位置**: `crates/core/src/ai_agent/orchestrator.rs`
+- **修复**: match + unwrap 重构为 `if let (true, Some(vr))` 直接解构，消除隐性 panic 路径
+- **测试**: 现有 185 测试全绿，逻辑行为不变
 
-#### SEC-H8 事件广播静默丢弃
+#### ✅ SEC-H8 事件广播静默丢弃 — `9c5bde8`
 
-- **位置**: `crates/core/src/ai_agent/orchestrator.rs` L236
-- **现状**:
-  - `emit_event()`(L230-240) 中 `let _ = self.event_tx.send(...)` 静默丢弃发送错误
-  - broadcast channel 容量 2048（L325），缓冲区满时新事件丢失
-  - UI 侧（REPL/gRPC）接收不到事件 → 显示过期/不完整的 session timeline
-- **修复步骤**:
-  1. Red: 测试 channel 满时 emit_event 记录 warn 日志
-  2. Green:
-     ```rust
-     if let Err(e) = self.event_tx.send(event) {
-         warn!("Event broadcast failed ({}  receivers): {}", self.event_tx.receiver_count(), e);
-     }
-     ```
-  3. 可选：添加 metrics counter 统计丢弃事件数
-- **影响范围**: `emit_event` 单一函数
-- **现有测试**: ❌ 无 channel 溢出测试
+- **位置**: `crates/core/src/ai_agent/orchestrator.rs`
+- **修复**: `let _ = event_tx.send()` → `if let Err(e)` + `tracing::warn!` 记录失败及 receiver 数量
+- **测试**: +1 新测试（test_event_broadcast_no_receivers_does_not_panic）
 
 #### SEC-H9 LSP 子进程无超时回收
 
@@ -245,29 +206,11 @@
 - **影响范围**: `LspTool` 所有诊断方法
 - **现有测试**: ❌ 无超时测试
 
-#### SEC-H10 Session ID 无格式校验
+#### ✅ SEC-H10 Session ID 格式校验 — `563aa19`
 
-- **位置**: `crates/interface/src/grpc.rs` L153-171
-- **现状**:
-  - `validate_requested_session()`(L153) 仅检查 `is_empty()`，不验证格式
-  - Session ID 由 `ulid::Ulid::new().to_string()` 生成（26 字符 alphanumeric）
-  - 恶意输入超长字符串 / 含换行符 / ANSI escape → 日志注入、错误消息污染
-  - 错误返回中直接拼接 `requested_session_id`（L163-165），可注入
-- **修复步骤**:
-  1. Red: 测试非法 session_id（超长、含换行、非 alphanumeric）→ 返回 `InvalidArgument`
-  2. Green: 在 `validate_requested_session` 开头添加：
-     ```rust
-     if !requested_session_id.is_empty() {
-         if requested_session_id.len() > 128
-             || !requested_session_id.chars().all(|c| c.is_ascii_alphanumeric())
-         {
-             return Err(tonic::Status::invalid_argument("invalid session ID format"));
-         }
-     }
-     ```
-  3. 错误消息中不回显原始 session_id
-- **影响范围**: 所有 gRPC 端点接收 session_id 的入口
-- **现有测试**: ❌ 无格式校验测试
+- **位置**: `crates/interface/src/grpc.rs`
+- **修复**: 新增长度上限 128 + 字符白名单（alphanumeric/-/_）校验，错误消息不再回显原始 ID
+- **测试**: +2 新测试（合法 ID 通过 / 注入类 ID 拒绝）
 
 ---
 
