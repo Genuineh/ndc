@@ -690,7 +690,10 @@ mod tests {
         let config = create_anthropic_config("anthropic", "bad\nkey\r\n", "claude-sonnet-4");
         let provider = AnthropicProvider::new(config, Arc::new(SimpleTokenCounter::new()));
         let result = provider.get_headers();
-        assert!(result.is_err(), "Expected Err for API key with control chars");
+        assert!(
+            result.is_err(),
+            "Expected Err for API key with control chars"
+        );
         let err = result.unwrap_err();
         assert!(
             matches!(err, ProviderError::InvalidConfig { .. }),
@@ -700,7 +703,8 @@ mod tests {
 
     #[test]
     fn test_get_headers_succeeds_with_valid_key() {
-        let config = create_anthropic_config("anthropic", "sk-ant-valid-key-1234", "claude-sonnet-4");
+        let config =
+            create_anthropic_config("anthropic", "sk-ant-valid-key-1234", "claude-sonnet-4");
         let provider = AnthropicProvider::new(config, Arc::new(SimpleTokenCounter::new()));
         let result = provider.get_headers();
         assert!(result.is_ok(), "Valid API key should succeed: {result:?}");
@@ -708,7 +712,8 @@ mod tests {
 
     #[test]
     fn test_provider_config_debug_masks_api_key() {
-        let config = create_anthropic_config("anthropic", "sk-ant-secret-key-12345678", "claude-sonnet-4");
+        let config =
+            create_anthropic_config("anthropic", "sk-ant-secret-key-12345678", "claude-sonnet-4");
         let debug_output = format!("{:?}", config);
         assert!(
             !debug_output.contains("sk-ant-secret-key-12345678"),

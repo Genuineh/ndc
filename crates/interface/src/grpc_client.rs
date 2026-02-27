@@ -122,9 +122,7 @@ impl NdcClient {
 
     /// Create a client with custom configuration
     pub fn with_config(config: ClientConfig) -> Self {
-        Self {
-            config,
-        }
+        Self { config }
     }
 
     /// Connect to the server - returns endpoint URL

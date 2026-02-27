@@ -108,10 +108,11 @@ impl Tool for ShellTool {
             "NODE_OPTIONS",
             "DYLD_INSERT_LIBRARIES",
         ];
-        let filtered_env: HashSet<&str> = ["PATH", "HOME", "USER", "SHELL", "LANG", "TERM", "LC_ALL"]
-            .iter()
-            .cloned()
-            .collect();
+        let filtered_env: HashSet<&str> =
+            ["PATH", "HOME", "USER", "SHELL", "LANG", "TERM", "LC_ALL"]
+                .iter()
+                .cloned()
+                .collect();
         for (key, value) in std::env::vars() {
             if DANGEROUS_ENV_VARS.contains(&key.as_str()) {
                 continue;
@@ -121,18 +122,15 @@ impl Tool for ShellTool {
             }
         }
 
-        let output = tokio::time::timeout(
-            std::time::Duration::from_secs(timeout),
-            cmd.output(),
-        )
-        .await
-        .map_err(|_| {
-            ToolError::Timeout(format!(
-                "Command '{}' timed out after {}s",
-                command, timeout
-            ))
-        })?
-        .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+        let output = tokio::time::timeout(std::time::Duration::from_secs(timeout), cmd.output())
+            .await
+            .map_err(|_| {
+                ToolError::Timeout(format!(
+                    "Command '{}' timed out after {}s",
+                    command, timeout
+                ))
+            })?
+            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);

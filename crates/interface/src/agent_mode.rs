@@ -21,17 +21,12 @@ use tracing::{debug, info};
 use ndc_core::{
     AbstractHistory, AgentConfig, AgentError, AgentOrchestrator, AgentRequest, AgentResponse,
     AgentRole, ApiSurface, FailurePattern, InvariantPriority, LlmProvider, ModelInfo,
-    NdcConfigLoader, ProviderType, RawCurrent, StepContext, SubTaskId, TaskId,
-    TaskStorage, TaskVerifier, TrajectoryState, VersionedInvariant, WorkingMemory,
+    NdcConfigLoader, ProviderType, RawCurrent, StepContext, SubTaskId, TaskId, TaskStorage,
+    TaskVerifier, TrajectoryState, VersionedInvariant, WorkingMemory,
 };
-use ndc_runtime::{
-    Executor, SharedStorage,
-    tools::ToolRegistry,
-};
+use ndc_runtime::{Executor, SharedStorage, tools::ToolRegistry};
 
-use crate::provider_config::{
-    create_provider_config, is_minimax_family,
-};
+use crate::provider_config::{create_provider_config, is_minimax_family};
 
 use crate::project_index::{
     ProjectIndexStore, build_project_scoped_session_id, canonicalize_existing_dir,
@@ -1848,10 +1843,25 @@ mod tests {
     #[test]
     fn test_dangerous_operations_require_ask() {
         let config = AgentModeConfig::default();
-        assert_eq!(config.permissions.get("shell_execute"), Some(&PermissionRule::Ask));
-        assert_eq!(config.permissions.get("network"), Some(&PermissionRule::Ask));
-        assert_eq!(config.permissions.get("file_write"), Some(&PermissionRule::Ask));
-        assert_eq!(config.permissions.get("file_delete"), Some(&PermissionRule::Ask));
-        assert_eq!(config.permissions.get("git_commit"), Some(&PermissionRule::Ask));
+        assert_eq!(
+            config.permissions.get("shell_execute"),
+            Some(&PermissionRule::Ask)
+        );
+        assert_eq!(
+            config.permissions.get("network"),
+            Some(&PermissionRule::Ask)
+        );
+        assert_eq!(
+            config.permissions.get("file_write"),
+            Some(&PermissionRule::Ask)
+        );
+        assert_eq!(
+            config.permissions.get("file_delete"),
+            Some(&PermissionRule::Ask)
+        );
+        assert_eq!(
+            config.permissions.get("git_commit"),
+            Some(&PermissionRule::Ask)
+        );
     }
 }

@@ -105,7 +105,10 @@ impl SqliteStorage {
         .await
         .map_err(|e| SqliteStorageError::DatabaseError(e.to_string()))??;
 
-        info!("SQLite storage initialized at: {:?} (pool_size={})", path, MAX_POOL_SIZE);
+        info!(
+            "SQLite storage initialized at: {:?} (pool_size={})",
+            path, MAX_POOL_SIZE
+        );
 
         Ok(Self { path, pool })
     }

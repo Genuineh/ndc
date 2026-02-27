@@ -162,9 +162,7 @@ impl AgentGrpcService {
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
         {
-            return Err(tonic::Status::invalid_argument(
-                "invalid session ID format",
-            ));
+            return Err(tonic::Status::invalid_argument("invalid session ID format"));
         }
 
         self.agent_manager
@@ -1120,7 +1118,9 @@ pub async fn run_grpc_server(address: SocketAddr) -> Result<(), Box<dyn std::err
     }
 
     tonic::transport::Server::builder()
-        .layer(tower::limit::ConcurrencyLimitLayer::new(MAX_CONCURRENT_GRPC_REQUESTS))
+        .layer(tower::limit::ConcurrencyLimitLayer::new(
+            MAX_CONCURRENT_GRPC_REQUESTS,
+        ))
         .timeout(std::time::Duration::from_secs(GRPC_REQUEST_TIMEOUT_SECS))
         .http2_max_pending_accept_reset_streams(Some(64))
         .add_service(generated::ndc_service_server::NdcServiceServer::new(
@@ -2101,18 +2101,22 @@ mod tests {
     #[test]
     fn test_session_id_format_validation_rejects_injection() {
         let invalid_ids = [
-            "session\ninjection",        // newline
-            "session\x1b[31mred\x1b[0m", // ANSI escape
+            "session\ninjection",               // newline
+            "session\x1b[31mred\x1b[0m",        // ANSI escape
             "session<script>alert(1)</script>", // HTML injection
-            &"a".repeat(200),             // too long
-            "session id with spaces",     // spaces
+            &"a".repeat(200),                   // too long
+            "session id with spaces",           // spaces
         ];
         for id in &invalid_ids {
             let valid = id.len() <= 128
                 && id
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-            assert!(!valid, "ID should be rejected: {:?}", &id[..id.len().min(40)]);
+            assert!(
+                !valid,
+                "ID should be rejected: {:?}",
+                &id[..id.len().min(40)]
+            );
         }
     }
 }

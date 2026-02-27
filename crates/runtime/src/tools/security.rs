@@ -533,10 +533,7 @@ mod tests {
             normalize_path(Path::new("/a/b/./c")),
             PathBuf::from("/a/b/c")
         );
-        assert_eq!(
-            normalize_path(Path::new("/a/b/c")),
-            PathBuf::from("/a/b/c")
-        );
+        assert_eq!(normalize_path(Path::new("/a/b/c")), PathBuf::from("/a/b/c"));
     }
 
     #[test]

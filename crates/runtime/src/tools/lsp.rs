@@ -89,8 +89,7 @@ impl LspClient {
             cmd.args(&self.server_command[1..]);
         }
         // Just check if command exists, don't actually run server
-        cmd.current_dir(&self.root)
-            .kill_on_drop(true);
+        cmd.current_dir(&self.root).kill_on_drop(true);
 
         match tokio::time::timeout(
             Duration::from_secs(AVAILABILITY_CHECK_TIMEOUT_SECS),
@@ -258,12 +257,12 @@ impl LspClient {
     ) -> Result<DiagnosticSummary, String> {
         let mut cmd = Command::new("npx");
         cmd.args([
-                "eslint",
-                "--format",
-                "json",
-                file_path.to_string_lossy().as_ref(),
-            ])
-            .current_dir(&self.root);
+            "eslint",
+            "--format",
+            "json",
+            file_path.to_string_lossy().as_ref(),
+        ])
+        .current_dir(&self.root);
         let output = Self::run_with_timeout(&mut cmd, DEFAULT_LSP_TIMEOUT_SECS).await?;
 
         if output.status.success() {
@@ -343,11 +342,11 @@ impl LspClient {
     ) -> Result<DiagnosticSummary, String> {
         let mut cmd = Command::new("npx");
         cmd.args([
-                "pyright",
-                "--outputjson",
-                file_path.to_string_lossy().as_ref(),
-            ])
-            .current_dir(&self.root);
+            "pyright",
+            "--outputjson",
+            file_path.to_string_lossy().as_ref(),
+        ])
+        .current_dir(&self.root);
         let output = Self::run_with_timeout(&mut cmd, DEFAULT_LSP_TIMEOUT_SECS).await?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -625,7 +624,11 @@ mod tests {
         let result = LspClient::run_with_timeout(&mut cmd, 1).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.contains("timeout"), "Error should mention timeout: {}", err);
+        assert!(
+            err.contains("timeout"),
+            "Error should mention timeout: {}",
+            err
+        );
     }
 
     #[tokio::test]

@@ -92,9 +92,7 @@ impl Tool for WriteTool {
                 .map_err(ToolError::Io)?;
         } else {
             // Write (or create) file atomically
-            atomic_write(&path, content)
-                .await
-                .map_err(ToolError::Io)?;
+            atomic_write(&path, content).await.map_err(ToolError::Io)?;
         }
 
         let bytes_written = content.len();
@@ -268,7 +266,10 @@ mod tests {
 
         // No .tmp file should remain
         let tmp_path = file_path.with_extension("tmp");
-        assert!(!tmp_path.exists(), ".tmp file should not remain after atomic write");
+        assert!(
+            !tmp_path.exists(),
+            ".tmp file should not remain after atomic write"
+        );
     }
 
     #[tokio::test]
@@ -310,7 +311,10 @@ mod tests {
         assert_eq!(content, "base appended");
 
         let tmp_path = file_path.with_extension("tmp");
-        assert!(!tmp_path.exists(), ".tmp file should not remain after append");
+        assert!(
+            !tmp_path.exists(),
+            ".tmp file should not remain after append"
+        );
     }
 
     #[tokio::test]

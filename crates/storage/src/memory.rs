@@ -106,7 +106,9 @@ pub fn create_memory_storage() -> SharedStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ndc_core::{AgentId, AgentRole, AccessControl, MemoryContent, MemoryMetadata, MemoryStability};
+    use ndc_core::{
+        AccessControl, AgentId, AgentRole, MemoryContent, MemoryMetadata, MemoryStability,
+    };
 
     fn make_task() -> Task {
         Task::new(
@@ -255,7 +257,13 @@ mod tests {
     async fn test_get_nonexistent_returns_none() {
         let storage = MemoryStorage::new();
         assert!(storage.get_task(&TaskId::new()).await.unwrap().is_none());
-        assert!(storage.get_memory(&MemoryId::new()).await.unwrap().is_none());
+        assert!(
+            storage
+                .get_memory(&MemoryId::new())
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]

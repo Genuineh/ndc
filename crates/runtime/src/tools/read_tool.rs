@@ -320,7 +320,11 @@ mod tests {
         let result = tool.execute(&params).await;
         assert!(result.is_err());
         let err = format!("{}", result.unwrap_err());
-        assert!(err.contains("too large"), "Error should mention size: {}", err);
+        assert!(
+            err.contains("too large"),
+            "Error should mention size: {}",
+            err
+        );
     }
 
     #[tokio::test]

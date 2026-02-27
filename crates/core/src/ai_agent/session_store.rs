@@ -58,8 +58,7 @@ impl SessionStore {
             self.index_session(&session);
             Ok(session)
         } else {
-            let session =
-                AgentSession::new_with_project_identity(session_id.to_string(), identity);
+            let session = AgentSession::new_with_project_identity(session_id.to_string(), identity);
             self.sessions
                 .insert(session_id.to_string(), session.clone());
             self.index_session(&session);
@@ -92,10 +91,7 @@ impl SessionStore {
     }
 
     /// Return project identity metadata for a session id.
-    pub(crate) fn session_project_identity(
-        &self,
-        session_id: &str,
-    ) -> Option<ProjectIdentity> {
+    pub(crate) fn session_project_identity(&self, session_id: &str) -> Option<ProjectIdentity> {
         let session = self.sessions.get(session_id)?;
         Some(ProjectIdentity {
             project_id: session.project_id.clone(),

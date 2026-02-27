@@ -126,8 +126,7 @@ pub(crate) fn build_messages(
 
         // 如果存在不匹配的 ID，清理掉孤立的 tool_use 和 tool_result
         let orphan_uses: HashSet<&String> = tool_use_ids.difference(&tool_result_ids).collect();
-        let orphan_results: HashSet<&String> =
-            tool_result_ids.difference(&tool_use_ids).collect();
+        let orphan_results: HashSet<&String> = tool_result_ids.difference(&tool_use_ids).collect();
 
         if !orphan_uses.is_empty() || !orphan_results.is_empty() {
             if !orphan_uses.is_empty() {
@@ -372,10 +371,9 @@ mod tests {
                 failure_patterns: vec![],
                 root_cause_summary: Some("test root cause".to_string()),
                 attempt_count: 2,
-                trajectory_state:
-                    crate::TrajectoryState::Progressing {
-                        steps_since_last_failure: 1,
-                    },
+                trajectory_state: crate::TrajectoryState::Progressing {
+                    steps_since_last_failure: 1,
+                },
             },
             raw_current: crate::RawCurrent {
                 active_files: vec![std::path::PathBuf::from("src/main.rs")],
@@ -414,7 +412,9 @@ mod tests {
         let rendered = injector.inject();
         // Should contain failure-related content
         assert!(
-            rendered.contains("failure") || rendered.contains("error") || rendered.contains("Recent"),
+            rendered.contains("failure")
+                || rendered.contains("error")
+                || rendered.contains("Recent"),
             "Injector should surface recent failures"
         );
     }

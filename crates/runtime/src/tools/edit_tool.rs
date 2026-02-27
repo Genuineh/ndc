@@ -456,7 +456,10 @@ mod tests {
 
         // No .tmp file should remain after atomic edit
         let tmp_path = file_path.with_extension("tmp");
-        assert!(!tmp_path.exists(), ".tmp file should not remain after atomic edit");
+        assert!(
+            !tmp_path.exists(),
+            ".tmp file should not remain after atomic edit"
+        );
     }
 
     #[tokio::test]
