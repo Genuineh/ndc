@@ -13,6 +13,7 @@
 //! - 权限控制 - 危险操作需要人工确认
 
 pub mod adapters;
+pub(crate) mod helpers;
 pub mod injectors;
 pub mod orchestrator;
 pub(crate) mod prompt_builder;
