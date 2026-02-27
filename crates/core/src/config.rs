@@ -53,6 +53,7 @@ struct YamlNdcConfig {
     pub repl: Option<YamlReplConfig>,
     pub runtime: Option<YamlRuntimeConfig>,
     pub storage: Option<YamlStorageConfig>,
+    #[serde(default)]
     pub agents: Vec<YamlAgentProfile>,
 }
 
@@ -521,6 +522,56 @@ impl NdcConfigLoader {
         }
     }
 
+    /// Save provider and model preference to the user-level config file.
+    ///
+    /// Reads the existing user config (if any), updates only `llm.provider`
+    /// and `llm.model`, and writes it back. Creates the config directory
+    /// if it doesn't exist.
+    pub fn save_llm_preference(provider: &str, model: &str) -> Result<(), ConfigError> {
+        Self::save_llm_preference_to(ConfigLayer::User.path(), provider, model)
+    }
+
+    /// Save provider and model preference to a specific config directory.
+    /// (Testable variant that accepts an explicit path.)
+    pub fn save_llm_preference_to(
+        config_dir: PathBuf,
+        provider: &str,
+        model: &str,
+    ) -> Result<(), ConfigError> {
+        let config_path = config_dir.join("config.yaml");
+
+        // Read existing config or start with empty
+        let mut config: NdcConfig = if config_path.exists() {
+            let content = std::fs::read_to_string(&config_path)
+                .map_err(|e| ConfigError::ParseError(e.to_string()))?;
+            serde_yaml::from_str(&content).map_err(|e| ConfigError::ParseError(e.to_string()))?
+        } else {
+            NdcConfig {
+                llm: None,
+                repl: None,
+                runtime: None,
+                storage: None,
+                agents: Vec::new(),
+            }
+        };
+
+        // Update only provider and model
+        let llm = config.llm.get_or_insert_with(YamlLlmConfig::default);
+        llm.provider = provider.to_string();
+        llm.model = model.to_string();
+
+        // Ensure directory exists
+        std::fs::create_dir_all(&config_dir)
+            .map_err(|e| ConfigError::ParseError(format!("Failed to create config dir: {e}")))?;
+
+        let yaml =
+            serde_yaml::to_string(&config).map_err(|e| ConfigError::ParseError(e.to_string()))?;
+        std::fs::write(&config_path, yaml)
+            .map_err(|e| ConfigError::ParseError(format!("Failed to write config: {e}")))?;
+
+        Ok(())
+    }
+
     pub fn config(&self) -> &NdcConfig {
         &self.config
     }
@@ -820,5 +871,85 @@ mod config_tests {
         let mut config = YamlReplConfig::default();
         config.session_timeout = 0;
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_save_llm_preference_creates_new_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path().join("ndc");
+
+        NdcConfigLoader::save_llm_preference_to(
+            config_dir.clone(),
+            "anthropic",
+            "claude-sonnet-4-5-20250929",
+        )
+        .unwrap();
+
+        let content = std::fs::read_to_string(config_dir.join("config.yaml")).unwrap();
+        let config: NdcConfig = serde_yaml::from_str(&content).unwrap();
+        let llm = config.llm.unwrap();
+        assert_eq!(llm.provider, "anthropic");
+        assert_eq!(llm.model, "claude-sonnet-4-5-20250929");
+    }
+
+    #[test]
+    fn test_save_llm_preference_preserves_existing_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path().join("ndc");
+        std::fs::create_dir_all(&config_dir).unwrap();
+
+        // Write initial config with custom repl settings
+        let initial = r#"
+llm:
+  provider: openai
+  model: gpt-4o
+  temperature: 0.5
+  api_key: "env://MY_KEY"
+repl:
+  prompt: "test> "
+"#;
+        std::fs::write(config_dir.join("config.yaml"), initial).unwrap();
+
+        // Save new provider preference
+        NdcConfigLoader::save_llm_preference_to(
+            config_dir.clone(),
+            "anthropic",
+            "claude-sonnet-4-5-20250929",
+        )
+        .unwrap();
+
+        let content = std::fs::read_to_string(config_dir.join("config.yaml")).unwrap();
+        let config: NdcConfig = serde_yaml::from_str(&content).unwrap();
+        let llm = config.llm.unwrap();
+        assert_eq!(llm.provider, "anthropic");
+        assert_eq!(llm.model, "claude-sonnet-4-5-20250929");
+        // temperature and api_key should be preserved
+        assert!((llm.temperature - 0.5).abs() < f32::EPSILON);
+        assert_eq!(llm.api_key, Some("env://MY_KEY".to_string()));
+        // repl config should be preserved
+        let repl = config.repl.unwrap();
+        assert_eq!(repl.prompt, "test> ");
+    }
+
+    #[test]
+    fn test_save_llm_preference_roundtrip_with_loader() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path().join("ndc");
+
+        // Save preference
+        NdcConfigLoader::save_llm_preference_to(
+            config_dir.clone(),
+            "anthropic",
+            "claude-sonnet-4-5-20250929",
+        )
+        .unwrap();
+
+        // Load it back by parsing the saved file directly
+        let content = std::fs::read_to_string(config_dir.join("config.yaml")).unwrap();
+        let config: NdcConfig = serde_yaml::from_str(&content).unwrap();
+
+        let llm = config.llm.as_ref().unwrap();
+        assert_eq!(llm.provider, "anthropic");
+        assert_eq!(llm.model, "claude-sonnet-4-5-20250929");
     }
 }

@@ -1200,6 +1200,12 @@ impl AgentModeManager {
         }
 
         info!(provider = %provider_name, model = %new_model, "Provider switched");
+
+        // Persist to user-level config so the preference survives restarts
+        if let Err(e) = NdcConfigLoader::save_llm_preference(provider_name, &new_model) {
+            tracing::warn!("Failed to persist provider preference: {e}");
+        }
+
         Ok(())
     }
 
