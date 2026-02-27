@@ -60,6 +60,9 @@ pub enum AgentError {
     #[error("Invalid request: {0}")]
     InvalidRequest(String),
 
+    #[error("Config error: {0}")]
+    ConfigError(String),
+
     #[error("Other error: {0}")]
     Other(String),
 }
