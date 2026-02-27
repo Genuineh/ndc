@@ -323,6 +323,7 @@ pub(crate) fn build_status_hint_bar<'a>(
     viz_state: &ReplVisualizationState,
     stream_state: &str,
     theme: &TuiTheme,
+    is_processing: bool,
 ) -> Line<'a> {
     if let Some((_raw, norm, args, trailing_space)) = parse_slash_tokens(input) {
         if completion.is_none() {
@@ -398,10 +399,17 @@ pub(crate) fn build_status_hint_bar<'a>(
         Style::default().fg(theme.text_dim),
     ));
     spans.push(sep.clone());
-    spans.push(Span::styled(
-        "Shift+Enter newline  ↑↓ history  PgUp/Dn scroll  Esc exit",
-        Style::default().fg(theme.text_dim),
-    ));
+    if is_processing {
+        spans.push(Span::styled(
+            "Ctrl+C interrupt  PgUp/Dn scroll  Esc exit",
+            Style::default().fg(theme.text_dim),
+        ));
+    } else {
+        spans.push(Span::styled(
+            "Shift+Enter newline  ↑↓ history  PgUp/Dn scroll  Ctrl+C/Esc exit",
+            Style::default().fg(theme.text_dim),
+        ));
+    }
 
     Line::from(spans)
 }

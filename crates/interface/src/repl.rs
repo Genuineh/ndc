@@ -435,6 +435,7 @@ async fn run_repl_tui(
                 &viz_state,
                 stream_state,
                 &theme,
+                is_processing,
             );
             f.render_widget(
                 Paragraph::new(hint_line).style(Style::default().bg(Color::Rgb(25, 25, 25))),
@@ -525,10 +526,14 @@ async fn run_repl_tui(
                         );
                     }
                     Err(e) => {
-                        push_chat_entry(
-                            &mut entries,
-                            ChatEntry::ErrorNote(format!("[Error] join failed: {}", e)),
-                        );
+                        if e.is_cancelled() {
+                            // Task was aborted by Ctrl+C — already handled above
+                        } else {
+                            push_chat_entry(
+                                &mut entries,
+                                ChatEntry::ErrorNote(format!("[Error] join failed: {}", e)),
+                            );
+                        }
                     }
                 }
             }
@@ -541,10 +546,26 @@ async fn run_repl_tui(
                         continue;
                     }
 
-                    if key.code == KeyCode::Esc
-                        || (key.code == KeyCode::Char('c')
-                            && key.modifiers.contains(KeyModifiers::CONTROL))
+                    if key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
                     {
+                        if let Some(handle) = processing_handle.take() {
+                            handle.abort();
+                            live_events = None;
+                            live_session_id = None;
+                            push_chat_entry(
+                                &mut entries,
+                                ChatEntry::WarningNote(
+                                    "[Interrupted] task cancelled by Ctrl+C".to_string(),
+                                ),
+                            );
+                        } else {
+                            should_quit = true;
+                        }
+                        continue;
+                    }
+
+                    if key.code == KeyCode::Esc {
                         should_quit = true;
                         continue;
                     }
@@ -631,6 +652,7 @@ async fn run_repl_tui(
                     }
 
                     if processing_handle.is_some() {
+                        // While processing, only Ctrl+C (handled above) is active
                         continue;
                     }
 

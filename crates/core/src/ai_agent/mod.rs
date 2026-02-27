@@ -69,6 +69,9 @@ pub enum AgentError {
 
     #[error("Other error: {0}")]
     Other(String),
+
+    #[error("Cancelled by user")]
+    Cancelled,
 }
 
 use crate::llm::provider::ProviderError;
