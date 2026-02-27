@@ -7,20 +7,19 @@
 //! - 实现反馈循环
 
 use super::{
-    AgentError, AgentExecutionEvent, AgentExecutionEventKind, AgentMessage, AgentSession,
-    AgentSessionExecutionEvent, AgentToolCall, AgentToolResult, AgentWorkflowStage,
-    ProjectIdentity, TaskVerifier, VerificationResult, prompt_builder, session_store::SessionStore,
+    AgentError, AgentExecutionEvent, AgentMessage, AgentSession, AgentSessionExecutionEvent,
+    AgentToolCall, AgentToolResult, ProjectIdentity, TaskVerifier, VerificationResult,
+    prompt_builder, session_store::SessionStore,
 };
 use crate::llm::provider::{
-    CompletionRequest, LlmProvider, Message, MessageRole, ProviderError, StreamHandler, ToolCall,
-    ToolResult as LlmToolResult,
+    CompletionRequest, LlmProvider, Message, MessageRole, ProviderError, StreamHandler,
 };
 use crate::{AgentRole, TaskId};
 use async_trait::async_trait;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::{Mutex, broadcast};
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 /// 流式响应处理器 - 使用 Mutex 包装内容
 struct StreamingHandler {
@@ -243,98 +242,6 @@ pub struct AgentOrchestrator {
 }
 
 impl AgentOrchestrator {
-    async fn emit_event(
-        &self,
-        session_state: &mut AgentSession,
-        execution_events: &mut Vec<AgentExecutionEvent>,
-        event: AgentExecutionEvent,
-    ) {
-        if let Err(e) = self.event_tx.send(AgentSessionExecutionEvent {
-            session_id: session_state.id.clone(),
-            event: event.clone(),
-        }) {
-            tracing::warn!(
-                receivers = self.event_tx.receiver_count(),
-                "Event broadcast failed: {}",
-                e
-            );
-        }
-        session_state.add_execution_event(event.clone());
-        execution_events.push(event);
-        self.save_session(session_state.clone()).await;
-    }
-
-    async fn emit_workflow_stage(
-        &self,
-        session_state: &mut AgentSession,
-        execution_events: &mut Vec<AgentExecutionEvent>,
-        round: usize,
-        stage: AgentWorkflowStage,
-        detail: &str,
-    ) {
-        self.emit_event(
-            session_state,
-            execution_events,
-            AgentExecutionEvent {
-                kind: AgentExecutionEventKind::WorkflowStage,
-                timestamp: chrono::Utc::now(),
-                message: format!("workflow_stage: {} | {}", stage.as_str(), detail),
-                round,
-                tool_name: None,
-                tool_call_id: None,
-                duration_ms: None,
-                is_error: false,
-                workflow_stage: Some(stage),
-                workflow_detail: Some(detail.to_string()),
-                workflow_stage_index: Some(stage.index()),
-                workflow_stage_total: Some(AgentWorkflowStage::TOTAL_STAGES),
-            },
-        )
-        .await;
-    }
-
-    async fn emit_token_usage(
-        &self,
-        session_state: &mut AgentSession,
-        execution_events: &mut Vec<AgentExecutionEvent>,
-        round: usize,
-        usage: crate::llm::provider::Usage,
-        session_prompt_total: u64,
-        session_completion_total: u64,
-        session_total: u64,
-        estimated: bool,
-    ) {
-        let source = if estimated { "estimated" } else { "provider" };
-        self.emit_event(
-            session_state,
-            execution_events,
-            AgentExecutionEvent {
-                kind: AgentExecutionEventKind::TokenUsage,
-                timestamp: chrono::Utc::now(),
-                message: format!(
-                    "token_usage: source={} prompt={} completion={} total={} | session_prompt_total={} session_completion_total={} session_total={}",
-                    source,
-                    usage.prompt_tokens,
-                    usage.completion_tokens,
-                    usage.total_tokens,
-                    session_prompt_total,
-                    session_completion_total,
-                    session_total
-                ),
-                round,
-                tool_name: None,
-                tool_call_id: None,
-                duration_ms: None,
-                is_error: false,
-            workflow_stage: None,
-            workflow_detail: None,
-            workflow_stage_index: None,
-            workflow_stage_total: None,
-            },
-        )
-        .await;
-    }
-
     /// 创建新的 Agent Orchestrator
     pub fn new(
         provider: Arc<dyn LlmProvider>,
@@ -351,6 +258,18 @@ impl AgentOrchestrator {
             event_tx,
             config,
         }
+    }
+
+    /// Build a per-request `ConversationRunner` from shared state.
+    fn runner(&self) -> super::conversation_runner::ConversationRunner {
+        super::conversation_runner::ConversationRunner::new(
+            self.provider.clone(),
+            self.tool_executor.clone(),
+            self.verifier.clone(),
+            self.config.clone(),
+            self.event_tx.clone(),
+            self.store.clone(),
+        )
     }
 
     /// 订阅实时执行事件
@@ -385,14 +304,15 @@ impl AgentOrchestrator {
             };
 
             // 执行主循环
-            self.run_main_loop(
-                session,
-                user_message,
-                request.active_task_id,
-                request.working_dir.clone(),
-                request.working_memory.clone(),
-            )
-            .await
+            self.runner()
+                .run_main_loop(
+                    session,
+                    user_message,
+                    request.active_task_id,
+                    request.working_dir.clone(),
+                    request.working_memory.clone(),
+                )
+                .await
         };
 
         tokio::select! {
@@ -548,10 +468,7 @@ impl AgentOrchestrator {
 
     /// Return project identity metadata for a session id.
     pub async fn session_project_identity(&self, session_id: &str) -> Option<ProjectIdentity> {
-        self.store
-            .lock()
-            .await
-            .session_project_identity(session_id)
+        self.store.lock().await.session_project_identity(session_id)
     }
 
     /// Return known project ids tracked by the orchestrator.
@@ -583,475 +500,8 @@ impl AgentOrchestrator {
             .get_session_execution_events(session_id, limit)
     }
 
-    /// 主循环 - 非流式
-    async fn run_main_loop(
-        &self,
-        session: AgentSession,
-        user_message: Message,
-        active_task_id: Option<TaskId>,
-        working_dir: Option<std::path::PathBuf>,
-        working_memory: Option<crate::WorkingMemory>,
-    ) -> Result<AgentResponse, AgentError> {
-        let mut messages = self
-            .build_messages(
-                &session,
-                &user_message,
-                active_task_id,
-                working_dir.clone(),
-                working_memory,
-            )
-            .await?;
-        let mut session_state = session.clone();
-        session_state.add_message(AgentMessage {
-            role: MessageRole::User,
-            content: user_message.content.clone(),
-            timestamp: chrono::Utc::now(),
-            tool_calls: None,
-            tool_results: None,
-            tool_call_id: None,
-        });
-
-        let mut tool_call_count = 0;
-        let mut all_tool_calls: Vec<AgentToolCall> = Vec::new();
-        let mut execution_events: Vec<AgentExecutionEvent> = Vec::new();
-        let mut session_prompt_tokens_total = 0u64;
-        let mut session_completion_tokens_total = 0u64;
-        let mut session_tokens_total = 0u64;
-        self.emit_event(
-            &mut session_state,
-            &mut execution_events,
-            AgentExecutionEvent {
-                kind: AgentExecutionEventKind::SessionStatus,
-                timestamp: chrono::Utc::now(),
-                message: "session_running".to_string(),
-                round: 0,
-                tool_name: None,
-                tool_call_id: None,
-                duration_ms: None,
-                is_error: false,
-                workflow_stage: None,
-                workflow_detail: None,
-                workflow_stage_index: None,
-                workflow_stage_total: None,
-            },
-        )
-        .await;
-        self.emit_workflow_stage(
-            &mut session_state,
-            &mut execution_events,
-            0,
-            AgentWorkflowStage::Planning,
-            "build_prompt_and_context",
-        )
-        .await;
-        let mut round = 0usize;
-        let (final_content, final_verification) = loop {
-            round += 1;
-
-            // 检查工具调用次数
-            if tool_call_count >= self.config.max_tool_calls {
-                warn!("Max tool calls exceeded: {}", tool_call_count);
-                self.emit_event(
-                    &mut session_state,
-                    &mut execution_events,
-                    AgentExecutionEvent {
-                        kind: AgentExecutionEventKind::Error,
-                        timestamp: chrono::Utc::now(),
-                        message: format!("max_tool_calls_exceeded: {}", self.config.max_tool_calls),
-                        round,
-                        tool_name: None,
-                        tool_call_id: None,
-                        duration_ms: None,
-                        is_error: true,
-                        workflow_stage: None,
-                        workflow_detail: None,
-                        workflow_stage_index: None,
-                        workflow_stage_total: None,
-                    },
-                )
-                .await;
-                self.save_session(session_state).await;
-                return Ok(AgentResponse {
-                    session_id: session.id.clone(),
-                    content: format!(
-                        "I've reached the maximum number of tool calls ({}). Please review my progress and provide further guidance.",
-                        self.config.max_tool_calls
-                    ),
-                    tool_calls: all_tool_calls,
-                    is_complete: false,
-                    needs_input: true,
-                    verification_result: None,
-                    execution_events,
-                });
-            }
-
-            self.emit_workflow_stage(
-                &mut session_state,
-                &mut execution_events,
-                round,
-                AgentWorkflowStage::Executing,
-                "llm_round_start",
-            )
-            .await;
-            self.emit_event(
-                &mut session_state,
-                &mut execution_events,
-                AgentExecutionEvent {
-                    kind: AgentExecutionEventKind::StepStart,
-                    timestamp: chrono::Utc::now(),
-                    message: format!("llm_round_{}_start", round),
-                    round,
-                    tool_name: None,
-                    tool_call_id: None,
-                    duration_ms: None,
-                    is_error: false,
-                    workflow_stage: None,
-                    workflow_detail: None,
-                    workflow_stage_index: None,
-                    workflow_stage_total: None,
-                },
-            )
-            .await;
-
-            // Truncate message history to prevent unbounded growth
-            truncate_messages(&mut messages, MAX_CONVERSATION_MESSAGES);
-
-            // 调用 LLM
-            let tool_schemas = self.tool_executor.tool_schemas();
-            let llm_request = CompletionRequest {
-                model: self.provider.config().default_model.clone(),
-                messages: messages.clone(),
-                temperature: Some(0.1),
-                max_tokens: Some(4096),
-                top_p: None,
-                frequency_penalty: None,
-                presence_penalty: None,
-                stop: None,
-                stream: false,
-                tools: if tool_schemas.is_empty() {
-                    None
-                } else {
-                    Some(tool_schemas)
-                },
-            };
-            let llm_started = Instant::now();
-
-            let response = self
-                .provider
-                .complete(&llm_request)
-                .await
-                .map_err(|e| AgentError::LlmError(e.to_string()))?;
-            let usage = response
-                .usage
-                .clone()
-                .unwrap_or_else(|| self.provider.estimate_tokens(&llm_request));
-            let usage_estimated = response.usage.is_none();
-            session_prompt_tokens_total += usage.prompt_tokens as u64;
-            session_completion_tokens_total += usage.completion_tokens as u64;
-            session_tokens_total += usage.total_tokens as u64;
-            self.emit_token_usage(
-                &mut session_state,
-                &mut execution_events,
-                round,
-                usage,
-                session_prompt_tokens_total,
-                session_completion_tokens_total,
-                session_tokens_total,
-                usage_estimated,
-            )
-            .await;
-
-            // 获取助手响应
-            let assistant_message = response
-                .choices
-                .first()
-                .ok_or_else(|| AgentError::LlmError("No response from LLM".to_string()))?
-                .message
-                .clone();
-            self.emit_event(
-                &mut session_state,
-                &mut execution_events,
-                AgentExecutionEvent {
-                    kind: AgentExecutionEventKind::StepFinish,
-                    timestamp: chrono::Utc::now(),
-                    message: format!("llm_round_{}_finish", round),
-                    round,
-                    tool_name: None,
-                    tool_call_id: None,
-                    duration_ms: Some(llm_started.elapsed().as_millis() as u64),
-                    is_error: false,
-                    workflow_stage: None,
-                    workflow_detail: None,
-                    workflow_stage_index: None,
-                    workflow_stage_total: None,
-                },
-            )
-            .await;
-
-            // 检查是否有工具调用
-            if let Some(ref tool_calls) = assistant_message.tool_calls
-                && !tool_calls.is_empty()
-            {
-                self.emit_workflow_stage(
-                    &mut session_state,
-                    &mut execution_events,
-                    round,
-                    AgentWorkflowStage::Discovery,
-                    "tool_calls_planned",
-                )
-                .await;
-                if !assistant_message.content.trim().is_empty() {
-                    self.emit_event(
-                        &mut session_state,
-                        &mut execution_events,
-                        AgentExecutionEvent {
-                            kind: AgentExecutionEventKind::Reasoning,
-                            timestamp: chrono::Utc::now(),
-                            message: truncate_for_event(&assistant_message.content, 300),
-                            round,
-                            tool_name: None,
-                            tool_call_id: None,
-                            duration_ms: None,
-                            is_error: false,
-                            workflow_stage: None,
-                            workflow_detail: None,
-                            workflow_stage_index: None,
-                            workflow_stage_total: None,
-                        },
-                    )
-                    .await;
-                } else {
-                    self.emit_event(
-                        &mut session_state,
-                        &mut execution_events,
-                        AgentExecutionEvent {
-                            kind: AgentExecutionEventKind::Reasoning,
-                            timestamp: chrono::Utc::now(),
-                            message: summarize_tool_calls(tool_calls),
-                            round,
-                            tool_name: None,
-                            tool_call_id: None,
-                            duration_ms: None,
-                            is_error: false,
-                            workflow_stage: None,
-                            workflow_detail: None,
-                            workflow_stage_index: None,
-                            workflow_stage_total: None,
-                        },
-                    )
-                    .await;
-                }
-                let session_tool_calls: Vec<AgentToolCall> = tool_calls
-                    .iter()
-                    .map(|tc| AgentToolCall {
-                        name: tc.function.name.clone(),
-                        arguments: tc.function.arguments.clone(),
-                        id: tc.id.clone(),
-                    })
-                    .collect();
-                session_state.add_message(AgentMessage {
-                    role: MessageRole::Assistant,
-                    content: assistant_message.content.clone(),
-                    timestamp: chrono::Utc::now(),
-                    tool_calls: Some(session_tool_calls.clone()),
-                    tool_results: None,
-                    tool_call_id: None,
-                });
-                for tc in &session_tool_calls {
-                    session_state.record_tool_call(&tc.name);
-                }
-
-                // 执行工具调用
-                let tool_results = self
-                    .execute_tool_calls(
-                        tool_calls,
-                        round,
-                        &mut execution_events,
-                        &mut session_state,
-                    )
-                    .await?;
-
-                // 记录工具调用
-                for tc in tool_calls {
-                    all_tool_calls.push(AgentToolCall {
-                        name: tc.function.name.clone(),
-                        arguments: tc.function.arguments.clone(),
-                        id: tc.id.clone(),
-                    });
-                }
-                tool_call_count += tool_calls.len();
-
-                // 添加助手消息和工具结果到历史
-                messages.push(assistant_message.clone());
-                for result in &tool_results {
-                    let sanitized = sanitize_tool_output(&result.content);
-                    messages.push(Message {
-                        role: MessageRole::Tool,
-                        content: sanitized.clone(),
-                        // We use `name` to carry tool_call_id for provider adapters.
-                        name: Some(result.tool_call_id.clone()),
-                        tool_calls: None,
-                    });
-                    session_state.add_message(AgentMessage {
-                        role: MessageRole::Tool,
-                        content: sanitized.clone(),
-                        timestamp: chrono::Utc::now(),
-                        tool_calls: None,
-                        tool_results: Some(vec![sanitized]),
-                        tool_call_id: Some(result.tool_call_id.clone()),
-                    });
-                }
-
-                // 继续循环
-                continue;
-            }
-
-            // 没有工具调用，获取最终内容
-            let final_content = assistant_message.content.clone();
-            if !final_content.trim().is_empty() {
-                self.emit_event(
-                    &mut session_state,
-                    &mut execution_events,
-                    AgentExecutionEvent {
-                        kind: AgentExecutionEventKind::Text,
-                        timestamp: chrono::Utc::now(),
-                        message: truncate_for_event(&final_content, 300),
-                        round,
-                        tool_name: None,
-                        tool_call_id: None,
-                        duration_ms: None,
-                        is_error: false,
-                        workflow_stage: None,
-                        workflow_detail: None,
-                        workflow_stage_index: None,
-                        workflow_stage_total: None,
-                    },
-                )
-                .await;
-            }
-            session_state.add_message(AgentMessage {
-                role: MessageRole::Assistant,
-                content: final_content.clone(),
-                timestamp: chrono::Utc::now(),
-                tool_calls: None,
-                tool_results: None,
-                tool_call_id: None,
-            });
-
-            // 如果启用了自动验证且有活跃任务，执行验证
-            let verification_result = if self.config.auto_verify {
-                if let Some(task_id) = active_task_id {
-                    self.emit_workflow_stage(
-                        &mut session_state,
-                        &mut execution_events,
-                        round,
-                        AgentWorkflowStage::Verifying,
-                        "quality_gate_and_task_verifier",
-                    )
-                    .await;
-                    self.emit_event(
-                        &mut session_state,
-                        &mut execution_events,
-                        AgentExecutionEvent {
-                            kind: AgentExecutionEventKind::Verification,
-                            timestamp: chrono::Utc::now(),
-                            message: format!("verify_task: {}", task_id),
-                            round,
-                            tool_name: None,
-                            tool_call_id: None,
-                            duration_ms: None,
-                            is_error: false,
-                            workflow_stage: None,
-                            workflow_detail: None,
-                            workflow_stage_index: None,
-                            workflow_stage_total: None,
-                        },
-                    )
-                    .await;
-                    self.verifier.verify_and_track(&task_id).await.ok()
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
-            // 检查验证结果是否需要继续（直接解构，避免 unwrap panic）
-            let needs_continuation = matches!(
-                verification_result,
-                Some(VerificationResult::Incomplete { .. })
-                    | Some(VerificationResult::QualityGateFailed { .. })
-            );
-
-            if let (true, Some(vr)) = (needs_continuation, &verification_result) {
-                // 添加反馈消息并继续
-                let feedback = self.verifier.generate_continuation_prompt(vr);
-
-                messages.push(Message {
-                    role: MessageRole::System,
-                    content: feedback,
-                    name: None,
-                    tool_calls: None,
-                });
-                session_state.add_message(AgentMessage {
-                    role: MessageRole::System,
-                    content: self.verifier.generate_feedback_message(vr),
-                    timestamp: chrono::Utc::now(),
-                    tool_calls: None,
-                    tool_results: None,
-                    tool_call_id: None,
-                });
-
-                // 继续循环
-                continue;
-            }
-
-            // 完成
-            self.emit_workflow_stage(
-                &mut session_state,
-                &mut execution_events,
-                round,
-                AgentWorkflowStage::Completing,
-                "finalize_response_and_idle",
-            )
-            .await;
-            self.emit_event(
-                &mut session_state,
-                &mut execution_events,
-                AgentExecutionEvent {
-                    kind: AgentExecutionEventKind::SessionStatus,
-                    timestamp: chrono::Utc::now(),
-                    message: "session_idle".to_string(),
-                    round,
-                    tool_name: None,
-                    tool_call_id: None,
-                    duration_ms: None,
-                    is_error: false,
-                    workflow_stage: None,
-                    workflow_detail: None,
-                    workflow_stage_index: None,
-                    workflow_stage_total: None,
-                },
-            )
-            .await;
-            break (final_content, verification_result);
-        };
-
-        self.save_session(session_state).await;
-
-        Ok(AgentResponse {
-            session_id: session.id,
-            content: final_content,
-            tool_calls: all_tool_calls,
-            is_complete: true,
-            needs_input: false,
-            verification_result: final_verification,
-            execution_events,
-        })
-    }
-
-    /// 构建消息列表
-    async fn build_messages(
+    /// 构建消息列表（用于 streaming 路径和测试）
+    pub(crate) async fn build_messages(
         &self,
         session: &AgentSession,
         user_message: &Message,
@@ -1069,242 +519,15 @@ impl AgentOrchestrator {
             self.tool_executor.tool_schemas(),
         )
     }
-
-    /// 执行工具调用
-    async fn execute_tool_calls(
-        &self,
-        tool_calls: &[ToolCall],
-        round: usize,
-        execution_events: &mut Vec<AgentExecutionEvent>,
-        session_state: &mut AgentSession,
-    ) -> Result<Vec<LlmToolResult>, AgentError> {
-        let mut results = Vec::new();
-
-        for tool_call in tool_calls {
-            let function = &tool_call.function;
-            let tool_name = &function.name;
-
-            info!("Executing tool: {}", tool_name);
-            self.emit_event(
-                session_state,
-                execution_events,
-                AgentExecutionEvent {
-                    kind: AgentExecutionEventKind::ToolCallStart,
-                    timestamp: chrono::Utc::now(),
-                    message: format!(
-                        "tool_call_start: {} | args_preview: {}",
-                        tool_name,
-                        compact_preview(&function.arguments, 200)
-                    ),
-                    round,
-                    tool_name: Some(tool_name.clone()),
-                    tool_call_id: Some(tool_call.id.clone()),
-                    duration_ms: None,
-                    is_error: false,
-                    workflow_stage: None,
-                    workflow_detail: None,
-                    workflow_stage_index: None,
-                    workflow_stage_total: None,
-                },
-            )
-            .await;
-            let started = Instant::now();
-
-            // 执行工具
-            let tool_result = match self
-                .tool_executor
-                .execute_tool(tool_name, &function.arguments)
-                .await
-            {
-                Ok(content) => LlmToolResult {
-                    tool_call_id: tool_call.id.clone(),
-                    content,
-                    is_error: false,
-                },
-                Err(e) => {
-                    if let AgentError::PermissionDenied(message) = &e {
-                        self.emit_event(
-                            session_state,
-                            execution_events,
-                            AgentExecutionEvent {
-                                kind: AgentExecutionEventKind::PermissionAsked,
-                                timestamp: chrono::Utc::now(),
-                                message: format!("permission_asked: {}", message),
-                                round,
-                                tool_name: Some(tool_name.clone()),
-                                tool_call_id: Some(tool_call.id.clone()),
-                                duration_ms: None,
-                                is_error: true,
-                                workflow_stage: None,
-                                workflow_detail: None,
-                                workflow_stage_index: None,
-                                workflow_stage_total: None,
-                            },
-                        )
-                        .await;
-
-                        if is_confirmation_permission_error(message.as_str()) {
-                            match self
-                                .tool_executor
-                                .confirm_and_retry_permission(
-                                    tool_name,
-                                    &function.arguments,
-                                    message.as_str(),
-                                )
-                                .await
-                            {
-                                Ok(Some(content)) => {
-                                    self.emit_event(
-                                        session_state,
-                                        execution_events,
-                                        AgentExecutionEvent {
-                                            kind: AgentExecutionEventKind::PermissionAsked,
-                                            timestamp: chrono::Utc::now(),
-                                            message: format!(
-                                                "permission_asked: permission_approved: {}",
-                                                message
-                                            ),
-                                            round,
-                                            tool_name: Some(tool_name.clone()),
-                                            tool_call_id: Some(tool_call.id.clone()),
-                                            duration_ms: None,
-                                            is_error: false,
-                                            workflow_stage: None,
-                                            workflow_detail: None,
-                                            workflow_stage_index: None,
-                                            workflow_stage_total: None,
-                                        },
-                                    )
-                                    .await;
-                                    LlmToolResult {
-                                        tool_call_id: tool_call.id.clone(),
-                                        content,
-                                        is_error: false,
-                                    }
-                                }
-                                Ok(None) => {
-                                    warn!("Tool {} execution failed: {}", tool_name, e);
-                                    LlmToolResult {
-                                        tool_call_id: tool_call.id.clone(),
-                                        content: format!("Error: {}", e),
-                                        is_error: true,
-                                    }
-                                }
-                                Err(AgentError::PermissionDenied(rejected)) => {
-                                    let rejected_payload = if rejected
-                                        .trim_start()
-                                        .starts_with("permission_rejected:")
-                                    {
-                                        rejected
-                                    } else {
-                                        format!("permission_rejected: {}", rejected)
-                                    };
-                                    self.emit_event(
-                                        session_state,
-                                        execution_events,
-                                        AgentExecutionEvent {
-                                            kind: AgentExecutionEventKind::PermissionAsked,
-                                            timestamp: chrono::Utc::now(),
-                                            message: format!(
-                                                "permission_asked: {}",
-                                                rejected_payload
-                                            ),
-                                            round,
-                                            tool_name: Some(tool_name.clone()),
-                                            tool_call_id: Some(tool_call.id.clone()),
-                                            duration_ms: None,
-                                            is_error: true,
-                                            workflow_stage: None,
-                                            workflow_detail: None,
-                                            workflow_stage_index: None,
-                                            workflow_stage_total: None,
-                                        },
-                                    )
-                                    .await;
-                                    warn!(
-                                        "Tool {} execution rejected after confirmation: {}",
-                                        tool_name, rejected_payload
-                                    );
-                                    LlmToolResult {
-                                        tool_call_id: tool_call.id.clone(),
-                                        content: format!("Error: {}", rejected_payload),
-                                        is_error: true,
-                                    }
-                                }
-                                Err(other) => {
-                                    warn!(
-                                        "Tool {} execution failed after confirmation retry: {}",
-                                        tool_name, other
-                                    );
-                                    LlmToolResult {
-                                        tool_call_id: tool_call.id.clone(),
-                                        content: format!("Error: {}", other),
-                                        is_error: true,
-                                    }
-                                }
-                            }
-                        } else {
-                            warn!("Tool {} execution failed: {}", tool_name, e);
-                            LlmToolResult {
-                                tool_call_id: tool_call.id.clone(),
-                                content: format!("Error: {}", e),
-                                is_error: true,
-                            }
-                        }
-                    } else {
-                        warn!("Tool {} execution failed: {}", tool_name, e);
-                        LlmToolResult {
-                            tool_call_id: tool_call.id.clone(),
-                            content: format!("Error: {}", e),
-                            is_error: true,
-                        }
-                    }
-                }
-            };
-            self.emit_event(
-                session_state,
-                execution_events,
-                AgentExecutionEvent {
-                    kind: AgentExecutionEventKind::ToolCallEnd,
-                    timestamp: chrono::Utc::now(),
-                    message: format!(
-                        "tool_call_end: {} ({}) | args_preview: {} | result_preview: {}",
-                        tool_name,
-                        if tool_result.is_error { "error" } else { "ok" },
-                        compact_preview(&function.arguments, 200),
-                        compact_preview(&tool_result.content, 200)
-                    ),
-                    round,
-                    tool_name: Some(tool_name.clone()),
-                    tool_call_id: Some(tool_call.id.clone()),
-                    duration_ms: Some(started.elapsed().as_millis() as u64),
-                    is_error: tool_result.is_error,
-                    workflow_stage: None,
-                    workflow_detail: None,
-                    workflow_stage_index: None,
-                    workflow_stage_total: None,
-                },
-            )
-            .await;
-
-            results.push(tool_result);
-        }
-
-        Ok(results)
-    }
 }
-
-use super::helpers::{
-    compact_preview, is_confirmation_permission_error, sanitize_tool_output,
-    summarize_tool_calls, truncate_for_event, truncate_messages, MAX_CONVERSATION_MESSAGES,
-};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ai_agent::{AgentExecutionEventKind, AgentWorkflowStage};
     use crate::llm::provider::{
         Choice, CompletionResponse, ModelInfo, ModelPermission, ProviderConfig, ProviderType,
-        ToolCallFunction, Usage,
+        ToolCall, ToolCallFunction, Usage,
     };
     use std::collections::VecDeque;
     use std::time::{SystemTime, UNIX_EPOCH};

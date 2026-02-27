@@ -200,24 +200,24 @@
 - **位置**: `.github/workflows/ci.yml`
 - **修复**: 创建 GitHub Actions CI 工作流，包含 4 个 job：cargo fmt --check / cargo clippy -D warnings / cargo test --workspace / rustsec/audit-check；push to main 和 PR 触发
 
-#### SEC-S1 拆分三大 God Object（orchestrator.rs + agent_mode.rs 已完成）
+#### ✅ SEC-S1 拆分三大 God Object（orchestrator.rs + agent_mode.rs + repl.rs 已完成）
 
-- **orchestrator.rs**（~3400 行 → ~2720 行，削减 ~680 行）✅
+- **orchestrator.rs**（~3400 行 → ~2230 行，削减 ~1170 行）✅
   - `session_store.rs` ✅ `a0fc215`：SessionStore + 10 方法 + 10 测试
   - `prompt_builder.rs` ✅ `766fb48`：build_messages + build_working_memory_injector + 6 测试
   - `helpers.rs` ✅ `62b8fce`：6 工具函数 + 2 常量 + 15 测试
-  - `conversation_runner.rs`：⏸️ 延期（run_main_loop / execute_tool_calls 深耦合于 orchestrator 私有字段）
+  - `conversation_runner.rs` ✅：ConversationRunner 结构体 + run_main_loop + execute_tool_calls + emit_event/workflow_stage/token_usage + 6 测试
 - **agent_mode.rs**（~3273 行 → ~1869 行，削减 ~1404 行，43% 缩减）✅
   - `provider_config.rs` ✅ `4142de6`：7 函数（create_provider_config + API key 解析 + model 选择）+ 4 测试
   - `project_index.rs` ✅ `d95ea2e`：ProjectIndexStore + 持久化逻辑 + 4 发现函数 + 1 测试
   - `session_archive.rs` ✅ `ce4ec65`：SessionArchiveStore + 归档逻辑 + 1 测试
   - `permission_engine.rs` ✅ `e04d459`：PermissionRule + ReplToolExecutor + ToolExecutor impl + 11 测试
-- **repl.rs**（~5600 行，100+ 方法）→ 待拆分：
-  - `chat_renderer.rs`：style_chat_entries + render_inline_markdown + 主题渲染
-  - `input_handler.rs`：输入解析 + 历史 + 多行编辑
-  - `layout_manager.rs`：5-6 区布局计算 + 响应式调整
+- **repl.rs**（~7374 行 → ~5224 行，削减 ~2150 行，29% 缩减）✅
+  - `chat_renderer.rs` ✅：TuiTheme + ChatEntry + 13 渲染函数（834 行）
+  - `input_handler.rs` ✅：InputHistory + ReplTuiKeymap + 补全逻辑 + 24 函数（556 行）
+  - `layout_manager.rs` ✅：TuiSessionViewState + DisplayVerbosity + 布局计算 + 30 函数（800 行）
 - **修复策略**: 每个子模块作为独立 PR，保持原 pub API 不变（通过 `pub use` re-export）
-- **测试总计**: ndc-core 231 通过（+22 新测试）
+- **测试总计**: ndc-core 231 通过（+22 新测试）；ndc-interface 212 通过
 
 #### SEC-S2 10 阶段管线缺口评估 ✅ `077dcc8`
 
