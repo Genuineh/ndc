@@ -223,6 +223,37 @@ pub trait ToolExecutor: Send + Sync {
     }
 }
 
+/// Consolidated session storage — holds sessions, project index, and
+/// latest-root cursor under a single lock to prevent race conditions.
+struct SessionStore {
+    sessions: HashMap<String, AgentSession>,
+    project_sessions: HashMap<String, Vec<String>>,
+    project_last_root: HashMap<String, String>,
+}
+
+impl SessionStore {
+    fn new() -> Self {
+        Self {
+            sessions: HashMap::new(),
+            project_sessions: HashMap::new(),
+            project_last_root: HashMap::new(),
+        }
+    }
+
+    /// Index a session into project maps. Must be called while holding the lock.
+    fn index_session(&mut self, session: &AgentSession) {
+        let entries = self
+            .project_sessions
+            .entry(session.project_id.clone())
+            .or_insert_with(Vec::new);
+        if !entries.iter().any(|id| id == &session.id) {
+            entries.push(session.id.clone());
+        }
+        self.project_last_root
+            .insert(session.project_id.clone(), session.id.clone());
+    }
+}
+
 /// Agent Orchestrator - 中央控制器
 #[derive(Clone)]
 pub struct AgentOrchestrator {
@@ -235,14 +266,8 @@ pub struct AgentOrchestrator {
     /// 任务验证器
     verifier: Arc<TaskVerifier>,
 
-    /// 会话存储
-    sessions: Arc<Mutex<HashMap<String, AgentSession>>>,
-
-    /// 项目到会话列表索引（按创建/首次出现顺序）
-    project_sessions: Arc<Mutex<HashMap<String, Vec<String>>>>,
-
-    /// 项目最近活跃 root session 游标
-    project_last_root_session: Arc<Mutex<HashMap<String, String>>>,
+    /// Consolidated session store (sessions + project index + latest-root cursor)
+    store: Arc<Mutex<SessionStore>>,
 
     /// 实时执行事件总线
     event_tx: broadcast::Sender<AgentSessionExecutionEvent>,
@@ -356,9 +381,7 @@ impl AgentOrchestrator {
             provider,
             tool_executor,
             verifier,
-            sessions: Arc::new(Mutex::new(HashMap::new())),
-            project_sessions: Arc::new(Mutex::new(HashMap::new())),
-            project_last_root_session: Arc::new(Mutex::new(HashMap::new())),
+            store: Arc::new(Mutex::new(SessionStore::new())),
             event_tx,
             config,
         }
@@ -525,37 +548,32 @@ impl AgentOrchestrator {
         working_dir: Option<std::path::PathBuf>,
     ) -> Result<AgentSession, AgentError> {
         let identity = ProjectIdentity::detect(working_dir);
-        let maybe_session = {
-            let mut sessions = self.sessions.lock().await;
+        let mut store = self.store.lock().await;
 
-            if let Some(existing) = sessions.get(session_id) {
-                if existing.project_id != identity.project_id {
-                    return Err(AgentError::InvalidRequest(format!(
-                        "session '{}' belongs to project '{}', current project is '{}'; cross-project session continuation is denied by default",
-                        session_id, existing.project_id, identity.project_id
-                    )));
-                }
-                Some(existing.clone())
-            } else {
-                let session =
-                    AgentSession::new_with_project_identity(session_id.to_string(), identity);
-                sessions.insert(session_id.to_string(), session.clone());
-                info!("Created new session: {}", session_id);
-                Some(session)
+        if let Some(existing) = store.sessions.get(session_id) {
+            if existing.project_id != identity.project_id {
+                return Err(AgentError::InvalidRequest(format!(
+                    "session '{}' belongs to project '{}', current project is '{}'; cross-project session continuation is denied by default",
+                    session_id, existing.project_id, identity.project_id
+                )));
             }
-        };
-
-        let session = maybe_session.expect("session must exist after lookup/create");
-        self.index_session(&session).await;
-        Ok(session)
+            let session = existing.clone();
+            store.index_session(&session);
+            Ok(session)
+        } else {
+            let session =
+                AgentSession::new_with_project_identity(session_id.to_string(), identity);
+            store.sessions.insert(session_id.to_string(), session.clone());
+            store.index_session(&session);
+            info!("Created new session: {}", session_id);
+            Ok(session)
+        }
     }
 
     async fn save_session(&self, session: AgentSession) {
-        {
-            let mut sessions = self.sessions.lock().await;
-            sessions.insert(session.id.clone(), session.clone());
-        }
-        self.index_session(&session).await;
+        let mut store = self.store.lock().await;
+        store.sessions.insert(session.id.clone(), session.clone());
+        store.index_session(&session);
     }
 
     /// Insert or update a session snapshot (used by external persistence hydration).
@@ -565,27 +583,27 @@ impl AgentOrchestrator {
 
     /// Return a cloned session snapshot for persistence.
     pub async fn session_snapshot(&self, session_id: &str) -> Option<AgentSession> {
-        let sessions = self.sessions.lock().await;
-        sessions.get(session_id).cloned()
+        let store = self.store.lock().await;
+        store.sessions.get(session_id).cloned()
     }
 
     /// Bulk import persisted sessions into in-memory orchestrator state.
     pub async fn hydrate_sessions(&self, sessions: Vec<AgentSession>) {
+        let mut store = self.store.lock().await;
         for session in sessions {
-            self.save_session(session).await;
+            store.sessions.insert(session.id.clone(), session.clone());
+            store.index_session(&session);
         }
     }
 
     /// Return latest session id for a project, prioritizing root sessions.
     pub async fn latest_session_id_for_project(&self, project_id: &str) -> Option<String> {
-        {
-            let latest = self.project_last_root_session.lock().await;
-            if let Some(session_id) = latest.get(project_id) {
-                return Some(session_id.clone());
-            }
+        let store = self.store.lock().await;
+        if let Some(session_id) = store.project_last_root.get(project_id) {
+            return Some(session_id.clone());
         }
-        let sessions = self.sessions.lock().await;
-        sessions
+        store
+            .sessions
             .values()
             .filter(|session| session.project_id == project_id)
             .max_by(|left, right| left.started_at.cmp(&right.started_at))
@@ -594,8 +612,8 @@ impl AgentOrchestrator {
 
     /// Return project identity metadata for a session id.
     pub async fn session_project_identity(&self, session_id: &str) -> Option<ProjectIdentity> {
-        let sessions = self.sessions.lock().await;
-        let session = sessions.get(session_id)?;
+        let store = self.store.lock().await;
+        let session = store.sessions.get(session_id)?;
         Some(ProjectIdentity {
             project_id: session.project_id.clone(),
             project_root: session.project_root.clone(),
@@ -606,8 +624,9 @@ impl AgentOrchestrator {
 
     /// Return known project ids tracked by the orchestrator.
     pub async fn known_project_ids(&self) -> Vec<String> {
-        let sessions = self.sessions.lock().await;
-        let mut ids = sessions
+        let store = self.store.lock().await;
+        let mut ids = store
+            .sessions
             .values()
             .map(|session| session.project_id.clone())
             .collect::<std::collections::BTreeSet<_>>()
@@ -623,8 +642,9 @@ impl AgentOrchestrator {
         project_id: &str,
         limit: Option<usize>,
     ) -> Vec<String> {
-        let sessions = self.sessions.lock().await;
-        let mut entries = sessions
+        let store = self.store.lock().await;
+        let mut entries = store
+            .sessions
             .values()
             .filter(|session| session.project_id == project_id)
             .map(|session| (session.started_at, session.id.clone()))
@@ -636,28 +656,14 @@ impl AgentOrchestrator {
         entries.into_iter().map(|(_, id)| id).collect()
     }
 
-    async fn index_session(&self, session: &AgentSession) {
-        {
-            let mut project_sessions = self.project_sessions.lock().await;
-            let entries = project_sessions
-                .entry(session.project_id.clone())
-                .or_insert_with(Vec::new);
-            if !entries.iter().any(|id| id == &session.id) {
-                entries.push(session.id.clone());
-            }
-        }
-        let mut latest = self.project_last_root_session.lock().await;
-        latest.insert(session.project_id.clone(), session.id.clone());
-    }
-
     /// 获取会话执行事件时间线（用于回放/可视化）
     pub async fn get_session_execution_events(
         &self,
         session_id: &str,
         limit: Option<usize>,
     ) -> Result<Vec<AgentExecutionEvent>, AgentError> {
-        let sessions = self.sessions.lock().await;
-        let session = sessions.get(session_id).ok_or_else(|| {
+        let store = self.store.lock().await;
+        let session = store.sessions.get(session_id).ok_or_else(|| {
             AgentError::SessionNotFound(format!("Session '{}' not found", session_id))
         })?;
         let events = &session.execution_events;
@@ -3357,5 +3363,45 @@ mod tests {
         // 1 system + 5 non-system. Limit = 5 → no truncation
         truncate_messages(&mut msgs, 5);
         assert_eq!(msgs.len(), 6);
+    }
+
+    #[tokio::test]
+    async fn test_session_store_concurrent_save_index_consistency() {
+        // Two tasks concurrently saving sessions for different projects
+        // must result in consistent index state.
+        let store = Arc::new(Mutex::new(SessionStore::new()));
+        let mut handles = Vec::new();
+
+        for project_idx in 0..4 {
+            let store = Arc::clone(&store);
+            handles.push(tokio::spawn(async move {
+                for session_idx in 0..10 {
+                    let session_id = format!("s-{}-{}", project_idx, session_idx);
+                    let project_id = format!("proj-{}", project_idx);
+                    let mut session = AgentSession::new(session_id.clone());
+                    session.project_id = project_id.clone();
+
+                    let mut guard = store.lock().await;
+                    guard.sessions.insert(session_id, session.clone());
+                    guard.index_session(&session);
+                }
+            }));
+        }
+
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        let guard = store.lock().await;
+        // 4 projects × 10 sessions = 40 sessions total
+        assert_eq!(guard.sessions.len(), 40);
+        // Each project index should have exactly 10 sessions
+        for i in 0..4 {
+            let key = format!("proj-{}", i);
+            let list = guard.project_sessions.get(&key).unwrap();
+            assert_eq!(list.len(), 10, "project {} session list", i);
+            // last_root should point to one of the project's sessions
+            assert!(guard.project_last_root.contains_key(&key));
+        }
     }
 }
