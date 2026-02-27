@@ -1024,18 +1024,16 @@ impl AgentOrchestrator {
                 None
             };
 
-            // 检查是否需要继续
-            let needs_continuation = match verification_result {
+            // 检查验证结果是否需要继续（直接解构，避免 unwrap panic）
+            let needs_continuation = matches!(
+                verification_result,
                 Some(VerificationResult::Incomplete { .. })
-                | Some(VerificationResult::QualityGateFailed { .. }) => true,
-                _ => false,
-            };
+                    | Some(VerificationResult::QualityGateFailed { .. })
+            );
 
-            if needs_continuation {
+            if let (true, Some(vr)) = (needs_continuation, &verification_result) {
                 // 添加反馈消息并继续
-                let feedback = self
-                    .verifier
-                    .generate_continuation_prompt(verification_result.as_ref().unwrap());
+                let feedback = self.verifier.generate_continuation_prompt(vr);
 
                 messages.push(Message {
                     role: MessageRole::System,
@@ -1045,9 +1043,7 @@ impl AgentOrchestrator {
                 });
                 session_state.add_message(AgentMessage {
                     role: MessageRole::System,
-                    content: self
-                        .verifier
-                        .generate_feedback_message(verification_result.as_ref().unwrap()),
+                    content: self.verifier.generate_feedback_message(vr),
                     timestamp: chrono::Utc::now(),
                     tool_calls: None,
                     tool_results: None,
