@@ -150,6 +150,31 @@ impl Default for YamlLlmConfig {
     }
 }
 
+impl YamlLlmConfig {
+    /// Validate all numeric fields are within sane ranges
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if !(0.0..=2.0).contains(&self.temperature) {
+            return Err(ConfigError::ValidationError(format!(
+                "temperature must be 0.0..=2.0, got {}",
+                self.temperature
+            )));
+        }
+        if self.max_tokens == 0 || self.max_tokens > 1_000_000 {
+            return Err(ConfigError::ValidationError(format!(
+                "max_tokens must be 1..=1_000_000, got {}",
+                self.max_tokens
+            )));
+        }
+        if self.timeout == 0 || self.timeout > 3600 {
+            return Err(ConfigError::ValidationError(format!(
+                "timeout must be 1..=3600, got {}",
+                self.timeout
+            )));
+        }
+        Ok(())
+    }
+}
+
 /// Provider 配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct YamlProviderConfig {
@@ -211,6 +236,25 @@ impl Default for YamlReplConfig {
             fallback_to_regex: true,
             confirmation_mode: true,
         }
+    }
+}
+
+impl YamlReplConfig {
+    /// Validate all numeric fields are within sane ranges
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.max_history == 0 || self.max_history > 100_000 {
+            return Err(ConfigError::ValidationError(format!(
+                "max_history must be 1..=100_000, got {}",
+                self.max_history
+            )));
+        }
+        if self.session_timeout == 0 || self.session_timeout > 86400 {
+            return Err(ConfigError::ValidationError(format!(
+                "session_timeout must be 1..=86400, got {}",
+                self.session_timeout
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -390,7 +434,18 @@ impl NdcConfigLoader {
             }
         }
         self.apply_env_overrides();
+        self.validate_config()?;
         Ok(&self.config)
+    }
+
+    fn validate_config(&self) -> Result<(), ConfigError> {
+        if let Some(llm) = &self.config.llm {
+            llm.validate()?;
+        }
+        if let Some(repl) = &self.config.repl {
+            repl.validate()?;
+        }
+        Ok(())
     }
 
     fn merge(&mut self, other: NdcConfig) {
@@ -709,5 +764,61 @@ mod config_tests {
         let profile = YamlAgentProfile::default();
         assert_eq!(profile.name, "default");
         assert!(profile.enable_streaming);
+    }
+
+    #[test]
+    fn test_llm_config_validate_valid() {
+        let config = YamlLlmConfig::default();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_llm_config_validate_temperature_out_of_range() {
+        let mut config = YamlLlmConfig::default();
+        config.temperature = -1.0;
+        assert!(config.validate().is_err());
+        config.temperature = 2.5;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_llm_config_validate_max_tokens_zero() {
+        let mut config = YamlLlmConfig::default();
+        config.max_tokens = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_llm_config_validate_max_tokens_too_large() {
+        let mut config = YamlLlmConfig::default();
+        config.max_tokens = 2_000_000;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_llm_config_validate_timeout_zero() {
+        let mut config = YamlLlmConfig::default();
+        config.timeout = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_repl_config_validate_valid() {
+        let config = YamlReplConfig::default();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_repl_config_validate_max_history_zero() {
+        let mut config = YamlReplConfig::default();
+        config.max_history = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_repl_config_validate_session_timeout_zero() {
+        let mut config = YamlReplConfig::default();
+        config.session_timeout = 0;
+        assert!(config.validate().is_err());
     }
 }
