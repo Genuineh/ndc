@@ -796,6 +796,9 @@ impl AgentOrchestrator {
             )
             .await;
 
+            // Truncate message history to prevent unbounded growth
+            truncate_messages(&mut messages, MAX_CONVERSATION_MESSAGES);
+
             // 调用 LLM
             let tool_schemas = self.tool_executor.tool_schemas();
             let llm_request = CompletionRequest {
@@ -1597,6 +1600,41 @@ fn is_confirmation_permission_error(message: &str) -> bool {
     message
         .trim_start()
         .starts_with("requires_confirmation permission=")
+}
+
+/// Maximum number of messages to keep in the conversation history.
+/// System prompt is always preserved. When exceeded, older messages (after system
+/// prompt) are replaced with a summary placeholder.
+const MAX_CONVERSATION_MESSAGES: usize = 40;
+
+/// Truncate messages to bounded size, preserving system prompt and recent history.
+///
+/// - Keeps the first message if it's a system prompt
+/// - Keeps the most recent `max_messages` non-system messages
+/// - Replaces removed messages with a single placeholder
+fn truncate_messages(messages: &mut Vec<Message>, max_messages: usize) {
+    // Find system prompt boundary
+    let system_count = if messages.first().is_some_and(|m| m.role == MessageRole::System) {
+        1
+    } else {
+        0
+    };
+
+    let non_system = messages.len() - system_count;
+    if non_system <= max_messages {
+        return;
+    }
+
+    let to_remove = non_system - max_messages;
+    let placeholder = Message {
+        role: MessageRole::User,
+        content: "[earlier conversation history omitted for context window management]".to_string(),
+        name: None,
+        tool_calls: None,
+    };
+
+    // Remove messages after system prompt, replace with single placeholder
+    messages.splice(system_count..system_count + to_remove, [placeholder]);
 }
 
 fn compact_preview(content: &str, max: usize) -> String {
@@ -3257,5 +3295,67 @@ mod tests {
         let mut config = AgentConfig::default();
         config.timeout_secs = 0;
         assert!(config.validate().is_err());
+    }
+
+    fn make_msg(role: MessageRole, content: &str) -> Message {
+        Message {
+            role,
+            content: content.to_string(),
+            name: None,
+            tool_calls: None,
+        }
+    }
+
+    #[test]
+    fn test_truncate_messages_under_limit() {
+        let mut msgs = vec![
+            make_msg(MessageRole::System, "system"),
+            make_msg(MessageRole::User, "hello"),
+            make_msg(MessageRole::Assistant, "hi"),
+        ];
+        truncate_messages(&mut msgs, 40);
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[0].content, "system");
+    }
+
+    #[test]
+    fn test_truncate_messages_over_limit() {
+        let mut msgs = vec![make_msg(MessageRole::System, "system")];
+        for i in 0..10 {
+            msgs.push(make_msg(MessageRole::User, &format!("u{}", i)));
+            msgs.push(make_msg(MessageRole::Assistant, &format!("a{}", i)));
+        }
+        // 1 system + 20 non-system = 21 total. Limit to 6 non-system.
+        truncate_messages(&mut msgs, 6);
+        // system + placeholder + 6 recent = 8
+        assert_eq!(msgs.len(), 8);
+        assert_eq!(msgs[0].role, MessageRole::System);
+        assert!(msgs[1].content.contains("earlier conversation"));
+        // Last message should be a9 (the most recent assistant)
+        assert_eq!(msgs[7].content, "a9");
+    }
+
+    #[test]
+    fn test_truncate_messages_no_system_prompt() {
+        let mut msgs = vec![];
+        for i in 0..10 {
+            msgs.push(make_msg(MessageRole::User, &format!("u{}", i)));
+        }
+        truncate_messages(&mut msgs, 4);
+        // placeholder + 4 recent = 5
+        assert_eq!(msgs.len(), 5);
+        assert!(msgs[0].content.contains("earlier conversation"));
+        assert_eq!(msgs[4].content, "u9");
+    }
+
+    #[test]
+    fn test_truncate_messages_exactly_at_limit() {
+        let mut msgs = vec![make_msg(MessageRole::System, "system")];
+        for i in 0..5 {
+            msgs.push(make_msg(MessageRole::User, &format!("u{}", i)));
+        }
+        // 1 system + 5 non-system. Limit = 5 → no truncation
+        truncate_messages(&mut msgs, 5);
+        assert_eq!(msgs.len(), 6);
     }
 }
