@@ -8,7 +8,7 @@ authors.workspace = true
 
 [features]
 default = []
-sqlite = ["rusqlite"]
+sqlite = ["rusqlite", "r2d2"]
 
 [dependencies]
 ndc-core = { path = "../core" }
@@ -24,6 +24,7 @@ ulid = { workspace = true }
 
 # SQLite (optional)
 rusqlite = { version = "0.32", optional = true, features = ["bundled"] }
+r2d2 = { version = "0.8", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

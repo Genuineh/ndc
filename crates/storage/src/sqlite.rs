@@ -10,10 +10,42 @@
 
 use async_trait::async_trait;
 use ndc_core::{MemoryEntry, MemoryId, Task, TaskId};
+use r2d2::Pool;
 use rusqlite::{self, OptionalExtension};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::info;
+
+/// r2d2 connection manager for rusqlite (avoids r2d2_sqlite version mismatch)
+#[derive(Debug)]
+struct SqliteConnectionManager {
+    path: PathBuf,
+}
+
+impl SqliteConnectionManager {
+    fn file(path: &PathBuf) -> Self {
+        Self { path: path.clone() }
+    }
+}
+
+impl r2d2::ManageConnection for SqliteConnectionManager {
+    type Connection = rusqlite::Connection;
+    type Error = rusqlite::Error;
+
+    fn connect(&self) -> Result<rusqlite::Connection, rusqlite::Error> {
+        let conn = rusqlite::Connection::open(&self.path)?;
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        Ok(conn)
+    }
+
+    fn is_valid(&self, conn: &mut rusqlite::Connection) -> Result<(), rusqlite::Error> {
+        conn.execute_batch("SELECT 1")
+    }
+
+    fn has_broken(&self, _conn: &mut rusqlite::Connection) -> bool {
+        false
+    }
+}
 
 /// SQLite storage error
 #[derive(Debug, thiserror::Error)]
@@ -31,11 +63,16 @@ pub enum SqliteStorageError {
     InvalidData(String),
 }
 
+/// Maximum number of connections in the pool
+const MAX_POOL_SIZE: u32 = 4;
+
 /// SQLite storage implementation
 #[derive(Debug, Clone)]
 pub struct SqliteStorage {
     /// Database file path
     path: PathBuf,
+    /// Connection pool
+    pool: Pool<SqliteConnectionManager>,
 }
 
 impl SqliteStorage {
@@ -48,12 +85,19 @@ impl SqliteStorage {
                 .map_err(|e| SqliteStorageError::DatabaseError(e.to_string()))?;
         }
 
-        // Verify we can open the database and initialize schema
-        let path_clone = path.clone();
+        // Create connection pool with WAL mode
+        let manager = SqliteConnectionManager::file(&path);
+
+        let pool = Pool::builder()
+            .max_size(MAX_POOL_SIZE)
+            .build(manager)
+            .map_err(|e| SqliteStorageError::DatabaseError(e.to_string()))?;
+
+        // Initialize schema using a pooled connection
+        let pool_clone = pool.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = rusqlite::Connection::open(&path_clone)
-                .map_err(|e| SqliteStorageError::DatabaseError(e.to_string()))?;
-            conn.pragma_update(None, "journal_mode", "WAL")
+            let conn = pool_clone
+                .get()
                 .map_err(|e| SqliteStorageError::DatabaseError(e.to_string()))?;
             Self::init_schema(&conn)?;
             Ok::<_, SqliteStorageError>(())
@@ -61,9 +105,9 @@ impl SqliteStorage {
         .await
         .map_err(|e| SqliteStorageError::DatabaseError(e.to_string()))??;
 
-        info!("SQLite storage initialized at: {:?}", path);
+        info!("SQLite storage initialized at: {:?} (pool_size={})", path, MAX_POOL_SIZE);
 
-        Ok(Self { path })
+        Ok(Self { path, pool })
     }
 
     /// Initialize database schema
@@ -128,14 +172,14 @@ impl SqliteStorage {
     }
 }
 
-/// Helper function to run blocking SQLite operations
-async fn run_sqlite<T, F>(path: PathBuf, f: F) -> Result<T, String>
+/// Helper function to run blocking SQLite operations using the connection pool
+async fn run_sqlite<T, F>(pool: Pool<SqliteConnectionManager>, f: F) -> Result<T, String>
 where
     F: FnOnce(&rusqlite::Connection) -> Result<T, String> + Send + 'static,
     T: Send + 'static,
 {
     tokio::task::spawn_blocking(move || {
-        let conn = rusqlite::Connection::open(&path).map_err(|e| e.to_string())?;
+        let conn = pool.get().map_err(|e| e.to_string())?;
         f(&conn)
     })
     .await
@@ -145,7 +189,7 @@ where
 #[async_trait]
 impl crate::Storage for SqliteStorage {
     async fn save_task(&self, task: &Task) -> Result<(), String> {
-        let path = self.path.clone();
+        let pool = self.pool.clone();
 
         // Serialize all complex types before the async block
         let task_id = task.id.to_string();
@@ -178,7 +222,7 @@ impl crate::Storage for SqliteStorage {
             .map(|g| serde_json::to_string(g).map_err(|e| e.to_string()))
             .transpose()?;
 
-        run_sqlite(path, move |conn| {
+        run_sqlite(pool, move |conn| {
             conn.execute(
                 r#"
                 INSERT INTO tasks (
@@ -222,10 +266,10 @@ impl crate::Storage for SqliteStorage {
     }
 
     async fn get_task(&self, task_id: &TaskId) -> Result<Option<Task>, String> {
-        let path = self.path.clone();
+        let pool = self.pool.clone();
         let task_id_str = task_id.to_string();
 
-        run_sqlite(path, move |conn| {
+        run_sqlite(pool, move |conn| {
             let mut stmt = conn
                 .prepare(
                     r#"
@@ -356,9 +400,9 @@ impl crate::Storage for SqliteStorage {
     }
 
     async fn list_tasks(&self) -> Result<Vec<Task>, String> {
-        let path = self.path.clone();
+        let pool = self.pool.clone();
 
-        run_sqlite(path, move |conn| {
+        run_sqlite(pool, move |conn| {
             let mut stmt = conn
                 .prepare(
                     r#"
@@ -489,7 +533,7 @@ impl crate::Storage for SqliteStorage {
     }
 
     async fn save_memory(&self, memory: &MemoryEntry) -> Result<(), String> {
-        let path = self.path.clone();
+        let pool = self.pool.clone();
 
         let memory_id = memory.id.0.to_string();
         let content = serde_json::to_string(&memory.content).map_err(|e| e.to_string())?;
@@ -499,7 +543,7 @@ impl crate::Storage for SqliteStorage {
         let access_control =
             serde_json::to_string(&memory.access_control).map_err(|e| e.to_string())?;
 
-        run_sqlite(path, move |conn| {
+        run_sqlite(pool, move |conn| {
             conn.execute(
                 r#"
                 INSERT INTO memories (
@@ -529,10 +573,10 @@ impl crate::Storage for SqliteStorage {
     }
 
     async fn get_memory(&self, memory_id: &MemoryId) -> Result<Option<MemoryEntry>, String> {
-        let path = self.path.clone();
+        let pool = self.pool.clone();
         let memory_id_str = memory_id.0.to_string();
 
-        run_sqlite(path, move |conn| {
+        run_sqlite(pool, move |conn| {
             let mut stmt = conn
                 .prepare(
                     r#"
@@ -800,5 +844,74 @@ mod tests {
         // Retrieve and verify
         let retrieved = storage.get_task(&task_id).await.unwrap().unwrap();
         assert_eq!(retrieved.title, "Updated Title");
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_storage_concurrent_saves() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        let storage = Arc::new(SqliteStorage::new(db_path).await.unwrap());
+
+        // Spawn 10 concurrent save_task operations
+        let mut handles = Vec::new();
+        for i in 0..10 {
+            let s = Arc::clone(&storage);
+            handles.push(tokio::spawn(async move {
+                let task = Task {
+                    id: Ulid::new().into(),
+                    title: format!("Concurrent Task {}", i),
+                    description: format!("Description {}", i),
+                    state: TaskState::Pending,
+                    allowed_transitions: vec![],
+                    steps: vec![],
+                    quality_gate: None,
+                    snapshots: vec![],
+                    lightweight_snapshots: vec![],
+                    metadata: TaskMetadata::default(),
+                    intent: None,
+                    verdict: None,
+                };
+                s.save_task(&task).await.unwrap();
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        // All 10 tasks should be saved
+        let tasks = storage.list_tasks().await.unwrap();
+        assert_eq!(tasks.len(), 10);
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_storage_pool_reuse() {
+        // Verify that the pool is shared (same storage instance, multiple operations)
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        let storage = SqliteStorage::new(db_path).await.unwrap();
+
+        // Perform multiple sequential operations — pool should reuse connections
+        for i in 0..5 {
+            let task = Task {
+                id: Ulid::new().into(),
+                title: format!("Pool Task {}", i),
+                description: "desc".to_string(),
+                state: TaskState::Pending,
+                allowed_transitions: vec![],
+                steps: vec![],
+                quality_gate: None,
+                snapshots: vec![],
+                lightweight_snapshots: vec![],
+                metadata: TaskMetadata::default(),
+                intent: None,
+                verdict: None,
+            };
+            storage.save_task(&task).await.unwrap();
+        }
+
+        let tasks = storage.list_tasks().await.unwrap();
+        assert_eq!(tasks.len(), 5);
     }
 }
