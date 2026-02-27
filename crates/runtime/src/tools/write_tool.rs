@@ -4,12 +4,21 @@
 //! Design参考 OpenCode write.ts
 
 use async_trait::async_trait;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::fs;
 use tracing::debug;
 
 use super::schema::ToolSchemaBuilder;
 use super::{Tool, ToolError, ToolMetadata, ToolResult, enforce_path_boundary};
+
+/// Atomic file write: writes to a temporary file then renames to the target path.
+/// Prevents data corruption if the process crashes during write.
+pub async fn atomic_write(path: &Path, content: &str) -> std::io::Result<()> {
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, content).await?;
+    fs::rename(&tmp, path).await?;
+    Ok(())
+}
 
 /// Write tool - 写入文件
 #[derive(Debug)]
@@ -75,15 +84,17 @@ impl Tool for WriteTool {
         let mode = if append { "appended to" } else { "written to" };
 
         if append && path.exists() {
-            // Append to existing file
+            // Append to existing file (atomic: read + concat + write-tmp + rename)
             let existing = fs::read_to_string(&path).await.map_err(ToolError::Io)?;
             let new_content = existing + content;
-            fs::write(&path, &new_content)
+            atomic_write(&path, &new_content)
                 .await
                 .map_err(ToolError::Io)?;
         } else {
-            // Write (or create) file
-            fs::write(&path, content).await.map_err(ToolError::Io)?;
+            // Write (or create) file atomically
+            atomic_write(&path, content)
+                .await
+                .map_err(ToolError::Io)?;
         }
 
         let bytes_written = content.len();
@@ -234,5 +245,98 @@ mod tests {
 
         let result = tool.execute(&params).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_write_is_atomic_no_tmp_leftover() {
+        // After a successful write, no .tmp file should remain
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("atomic.txt");
+
+        let tool = WriteTool::new();
+        let params = serde_json::json!({
+            "path": file_path.to_string_lossy(),
+            "content": "atomic content"
+        });
+
+        let result = tool.execute(&params).await.unwrap();
+        assert!(result.success);
+
+        // File should exist with correct content
+        let content = std::fs::read_to_string(&file_path).unwrap();
+        assert_eq!(content, "atomic content");
+
+        // No .tmp file should remain
+        let tmp_path = file_path.with_extension("tmp");
+        assert!(!tmp_path.exists(), ".tmp file should not remain after atomic write");
+    }
+
+    #[tokio::test]
+    async fn test_write_atomic_preserves_content_on_overwrite() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("overwrite.txt");
+        std::fs::write(&file_path, "original content").unwrap();
+
+        let tool = WriteTool::new();
+        let params = serde_json::json!({
+            "path": file_path.to_string_lossy(),
+            "content": "new content via atomic write"
+        });
+
+        let result = tool.execute(&params).await.unwrap();
+        assert!(result.success);
+
+        let content = std::fs::read_to_string(&file_path).unwrap();
+        assert_eq!(content, "new content via atomic write");
+    }
+
+    #[tokio::test]
+    async fn test_append_atomic_no_tmp_leftover() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("append.txt");
+        std::fs::write(&file_path, "base").unwrap();
+
+        let tool = WriteTool::new();
+        let params = serde_json::json!({
+            "path": file_path.to_string_lossy(),
+            "content": " appended",
+            "append": true
+        });
+
+        let result = tool.execute(&params).await.unwrap();
+        assert!(result.success);
+
+        let content = std::fs::read_to_string(&file_path).unwrap();
+        assert_eq!(content, "base appended");
+
+        let tmp_path = file_path.with_extension("tmp");
+        assert!(!tmp_path.exists(), ".tmp file should not remain after append");
+    }
+
+    #[tokio::test]
+    async fn test_atomic_write_helper_basic() {
+        use super::atomic_write;
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("helper_test.txt");
+
+        atomic_write(&file_path, "hello atomic").await.unwrap();
+        let content = std::fs::read_to_string(&file_path).unwrap();
+        assert_eq!(content, "hello atomic");
+
+        // No .tmp file should remain
+        let tmp_path = file_path.with_extension("tmp");
+        assert!(!tmp_path.exists());
+    }
+
+    #[tokio::test]
+    async fn test_atomic_write_helper_overwrites_existing() {
+        use super::atomic_write;
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("overwrite.txt");
+        std::fs::write(&file_path, "original").unwrap();
+
+        atomic_write(&file_path, "replaced").await.unwrap();
+        let content = std::fs::read_to_string(&file_path).unwrap();
+        assert_eq!(content, "replaced");
     }
 }

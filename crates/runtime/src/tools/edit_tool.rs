@@ -291,8 +291,10 @@ impl Tool for EditTool {
             }
         };
 
-        // Write back
-        fs::write(&path, &result.0).await.map_err(ToolError::Io)?;
+        // Write back atomically (temp file + rename)
+        super::write_tool::atomic_write(&path, &result.0)
+            .await
+            .map_err(ToolError::Io)?;
 
         let duration = start.elapsed().as_millis() as u64;
 
@@ -431,5 +433,29 @@ mod tests {
 
         let result = tool.execute(&params).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_edit_atomic_no_tmp_leftover() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("atomic_edit.txt");
+        std::fs::write(&file_path, "Hello, World!").unwrap();
+
+        let tool = EditTool::new();
+        let params = serde_json::json!({
+            "path": file_path.to_string_lossy(),
+            "oldString": "World",
+            "newString": "Atomic"
+        });
+
+        let result = tool.execute(&params).await.unwrap();
+        assert!(result.success);
+
+        let content = std::fs::read_to_string(&file_path).unwrap();
+        assert_eq!(content, "Hello, Atomic!");
+
+        // No .tmp file should remain after atomic edit
+        let tmp_path = file_path.with_extension("tmp");
+        assert!(!tmp_path.exists(), ".tmp file should not remain after atomic edit");
     }
 }
