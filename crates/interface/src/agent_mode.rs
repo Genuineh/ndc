@@ -21,12 +21,17 @@ use tracing::{debug, info};
 use ndc_core::{
     AbstractHistory, AgentConfig, AgentError, AgentOrchestrator, AgentRequest, AgentResponse,
     AgentRole, ApiSurface, FailurePattern, InvariantPriority, LlmProvider, ModelInfo,
-    NdcConfigLoader, ProviderType, RawCurrent, StepContext, SubTaskId, TaskId, TaskStorage,
-    TaskVerifier, TrajectoryState, VersionedInvariant, WorkingMemory,
+    NdcConfigLoader, ProviderType, RawCurrent, StepContext, SubTaskId, TaskId,
+    TaskStorage, TaskVerifier, TrajectoryState, VersionedInvariant, WorkingMemory,
 };
-use ndc_runtime::{Executor, SharedStorage, tools::ToolRegistry};
+use ndc_runtime::{
+    Executor, SharedStorage,
+    tools::ToolRegistry,
+};
 
-use crate::provider_config::{create_provider_config, is_minimax_family};
+use crate::provider_config::{
+    create_provider_config, is_minimax_family,
+};
 
 use crate::project_index::{
     ProjectIndexStore, build_project_scoped_session_id, canonicalize_existing_dir,
@@ -34,8 +39,6 @@ use crate::project_index::{
 };
 
 use crate::session_archive::SessionArchiveStore;
-
-pub use crate::permission_engine::{PermissionRequest, ReplToolExecutor};
 
 /// Runtime storage adapter - 给 TaskVerifier 使用同一份任务存储
 struct RuntimeTaskStorage {
@@ -1290,6 +1293,9 @@ pub struct ProjectSwitchOutcome {
     pub resumed_existing_session: bool,
 }
 
+// PermissionRequest and ReplToolExecutor are defined in permission_engine module
+pub use crate::permission_engine::{PermissionRequest, ReplToolExecutor};
+
 /// 显示 Agent 状态
 pub fn show_agent_status(status: AgentModeStatus) {
     println!("\n┌─────────────────────────────────────────────────────────────────┐");
@@ -1393,14 +1399,11 @@ fn show_agent_help() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
     use ndc_core::{
         Action, AgentExecutionEvent, AgentExecutionEventKind, AgentRole, GateStrategy,
         QualityCheck, QualityCheckType, QualityGate, Task,
     };
-    use ndc_runtime::tools::{Tool, ToolError, ToolMetadata, ToolResult};
     use ndc_runtime::{ExecutionContext, Executor, create_default_tool_registry_with_storage};
-    use std::collections::HashMap;
     use std::sync::{Arc, Mutex, OnceLock};
     use tempfile::TempDir;
 
@@ -1845,25 +1848,10 @@ mod tests {
     #[test]
     fn test_dangerous_operations_require_ask() {
         let config = AgentModeConfig::default();
-        assert_eq!(
-            config.permissions.get("shell_execute"),
-            Some(&PermissionRule::Ask)
-        );
-        assert_eq!(
-            config.permissions.get("network"),
-            Some(&PermissionRule::Ask)
-        );
-        assert_eq!(
-            config.permissions.get("file_write"),
-            Some(&PermissionRule::Ask)
-        );
-        assert_eq!(
-            config.permissions.get("file_delete"),
-            Some(&PermissionRule::Ask)
-        );
-        assert_eq!(
-            config.permissions.get("git_commit"),
-            Some(&PermissionRule::Ask)
-        );
+        assert_eq!(config.permissions.get("shell_execute"), Some(&PermissionRule::Ask));
+        assert_eq!(config.permissions.get("network"), Some(&PermissionRule::Ask));
+        assert_eq!(config.permissions.get("file_write"), Some(&PermissionRule::Ask));
+        assert_eq!(config.permissions.get("file_delete"), Some(&PermissionRule::Ask));
+        assert_eq!(config.permissions.get("git_commit"), Some(&PermissionRule::Ask));
     }
 }
