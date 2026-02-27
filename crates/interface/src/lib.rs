@@ -18,6 +18,7 @@ pub(crate) mod project_index;
 pub(crate) mod provider_config;
 pub mod redaction;
 pub mod repl;
+pub(crate) mod session_archive;
 
 #[cfg(feature = "grpc")]
 pub mod generated;

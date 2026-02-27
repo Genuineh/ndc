@@ -12,7 +12,6 @@
 //! - 增强内置 NDC 工程能力
 //! - 集成 NDC 反馈循环验证
 
-use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -40,103 +39,7 @@ use crate::project_index::{
     discover_project_directories, looks_like_project_root,
 };
 
-const SESSION_ARCHIVE_VERSION: u32 = 1;
-const SESSION_ARCHIVE_MAX_ENTRIES: usize = 128;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PersistedSessionRecord {
-    session: ndc_core::AgentSession,
-    last_seen_unix_ms: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PersistedSessionArchive {
-    version: u32,
-    sessions: Vec<PersistedSessionRecord>,
-}
-
-impl Default for PersistedSessionArchive {
-    fn default() -> Self {
-        Self {
-            version: SESSION_ARCHIVE_VERSION,
-            sessions: Vec::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct SessionArchiveStore {
-    path: PathBuf,
-    archive: PersistedSessionArchive,
-}
-
-impl SessionArchiveStore {
-    fn load_default() -> Self {
-        let path = session_archive_file_path();
-        let archive = load_session_archive(path.as_path()).unwrap_or_default();
-        Self { path, archive }
-    }
-
-    fn all_sessions(&self) -> Vec<ndc_core::AgentSession> {
-        self.archive
-            .sessions
-            .iter()
-            .map(|record| record.session.clone())
-            .collect()
-    }
-
-    fn upsert(&mut self, session: &ndc_core::AgentSession) {
-        let now = chrono::Utc::now().timestamp_millis();
-        if let Some(idx) = self
-            .archive
-            .sessions
-            .iter()
-            .position(|record| record.session.id == session.id)
-        {
-            self.archive.sessions[idx].session = session.clone();
-            self.archive.sessions[idx].last_seen_unix_ms = now;
-        } else {
-            self.archive.sessions.push(PersistedSessionRecord {
-                session: session.clone(),
-                last_seen_unix_ms: now,
-            });
-        }
-        self.archive
-            .sessions
-            .sort_by(|left, right| right.last_seen_unix_ms.cmp(&left.last_seen_unix_ms));
-        self.archive.sessions.truncate(SESSION_ARCHIVE_MAX_ENTRIES);
-    }
-
-    fn save(&self) -> io::Result<()> {
-        save_session_archive(self.path.as_path(), &self.archive)
-    }
-}
-
-fn session_archive_file_path() -> PathBuf {
-    if let Ok(value) = std::env::var("NDC_SESSION_ARCHIVE_FILE") {
-        let path = PathBuf::from(value);
-        if !path.as_os_str().is_empty() {
-            return path;
-        }
-    }
-    ndc_core::ConfigLayer::User
-        .path()
-        .join("session_archive.json")
-}
-
-fn load_session_archive(path: &Path) -> Option<PersistedSessionArchive> {
-    let raw = std::fs::read_to_string(path).ok()?;
-    let parsed: PersistedSessionArchive = serde_json::from_str(raw.as_str()).ok()?;
-    Some(parsed)
-}
-
-fn save_session_archive(path: &Path, archive: &PersistedSessionArchive) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let data = serde_json::to_vec_pretty(archive).map_err(io::Error::other)?;
-    std::fs::write(path, data)
-}
+use crate::session_archive::SessionArchiveStore;
 
 /// Runtime storage adapter - 给 TaskVerifier 使用同一份任务存储
 struct RuntimeTaskStorage {
@@ -2029,68 +1932,6 @@ mod tests {
             .await
             .expect("list sessions");
         assert!(sessions.is_empty());
-    }
-
-    #[test]
-    fn test_session_archive_store_roundtrip() {
-        let _guard = env_lock();
-        let temp = TempDir::new().expect("temp dir");
-        let archive_path = temp.path().join("session_archive.json");
-        unsafe {
-            std::env::set_var(
-                "NDC_SESSION_ARCHIVE_FILE",
-                archive_path.to_string_lossy().to_string(),
-            );
-        }
-
-        let project = temp.path().join("demo");
-        std::fs::create_dir_all(project.as_path()).expect("create project dir");
-        std::fs::write(
-            project.join("Cargo.toml"),
-            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n",
-        )
-        .expect("write marker");
-        let identity = ndc_core::ProjectIdentity::detect(Some(project.clone()));
-
-        let mut session = ndc_core::AgentSession::new_with_project_identity(
-            "agent-demo-session".to_string(),
-            identity,
-        );
-        session.add_execution_event(AgentExecutionEvent {
-            kind: AgentExecutionEventKind::Text,
-            timestamp: chrono::Utc::now(),
-            message: "persisted timeline event".to_string(),
-            round: 1,
-            tool_name: None,
-            tool_call_id: None,
-            duration_ms: Some(7),
-            is_error: false,
-            workflow_stage: None,
-            workflow_detail: None,
-            workflow_stage_index: None,
-            workflow_stage_total: None,
-        });
-
-        let mut store = SessionArchiveStore::load_default();
-        store.upsert(&session);
-        store.save().expect("save archive");
-
-        let reloaded = SessionArchiveStore::load_default();
-        let sessions = reloaded.all_sessions();
-        let restored = sessions
-            .iter()
-            .find(|entry| entry.id == "agent-demo-session")
-            .expect("restored session");
-        assert_eq!(restored.project_id, session.project_id);
-        assert_eq!(restored.execution_events.len(), 1);
-        assert_eq!(
-            restored.execution_events[0].message,
-            "persisted timeline event"
-        );
-
-        unsafe {
-            std::env::remove_var("NDC_SESSION_ARCHIVE_FILE");
-        }
     }
 
     #[tokio::test]
