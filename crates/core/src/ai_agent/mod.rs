@@ -15,6 +15,7 @@
 pub mod adapters;
 pub mod injectors;
 pub mod orchestrator;
+pub(crate) mod prompt_builder;
 pub mod prompts;
 pub mod session;
 pub(crate) mod session_store;
