@@ -199,6 +199,24 @@ pub async fn run_repl(history_file: PathBuf, executor: Arc<ndc_runtime::Executor
 
     // TUI 模式下设置权限确认通道（在 enable 之前）
     let is_tui = io::stdout().is_terminal() && std::env::var("NDC_REPL_LEGACY").is_err();
+
+    // 加载永久批准的权限到安全网关环境变量
+    let approved = ndc_core::NdcConfigLoader::load_approved_permissions();
+    if !approved.is_empty() {
+        let existing = std::env::var("NDC_SECURITY_OVERRIDE_PERMISSIONS").unwrap_or_default();
+        let mut all: Vec<String> = if existing.is_empty() {
+            Vec::new()
+        } else {
+            existing.split(',').map(|s| s.trim().to_string()).collect()
+        };
+        for p in &approved {
+            if !all.contains(p) {
+                all.push(p.clone());
+            }
+        }
+        unsafe { std::env::set_var("NDC_SECURITY_OVERRIDE_PERMISSIONS", all.join(",")) };
+    }
+
     let permission_rx = if is_tui {
         let (tx, rx) = tokio::sync::mpsc::channel::<PermissionRequest>(4);
         agent_manager.set_permission_channel(tx).await;
@@ -315,6 +333,7 @@ async fn run_repl_tui(
     let mut last_poll = Instant::now();
     let mut should_quit = false;
     let mut pending_permission_tx: Option<tokio::sync::oneshot::Sender<bool>> = None;
+    let mut pending_permission_key: Option<String> = None;
     let mut session_view = TuiSessionViewState::default();
     let mut turn_counter: usize = 0;
     let mut live_events: Option<
@@ -338,6 +357,7 @@ async fn run_repl_tui(
         if let Ok(req) = permission_rx.try_recv() {
             viz_state.permission_blocked = true;
             viz_state.permission_pending_message = Some(req.description);
+            pending_permission_key = req.permission_key;
             pending_permission_tx = Some(req.response_tx);
         }
 
@@ -542,7 +562,7 @@ async fn run_repl_tui(
                         continue;
                     }
 
-                    // Handle y/n/a permission response keys when a permission prompt is active
+                    // Handle y/n/a/s/p permission response keys when a permission prompt is active
                     if viz_state.permission_blocked {
                         if let Some(tx) = pending_permission_tx.take() {
                             match key.code {
@@ -550,19 +570,56 @@ async fn run_repl_tui(
                                     let _ = tx.send(true);
                                     viz_state.permission_blocked = false;
                                     viz_state.permission_pending_message = None;
+                                    pending_permission_key = None;
                                 }
                                 KeyCode::Char('n') | KeyCode::Char('N') => {
                                     let _ = tx.send(false);
                                     viz_state.permission_blocked = false;
                                     viz_state.permission_pending_message = None;
+                                    pending_permission_key = None;
                                 }
                                 KeyCode::Char('a') | KeyCode::Char('A') => {
                                     let _ = tx.send(true);
                                     viz_state.permission_blocked = false;
                                     viz_state.permission_pending_message = None;
-                                    // Set env var so future operations are auto-approved this session
-                                    // SAFETY: no other threads are reading this env var concurrently
-                                    unsafe { std::env::set_var("NDC_AUTO_APPROVE_TOOLS", "1") };
+                                    // Add to session-level security override for this permission
+                                    if let Some(perm) = pending_permission_key.take() {
+                                        let existing = std::env::var("NDC_SECURITY_OVERRIDE_PERMISSIONS").unwrap_or_default();
+                                        let new_val = if existing.is_empty() {
+                                            perm
+                                        } else if !existing.split(',').any(|s| s.trim() == perm) {
+                                            format!("{},{}", existing, perm)
+                                        } else {
+                                            existing
+                                        };
+                                        // SAFETY: no other threads are reading this env var concurrently
+                                        unsafe { std::env::set_var("NDC_SECURITY_OVERRIDE_PERMISSIONS", new_val) };
+                                    } else {
+                                        // No specific permission key — approve all for session
+                                        unsafe { std::env::set_var("NDC_AUTO_APPROVE_TOOLS", "1") };
+                                    }
+                                }
+                                KeyCode::Char('p') | KeyCode::Char('P') => {
+                                    let _ = tx.send(true);
+                                    viz_state.permission_blocked = false;
+                                    viz_state.permission_pending_message = None;
+                                    // Save permanently to config
+                                    if let Some(perm) = pending_permission_key.take() {
+                                        // Also add to session overrides
+                                        let existing = std::env::var("NDC_SECURITY_OVERRIDE_PERMISSIONS").unwrap_or_default();
+                                        let new_val = if existing.is_empty() {
+                                            perm.clone()
+                                        } else if !existing.split(',').any(|s| s.trim() == perm) {
+                                            format!("{},{}", existing, perm)
+                                        } else {
+                                            existing
+                                        };
+                                        unsafe { std::env::set_var("NDC_SECURITY_OVERRIDE_PERMISSIONS", new_val) };
+                                        // Persist to config file
+                                        if let Err(e) = ndc_core::NdcConfigLoader::save_approved_permission(&perm) {
+                                            tracing::warn!("Failed to persist permission: {}", e);
+                                        }
+                                    }
                                 }
                                 _ => {
                                     // Put the sender back — not consumed

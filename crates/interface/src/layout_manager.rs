@@ -311,7 +311,7 @@ pub(crate) fn build_permission_bar<'a>(
             Span::styled(format!("  {}", msg), Style::default().fg(theme.warning)),
         ]),
         Line::from(vec![Span::styled(
-            "   [y] Allow  [n] Deny  [a] Always allow",
+            "   [y] Allow  [n] Deny  [a] Session allow  [p] Permanent allow",
             Style::default().fg(theme.text_muted),
         )]),
     ]

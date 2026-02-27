@@ -456,16 +456,16 @@ mod tests {
     async fn test_shell_blocked_command() {
         let _env_guard = env_lock();
         let tool = ShellTool::new();
-        let params = serde_json::json!({
-            "command": "rm",
-            "args": ["-rf", "/"]
-        });
 
+        // Denied command: always blocked
+        let params = serde_json::json!({
+            "command": "shutdown",
+            "args": ["-h", "now"]
+        });
         let result = tool.execute(&params).await;
         match result {
             Err(ToolError::PermissionDenied(msg)) => {
-                // Unlisted commands now use requires_confirmation format
-                assert!(msg.contains("requires_confirmation") || msg.contains("not allowed"));
+                assert!(msg.contains("permanently denied"));
             }
             _ => panic!("Expected PermissionDenied error"),
         }

@@ -10,100 +10,22 @@
 //! - Timeout limits
 //! - Environment variable filtering
 
-use super::security::{PERMISSION_SHELL_UNLISTED, ask_message, has_override};
 use super::{Tool, ToolContext, ToolError, ToolResult, enforce_shell_command};
 use std::collections::HashSet;
 use tokio::process::Command;
 use tracing::debug;
 
-/// Allowed commands whitelist — common development tools
-const ALLOWED_COMMANDS: &[&str] = &[
-    // Build tools
-    "cargo",
-    "make",
-    "cmake",
-    "ninja",
-    "meson",
-    // Version control
-    "git",
-    // Node.js ecosystem
-    "npm",
-    "npx",
-    "node",
-    "yarn",
-    "pnpm",
-    "bun",
-    "deno",
-    // Python ecosystem
-    "python",
-    "python3",
-    "pip",
-    "pip3",
-    "uv",
-    "poetry",
-    "pipenv",
-    // Ruby / Go / Java
-    "ruby",
-    "gem",
-    "bundle",
-    "go",
-    "java",
-    "javac",
-    "mvn",
-    "gradle",
-    // Common UNIX utilities
-    "ls",
-    "cat",
-    "echo",
-    "pwd",
-    "cd",
-    "mkdir",
-    "cp",
-    "mv",
-    "touch",
-    "head",
-    "tail",
-    "wc",
-    "sort",
-    "uniq",
-    "tr",
-    "cut",
-    "tee",
-    "find",
-    "grep",
-    "sed",
-    "awk",
-    "diff",
-    "patch",
-    "xargs",
-    "which",
-    "whoami",
-    "env",
-    "printenv",
-    "date",
-    "file",
-    "stat",
-    "basename",
-    "dirname",
-    "realpath",
-    "readlink",
-    // Archive / compression
-    "tar",
-    "gzip",
-    "gunzip",
-    "zip",
-    "unzip",
-    // Rust tooling
-    "rustup",
-    "rustc",
-    "rustfmt",
-    "clippy-driver",
-    // Other dev tools
-    "docker",
-    "curl",
-    "wget",
-    "jq",
-    "yq",
+/// Denied commands — always blocked regardless of user approval.
+/// The security gateway (`enforce_shell_command`) handles risk-based
+/// prompting for everything else; this list is the absolute hard-stop.
+const DENIED_COMMANDS: &[&str] = &[
+    "shutdown", "reboot", "init", "poweroff", "halt",
+    "mkfs", "fdisk", "parted",
+    "iptables", "ip6tables", "nft",
+    "passwd", "useradd", "userdel", "usermod", "groupadd",
+    "mount", "umount",
+    "insmod", "rmmod", "modprobe",
+    "systemctl",
 ];
 
 /// Shell tool
@@ -125,9 +47,8 @@ impl ShellTool {
         }
     }
 
-    fn is_allowed(&self, command: &str) -> bool {
-        ALLOWED_COMMANDS.contains(&command)
-            || self.context.allowed_operations.iter().any(|s| s == command)
+    fn is_denied(&self, command: &str) -> bool {
+        DENIED_COMMANDS.contains(&command)
     }
 }
 
@@ -138,7 +59,7 @@ impl Tool for ShellTool {
     }
 
     fn description(&self) -> &str {
-        "Shell command execution (whitelisted commands only)"
+        "Shell command execution with security gating"
     }
 
     async fn execute(&self, params: &serde_json::Value) -> Result<ToolResult, ToolError> {
@@ -147,19 +68,12 @@ impl Tool for ShellTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArgument("Missing command".to_string()))?;
 
-        // 检查命令是否在白名单中
-        if !self.is_allowed(command) && !has_override(PERMISSION_SHELL_UNLISTED) {
-            tracing::warn!(
-                "Command not in allowed list, requesting confirmation: {}",
+        // Hard-deny commands that should never be executed
+        if self.is_denied(command) {
+            tracing::warn!("Blocked denied command: {}", command);
+            return Err(ToolError::PermissionDenied(format!(
+                "Command '{}' is permanently denied for safety",
                 command
-            );
-            return Err(ToolError::PermissionDenied(ask_message(
-                PERMISSION_SHELL_UNLISTED,
-                "medium",
-                &format!(
-                    "command '{}' is not in the allowed list and requires approval",
-                    command
-                ),
             )));
         }
 
@@ -349,7 +263,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_shell_whitelist_env_vars_passed() {
+    async fn test_shell_safe_env_vars_passed() {
         let tool = ShellTool::new();
         let params = serde_json::json!({
             "command": "echo",
@@ -361,17 +275,19 @@ mod tests {
     }
 
     #[test]
-    fn test_is_allowed_whitelist() {
+    fn test_is_denied_denylist() {
         let tool = ShellTool::new();
-        assert!(tool.is_allowed("cargo"));
-        assert!(tool.is_allowed("git"));
-        assert!(tool.is_allowed("echo"));
-        assert!(tool.is_allowed("curl"));
-        assert!(tool.is_allowed("npm"));
-        assert!(tool.is_allowed("python3"));
-        assert!(tool.is_allowed("mkdir"));
-        // rm is not in the static whitelist
-        assert!(!tool.is_allowed("rm"));
-        assert!(!tool.is_allowed("shutdown"));
+        // Denied commands
+        assert!(tool.is_denied("shutdown"));
+        assert!(tool.is_denied("reboot"));
+        assert!(tool.is_denied("mkfs"));
+        assert!(tool.is_denied("passwd"));
+        assert!(tool.is_denied("systemctl"));
+        // Normal development commands — not denied
+        assert!(!tool.is_denied("cargo"));
+        assert!(!tool.is_denied("git"));
+        assert!(!tool.is_denied("rm"));
+        assert!(!tool.is_denied("npm"));
+        assert!(!tool.is_denied("curl"));
     }
 }

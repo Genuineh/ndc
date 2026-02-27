@@ -123,11 +123,12 @@ impl Default for AgentModeConfig {
         // 安全的只读操作直接放行
         permissions.insert("file_read".to_string(), PermissionRule::Allow);
         permissions.insert("task_manage".to_string(), PermissionRule::Allow);
+        // Shell 命令由安全网关按风险等级把关，Level 1 直接放行
+        permissions.insert("shell_execute".to_string(), PermissionRule::Allow);
         // 危险操作需要用户确认
         permissions.insert("file_write".to_string(), PermissionRule::Ask);
         permissions.insert("file_delete".to_string(), PermissionRule::Ask);
         permissions.insert("git_commit".to_string(), PermissionRule::Ask);
-        permissions.insert("shell_execute".to_string(), PermissionRule::Ask);
         permissions.insert("network".to_string(), PermissionRule::Ask);
 
         let mut config = Self {
@@ -1849,9 +1850,10 @@ mod tests {
     #[test]
     fn test_dangerous_operations_require_ask() {
         let config = AgentModeConfig::default();
+        // shell_execute is Allow — security gateway handles risk-based prompting
         assert_eq!(
             config.permissions.get("shell_execute"),
-            Some(&PermissionRule::Ask)
+            Some(&PermissionRule::Allow)
         );
         assert_eq!(
             config.permissions.get("network"),

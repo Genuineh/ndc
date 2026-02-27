@@ -45,6 +45,9 @@ pub struct NdcConfig {
     pub storage: Option<YamlStorageConfig>,
     #[serde(default)]
     pub agents: Vec<YamlAgentProfile>,
+    /// Permanently approved security permissions (e.g. "shell_high_risk", "git_commit")
+    #[serde(default)]
+    pub approved_permissions: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,6 +58,8 @@ struct YamlNdcConfig {
     pub storage: Option<YamlStorageConfig>,
     #[serde(default)]
     pub agents: Vec<YamlAgentProfile>,
+    #[serde(default)]
+    pub approved_permissions: Vec<String>,
 }
 
 impl From<YamlNdcConfig> for NdcConfig {
@@ -65,6 +70,7 @@ impl From<YamlNdcConfig> for NdcConfig {
             runtime: yaml.runtime,
             storage: yaml.storage,
             agents: yaml.agents,
+            approved_permissions: yaml.approved_permissions,
         }
     }
 }
@@ -77,6 +83,7 @@ impl From<NdcConfig> for YamlNdcConfig {
             runtime: config.runtime,
             storage: config.storage,
             agents: config.agents,
+            approved_permissions: config.approved_permissions,
         }
     }
 }
@@ -89,6 +96,7 @@ impl Default for NdcConfig {
             runtime: Some(YamlRuntimeConfig::default()),
             storage: Some(YamlStorageConfig::default()),
             agents: Vec::new(),
+            approved_permissions: Vec::new(),
         }
     }
 }
@@ -466,6 +474,11 @@ impl NdcConfigLoader {
             self.config.agents.retain(|a| a.name != agent.name);
             self.config.agents.push(agent);
         }
+        for perm in other.approved_permissions {
+            if !self.config.approved_permissions.contains(&perm) {
+                self.config.approved_permissions.push(perm);
+            }
+        }
     }
 
     fn apply_env_overrides(&mut self) {
@@ -552,6 +565,7 @@ impl NdcConfigLoader {
                 runtime: None,
                 storage: None,
                 agents: Vec::new(),
+                approved_permissions: Vec::new(),
             }
         };
 
@@ -570,6 +584,58 @@ impl NdcConfigLoader {
             .map_err(|e| ConfigError::ParseError(format!("Failed to write config: {e}")))?;
 
         Ok(())
+    }
+
+    /// Save approved permission permanently to the user-level config file.
+    pub fn save_approved_permission(permission: &str) -> Result<(), ConfigError> {
+        Self::save_approved_permission_to(ConfigLayer::User.path(), permission)
+    }
+
+    /// Save approved permission to a specific config directory (testable variant).
+    pub fn save_approved_permission_to(
+        config_dir: PathBuf,
+        permission: &str,
+    ) -> Result<(), ConfigError> {
+        let config_path = config_dir.join("config.yaml");
+
+        let mut config: NdcConfig = if config_path.exists() {
+            let content = std::fs::read_to_string(&config_path)
+                .map_err(|e| ConfigError::ParseError(e.to_string()))?;
+            serde_yaml::from_str(&content).map_err(|e| ConfigError::ParseError(e.to_string()))?
+        } else {
+            NdcConfig {
+                llm: None,
+                repl: None,
+                runtime: None,
+                storage: None,
+                agents: Vec::new(),
+                approved_permissions: Vec::new(),
+            }
+        };
+
+        if !config.approved_permissions.contains(&permission.to_string()) {
+            config.approved_permissions.push(permission.to_string());
+        }
+
+        std::fs::create_dir_all(&config_dir)
+            .map_err(|e| ConfigError::ParseError(format!("Failed to create config dir: {e}")))?;
+
+        let yaml =
+            serde_yaml::to_string(&config).map_err(|e| ConfigError::ParseError(e.to_string()))?;
+        std::fs::write(&config_path, yaml)
+            .map_err(|e| ConfigError::ParseError(format!("Failed to write config: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Load permanently approved permissions from config.
+    pub fn load_approved_permissions() -> Vec<String> {
+        let mut loader = Self::new();
+        if loader.load().is_ok() {
+            loader.config.approved_permissions.clone()
+        } else {
+            Vec::new()
+        }
     }
 
     pub fn config(&self) -> &NdcConfig {
@@ -951,5 +1017,50 @@ repl:
         let llm = config.llm.as_ref().unwrap();
         assert_eq!(llm.provider, "anthropic");
         assert_eq!(llm.model, "claude-sonnet-4-5-20250929");
+    }
+
+    #[test]
+    fn test_save_approved_permission_creates_new_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path().join("ndc");
+
+        NdcConfigLoader::save_approved_permission_to(config_dir.clone(), "shell_high_risk")
+            .unwrap();
+
+        let content = std::fs::read_to_string(config_dir.join("config.yaml")).unwrap();
+        let config: NdcConfig = serde_yaml::from_str(&content).unwrap();
+        assert_eq!(config.approved_permissions, vec!["shell_high_risk"]);
+    }
+
+    #[test]
+    fn test_save_approved_permission_deduplicates() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path().join("ndc");
+
+        NdcConfigLoader::save_approved_permission_to(config_dir.clone(), "shell_high_risk")
+            .unwrap();
+        NdcConfigLoader::save_approved_permission_to(config_dir.clone(), "shell_high_risk")
+            .unwrap();
+
+        let content = std::fs::read_to_string(config_dir.join("config.yaml")).unwrap();
+        let config: NdcConfig = serde_yaml::from_str(&content).unwrap();
+        assert_eq!(config.approved_permissions, vec!["shell_high_risk"]);
+    }
+
+    #[test]
+    fn test_save_approved_permission_preserves_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path().join("ndc");
+        std::fs::create_dir_all(&config_dir).unwrap();
+
+        let initial = "llm:\n  provider: openai\n  model: gpt-4o\n";
+        std::fs::write(config_dir.join("config.yaml"), initial).unwrap();
+
+        NdcConfigLoader::save_approved_permission_to(config_dir.clone(), "git_commit").unwrap();
+
+        let content = std::fs::read_to_string(config_dir.join("config.yaml")).unwrap();
+        let config: NdcConfig = serde_yaml::from_str(&content).unwrap();
+        assert_eq!(config.approved_permissions, vec!["git_commit"]);
+        assert_eq!(config.llm.unwrap().provider, "openai");
     }
 }

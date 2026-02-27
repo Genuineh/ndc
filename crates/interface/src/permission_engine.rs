@@ -29,6 +29,8 @@ pub enum PermissionRule {
 pub struct PermissionRequest {
     /// Human-readable description of the operation being requested.
     pub description: String,
+    /// Permission key (e.g. "shell_high_risk", "git_commit") for session/permanent approval.
+    pub permission_key: Option<String>,
     /// Send `true` to allow, `false` to deny.
     pub response_tx: oneshot::Sender<bool>,
 }
@@ -154,7 +156,11 @@ impl ReplToolExecutor {
         }
     }
 
-    pub(crate) async fn confirm_operation(&self, description: String) -> Result<bool, AgentError> {
+    pub(crate) async fn confirm_operation(
+        &self,
+        description: String,
+        permission_key: Option<String>,
+    ) -> Result<bool, AgentError> {
         if std::env::var("NDC_AUTO_APPROVE_TOOLS")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false)
@@ -167,6 +173,7 @@ impl ReplToolExecutor {
             let (resp_tx, resp_rx) = oneshot::channel();
             tx.send(PermissionRequest {
                 description: description.clone(),
+                permission_key,
                 response_tx: resp_tx,
             })
             .await
@@ -258,7 +265,10 @@ impl ReplToolExecutor {
                     }
 
                     let allowed = self
-                        .confirm_operation(format!("{} [{}]", description, message))
+                        .confirm_operation(
+                            format!("{} [{}]", description, message),
+                            Some(permission.to_string()),
+                        )
                         .await?;
                     if !allowed {
                         return Err(AgentError::PermissionDenied(format!(
@@ -299,7 +309,9 @@ impl ToolExecutor for ReplToolExecutor {
                 )));
             }
             PermissionRule::Ask => {
-                let allowed = self.confirm_operation(description.clone()).await?;
+                let allowed = self
+                    .confirm_operation(description.clone(), Some(permission_key.clone()))
+                    .await?;
                 if !allowed {
                     return Err(AgentError::PermissionDenied(format!(
                         "User rejected operation: {}",
@@ -663,7 +675,7 @@ mod tests {
         });
 
         let result = executor
-            .confirm_operation("test write operation".to_string())
+            .confirm_operation("test write operation".to_string(), None)
             .await
             .expect("should not error");
         assert!(result);
@@ -693,7 +705,7 @@ mod tests {
         });
 
         let result = executor
-            .confirm_operation("test write operation".to_string())
+            .confirm_operation("test write operation".to_string(), None)
             .await
             .expect("should not error");
         assert!(!result);
