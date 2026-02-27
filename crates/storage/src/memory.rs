@@ -5,7 +5,8 @@
 use async_trait::async_trait;
 use ndc_core::{MemoryEntry, MemoryId, Task, TaskId};
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 use crate::trait_::{SharedStorage, Storage};
 
@@ -46,7 +47,7 @@ impl MemoryStorage {
 #[async_trait]
 impl Storage for MemoryStorage {
     async fn save_task(&self, task: &Task) -> Result<(), String> {
-        let mut guard = self.tasks.lock().map_err(|e| e.to_string())?;
+        let mut guard = self.tasks.lock().await;
         let (map, order) = &mut *guard;
         if !map.contains_key(&task.id) {
             // Evict oldest if at capacity
@@ -64,17 +65,17 @@ impl Storage for MemoryStorage {
     }
 
     async fn get_task(&self, task_id: &TaskId) -> Result<Option<Task>, String> {
-        let guard = self.tasks.lock().map_err(|e| e.to_string())?;
+        let guard = self.tasks.lock().await;
         Ok(guard.0.get(task_id).cloned())
     }
 
     async fn list_tasks(&self) -> Result<Vec<Task>, String> {
-        let guard = self.tasks.lock().map_err(|e| e.to_string())?;
+        let guard = self.tasks.lock().await;
         Ok(guard.0.values().cloned().collect())
     }
 
     async fn save_memory(&self, memory: &MemoryEntry) -> Result<(), String> {
-        let mut guard = self.memories.lock().map_err(|e| e.to_string())?;
+        let mut guard = self.memories.lock().await;
         let (map, order) = &mut *guard;
         if !map.contains_key(&memory.id) {
             // Evict oldest if at capacity
@@ -92,7 +93,7 @@ impl Storage for MemoryStorage {
     }
 
     async fn get_memory(&self, memory_id: &MemoryId) -> Result<Option<MemoryEntry>, String> {
-        let guard = self.memories.lock().map_err(|e| e.to_string())?;
+        let guard = self.memories.lock().await;
         Ok(guard.0.get(memory_id).cloned())
     }
 }
