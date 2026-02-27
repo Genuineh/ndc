@@ -217,24 +217,24 @@
   - `layout_manager.rs`：5-6 区布局计算 + 响应式调整
 - **修复策略**: 每个子模块作为独立 PR，保持原 pub API 不变（通过 `pub use` re-export）
 
-#### SEC-S2 10 阶段管线缺口评估
+#### SEC-S2 10 阶段管线缺口评估 ✅ `077dcc8`
 
-- **设计**（`docs/ENGINEERING_CONSTRAINTS.md`）：10 阶段 Lineage → Understand → Decompose → Discovery → WorkingMemory → Develop → Accept → Failure → Document → Complete
-- **已实现**: Stage 1(Understand 部分) + Stage 5(Develop) + Stage 6(Accept 基础验证)
-- **部分实现**: Stage 3(Discovery — `crates/runtime/src/discovery/` 存在但未集成) + Stage 4(WorkingMemory — 有 `working_memory.rs` 但注入有限)
-- **未实现**: Stage 0(Lineage) + Stage 2(Decompose) + Stage 7(Failure) + Stage 8(Document) + Stage 9(Complete)
-- **行动**: 撰写差距分析文档，决定是补齐实现还是收敛设计文档
+- **差距分析文档**: `docs/design/sec-s2-pipeline-gap-analysis.md`
+- **完成度**: 4/10 完整 + 4/10 部分 + 2/10 缺失 ≈ 60%
+- **完整实现**: Stage 0(Lineage, 5 tests) + Stage 3(Discovery, 17 tests) + Stage 4(WorkingMemory, 7 tests) + Stage 5(Saga, 8 tests)
+- **部分实现**: Stage 1(Understand, 结构在未集成) + Stage 2(Decompose, Lint 完整缺 Undo) + Stage 6(Accept, 基础验证) + Stage 8(Document, 内存模型)
+- **未实现**: Stage 7(Failure → Invariant) + Stage 9(Complete/Telemetry)
+- **关键缺口**: orchestrator 未接入已实现模块；失败学习闭环缺失
+- **建议**: 渐进补齐（P0 打通 orchestrator 调用链 → P1 实现 Stage 7 → P2 实现 Stage 9）
 
-#### SEC-S4 补充关键路径测试
+#### SEC-S4 补充关键路径测试 ✅ `5e5bc04`
 
-- **当前覆盖**: core(142) / runtime(58) / interface(23) / storage(8) / decision(10) = 241 总测试
-- **缺口**:
-  - storage: **0 测试** for MemoryStorage（仅 SQLite 有 8 个）
-  - 无跨项目隔离 e2e（多 project 互不干扰）
-  - 无并发 session 竞态测试
-  - 无 gRPC 流清理/断线重连测试
-  - 无 storage 故障恢复测试
-- **优先补充**: MemoryStorage 基础 CRUD (4) + 并发 session (2) + 权限回退 (2) + 文件工具边界 (4)
+- **当前覆盖**: core(209) / runtime(270) / interface(249) / storage(18) / decision(21) ≈ 767 总测试
+- **新增 18 个测试**:
+  - MemoryStorage: +6 (CRUD, 并发写入, 零容量边界, list_tasks, get_nonexistent)
+  - 并发 Session: +2 (10 并行 get_or_create, 5 并行 save + latest 追踪)
+  - 权限回退: +4 (通配符 fallback, 无通配符默认 Ask, 未知工具分类, git 操作细分)
+  - 文件工具边界: +6 (空文件/单行/二进制/不存在 for ReadTool; LineTrimmed 回退/空内容删除 for EditTool)
 
 ---
 
