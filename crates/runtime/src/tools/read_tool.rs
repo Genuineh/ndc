@@ -51,6 +51,14 @@ impl Tool for ReadTool {
             ));
         }
 
+        // Reject special device files
+        let path_str_lower = path.to_string_lossy();
+        if path_str_lower.starts_with("/dev/") || path_str_lower.starts_with("/proc/") {
+            return Err(ToolError::InvalidArgument(
+                "Reading device or proc files is not allowed".to_string(),
+            ));
+        }
+
         // Check if file exists
         if !path.exists() {
             return Err(ToolError::InvalidPath(path));
@@ -63,6 +71,17 @@ impl Tool for ReadTool {
         }
 
         enforce_path_boundary(path.as_path(), None, "read")?;
+
+        // Check file size before reading
+        const MAX_READ_SIZE: u64 = 10 * 1024 * 1024; // 10MB
+        let meta = fs::metadata(&path).await.map_err(ToolError::Io)?;
+        if meta.len() > MAX_READ_SIZE {
+            return Err(ToolError::InvalidArgument(format!(
+                "File too large: {} bytes (max {} bytes)",
+                meta.len(),
+                MAX_READ_SIZE
+            )));
+        }
 
         let start = std::time::Instant::now();
 
@@ -283,5 +302,58 @@ mod tests {
 
         let result = tool.execute(&params).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_read_rejects_file_too_large() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("large.txt");
+        // Create a file > 10MB
+        let large_content = vec![b'x'; 11 * 1024 * 1024];
+        std::fs::write(&file_path, &large_content).unwrap();
+
+        let tool = ReadTool::new();
+        let params = serde_json::json!({
+            "path": file_path.to_string_lossy()
+        });
+
+        let result = tool.execute(&params).await;
+        assert!(result.is_err());
+        let err = format!("{}", result.unwrap_err());
+        assert!(err.contains("too large"), "Error should mention size: {}", err);
+    }
+
+    #[tokio::test]
+    async fn test_read_rejects_dev_path() {
+        let tool = ReadTool::new();
+        let params = serde_json::json!({
+            "path": "/dev/zero"
+        });
+
+        let result = tool.execute(&params).await;
+        assert!(result.is_err());
+        let err = format!("{}", result.unwrap_err());
+        assert!(
+            err.contains("device or proc"),
+            "Error should mention device: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_read_rejects_proc_path() {
+        let tool = ReadTool::new();
+        let params = serde_json::json!({
+            "path": "/proc/self/maps"
+        });
+
+        let result = tool.execute(&params).await;
+        assert!(result.is_err());
+        let err = format!("{}", result.unwrap_err());
+        assert!(
+            err.contains("device or proc"),
+            "Error should mention proc: {}",
+            err
+        );
     }
 }
