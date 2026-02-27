@@ -155,15 +155,26 @@ impl AgentGrpcService {
         if requested_session_id.is_empty() {
             return Ok(());
         }
+
+        // Format validation: ULID is 26 chars, alphanumeric; allow up to 128 chars for flexibility
+        if requested_session_id.len() > 128
+            || !requested_session_id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err(tonic::Status::invalid_argument(
+                "invalid session ID format",
+            ));
+        }
+
         self.agent_manager
             .use_session(requested_session_id, false)
             .await
             .map(|_| ())
             .map_err(|e| match e {
-                ndc_core::AgentError::SessionNotFound(_) => tonic::Status::not_found(format!(
-                    "session '{}' not found for current project",
-                    requested_session_id
-                )),
+                ndc_core::AgentError::SessionNotFound(_) => {
+                    tonic::Status::not_found("session not found for current project")
+                }
                 ndc_core::AgentError::InvalidRequest(message) => {
                     tonic::Status::permission_denied(message)
                 }
@@ -2053,6 +2064,46 @@ mod tests {
         unsafe {
             std::env::remove_var("NDC_PROJECT_INDEX_FILE");
             std::env::remove_var("NDC_SESSION_ARCHIVE_FILE");
+        }
+    }
+
+    #[test]
+    fn test_session_id_format_validation_valid() {
+        // Valid ULID-style IDs should pass
+        let valid_ids = [
+            "01ARYZ6S41TSV4RRFFQ69G5FAV",
+            "abc123",
+            "session-1",
+            "my_session_id",
+            "A-B_C-123",
+        ];
+        for id in &valid_ids {
+            assert!(
+                id.len() <= 128
+                    && id
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+                "ID '{}' should be valid",
+                id
+            );
+        }
+    }
+
+    #[test]
+    fn test_session_id_format_validation_rejects_injection() {
+        let invalid_ids = [
+            "session\ninjection",        // newline
+            "session\x1b[31mred\x1b[0m", // ANSI escape
+            "session<script>alert(1)</script>", // HTML injection
+            &"a".repeat(200),             // too long
+            "session id with spaces",     // spaces
+        ];
+        for id in &invalid_ids {
+            let valid = id.len() <= 128
+                && id
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+            assert!(!valid, "ID should be rejected: {:?}", &id[..id.len().min(40)]);
         }
     }
 }
