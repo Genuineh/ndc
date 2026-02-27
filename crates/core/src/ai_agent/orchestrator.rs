@@ -233,10 +233,16 @@ impl AgentOrchestrator {
         execution_events: &mut Vec<AgentExecutionEvent>,
         event: AgentExecutionEvent,
     ) {
-        let _ = self.event_tx.send(AgentSessionExecutionEvent {
+        if let Err(e) = self.event_tx.send(AgentSessionExecutionEvent {
             session_id: session_state.id.clone(),
             event: event.clone(),
-        });
+        }) {
+            tracing::warn!(
+                receivers = self.event_tx.receiver_count(),
+                "Event broadcast failed: {}",
+                e
+            );
+        }
         session_state.add_execution_event(event.clone());
         execution_events.push(event);
         self.save_session(session_state.clone()).await;
@@ -3116,5 +3122,31 @@ mod tests {
             !messages.iter().any(|m| m.role == MessageRole::Tool),
             "Orphaned Tool message should be skipped"
         );
+    }
+
+    #[test]
+    fn test_event_broadcast_no_receivers_does_not_panic() {
+        // When all receivers are dropped, sending should log a warning but not panic
+        let (tx, _rx) = broadcast::channel::<AgentSessionExecutionEvent>(16);
+        drop(_rx); // no receivers
+
+        let result = tx.send(AgentSessionExecutionEvent {
+            session_id: "test-session".to_string(),
+            event: AgentExecutionEvent {
+                kind: AgentExecutionEventKind::StepStart,
+                timestamp: chrono::Utc::now(),
+                message: "test".to_string(),
+                round: 1,
+                tool_name: None,
+                tool_call_id: None,
+                duration_ms: None,
+                is_error: false,
+                workflow_stage: None,
+                workflow_detail: None,
+                workflow_stage_index: None,
+                workflow_stage_total: None,
+            },
+        });
+        assert!(result.is_err(), "Send with no receivers should return Err");
     }
 }
