@@ -8,7 +8,8 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::process::Command;
+use std::time::Duration;
+use tokio::process::Command;
 
 /// LSP diagnostic severity
 #[derive(Debug, Clone, PartialEq)]
@@ -52,6 +53,12 @@ pub struct DiagnosticSummary {
     pub has_errors: bool,
 }
 
+/// Default timeout for LSP diagnostics (seconds)
+const DEFAULT_LSP_TIMEOUT_SECS: u64 = 60;
+
+/// Timeout for availability check (seconds)
+const AVAILABILITY_CHECK_TIMEOUT_SECS: u64 = 5;
+
 /// LSP client wrapper
 #[derive(Debug, Clone)]
 pub struct LspClient {
@@ -71,7 +78,7 @@ impl LspClient {
     }
 
     /// Check if an LSP server is available
-    pub fn is_available(&self) -> bool {
+    pub async fn is_available(&self) -> bool {
         // Try to run the server with --version or check if command exists
         if self.server_command.is_empty() {
             return false;
@@ -82,16 +89,24 @@ impl LspClient {
             cmd.args(&self.server_command[1..]);
         }
         // Just check if command exists, don't actually run server
-        cmd.current_dir(&self.root);
+        cmd.current_dir(&self.root)
+            .kill_on_drop(true);
 
-        // This will fail if command doesn't exist, which is fine
-        cmd.status().map(|s| s.success()).unwrap_or(false)
+        match tokio::time::timeout(
+            Duration::from_secs(AVAILABILITY_CHECK_TIMEOUT_SECS),
+            cmd.status(),
+        )
+        .await
+        {
+            Ok(Ok(status)) => status.success(),
+            _ => false,
+        }
     }
 
     /// Get diagnostics for a file
     pub async fn get_diagnostics(&self, file_path: &PathBuf) -> Result<DiagnosticSummary, String> {
         // Check if we have an LSP server
-        if !self.is_available() {
+        if !self.is_available().await {
             return Ok(DiagnosticSummary {
                 total_count: 0,
                 error_count: 0,
@@ -130,17 +145,28 @@ impl LspClient {
         }
     }
 
+    /// Run a command with timeout and kill-on-drop
+    async fn run_with_timeout(
+        cmd: &mut Command,
+        timeout_secs: u64,
+    ) -> Result<std::process::Output, String> {
+        cmd.kill_on_drop(true);
+        tokio::time::timeout(Duration::from_secs(timeout_secs), cmd.output())
+            .await
+            .map_err(|_| format!("LSP diagnostic timeout after {}s", timeout_secs))?
+            .map_err(|e| e.to_string())
+    }
+
     /// Run rust-analyzer diagnostics
     async fn run_rust_analyzer_diagnostics(
         &self,
         file_path: &PathBuf,
     ) -> Result<DiagnosticSummary, String> {
         // Try cargo check --message-format=json for Rust
-        let output = Command::new("cargo")
-            .args(["check", "--message-format=json"])
-            .current_dir(&self.root)
-            .output()
-            .map_err(|e| e.to_string())?;
+        let mut cmd = Command::new("cargo");
+        cmd.args(["check", "--message-format=json"])
+            .current_dir(&self.root);
+        let output = Self::run_with_timeout(&mut cmd, DEFAULT_LSP_TIMEOUT_SECS).await?;
 
         if !output.status.success() {
             // Parse JSON messages from cargo check
@@ -230,16 +256,15 @@ impl LspClient {
         &self,
         file_path: &PathBuf,
     ) -> Result<DiagnosticSummary, String> {
-        let output = Command::new("npx")
-            .args([
+        let mut cmd = Command::new("npx");
+        cmd.args([
                 "eslint",
                 "--format",
                 "json",
                 file_path.to_string_lossy().as_ref(),
             ])
-            .current_dir(&self.root)
-            .output()
-            .map_err(|e| e.to_string())?;
+            .current_dir(&self.root);
+        let output = Self::run_with_timeout(&mut cmd, DEFAULT_LSP_TIMEOUT_SECS).await?;
 
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -316,15 +341,14 @@ impl LspClient {
         &self,
         file_path: &PathBuf,
     ) -> Result<DiagnosticSummary, String> {
-        let output = Command::new("npx")
-            .args([
+        let mut cmd = Command::new("npx");
+        cmd.args([
                 "pyright",
                 "--outputjson",
                 file_path.to_string_lossy().as_ref(),
             ])
-            .current_dir(&self.root)
-            .output()
-            .map_err(|e| e.to_string())?;
+            .current_dir(&self.root);
+        let output = Self::run_with_timeout(&mut cmd, DEFAULT_LSP_TIMEOUT_SECS).await?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let diagnostics = Self::parse_pyright_json(&stdout, file_path);
@@ -580,5 +604,33 @@ mod tests {
         assert!(formatted.contains("WARNING"));
         assert!(formatted.contains("src/main.rs:10:5"));
         assert!(formatted.contains("unused_variables"));
+    }
+
+    #[tokio::test]
+    async fn test_run_with_timeout_success() {
+        // A fast command should succeed
+        let mut cmd = Command::new("echo");
+        cmd.arg("hello");
+        let result = LspClient::run_with_timeout(&mut cmd, 5).await;
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.status.success());
+    }
+
+    #[tokio::test]
+    async fn test_run_with_timeout_expires() {
+        // sleep 10 with 1s timeout should fail
+        let mut cmd = Command::new("sleep");
+        cmd.arg("10");
+        let result = LspClient::run_with_timeout(&mut cmd, 1).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("timeout"), "Error should mention timeout: {}", err);
+    }
+
+    #[tokio::test]
+    async fn test_is_available_empty_command() {
+        let client = LspClient::new(vec![], PathBuf::from("/tmp"));
+        assert!(!client.is_available().await);
     }
 }
