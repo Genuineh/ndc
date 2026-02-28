@@ -11,8 +11,9 @@ use super::helpers::{
 use super::orchestrator::{AgentConfig, AgentResponse, ToolExecutor};
 use super::{
     AgentError, AgentExecutionEvent, AgentExecutionEventKind, AgentMessage, AgentSession,
-    AgentSessionExecutionEvent, AgentToolCall, AgentWorkflowStage, TaskVerifier,
-    VerificationResult, prompt_builder, session_store::SessionStore,
+    AgentSessionExecutionEvent, AgentToolCall, AgentWorkflowStage, AnalysisResult,
+    ContextSnapshot, TaskVerifier, TodoExecutionScenario, VerificationResult, prompt_builder,
+    session_store::SessionStore,
 };
 use crate::TaskId;
 use crate::llm::provider::{
@@ -648,6 +649,243 @@ impl ConversationRunner {
         })
     }
 
+    // ── front-stage methods (Phase 2) ───────────────────────────────
+    // These methods will be integrated into run_main_loop() in Phase 3.
+
+    /// Token threshold above which context compression is triggered.
+    #[allow(dead_code)]
+    const CONTEXT_TOKEN_THRESHOLD: usize = 32_000;
+
+    /// Rough token estimate: ~4 chars per token across all message content.
+    #[allow(dead_code)]
+    fn estimate_context_tokens(messages: &[Message]) -> usize {
+        let total_chars: usize = messages.iter().map(|m| m.content.len()).sum();
+        total_chars / 4
+    }
+
+    /// Collect context metadata: tool counts, memory facts, token estimate.
+    #[allow(dead_code)]
+    fn load_context(&self, messages: &[Message]) -> ContextSnapshot {
+        let tool_count = self.tool_executor.list_tools().len();
+        let estimated_tokens = Self::estimate_context_tokens(messages);
+        ContextSnapshot {
+            tool_count,
+            skill_count: 0,
+            mcp_tool_count: 0,
+            memory_facts: vec![],
+            project_constraints: vec![],
+            estimated_tokens,
+        }
+    }
+
+    /// Truncate messages when estimated tokens exceed threshold.
+    /// Returns `true` if compression was applied.
+    #[allow(dead_code)]
+    fn compress_context(
+        &self,
+        messages: &mut Vec<Message>,
+        snapshot: &ContextSnapshot,
+    ) -> bool {
+        if snapshot.estimated_tokens <= Self::CONTEXT_TOKEN_THRESHOLD {
+            return false;
+        }
+        truncate_messages(messages, MAX_CONVERSATION_MESSAGES);
+        true
+    }
+
+    /// Independent LLM call to analyze the user's request.
+    /// Parses the LLM JSON response into an `AnalysisResult`.
+    #[allow(dead_code)]
+    async fn run_analysis_round(
+        &self,
+        messages: &[Message],
+        session_state: &mut AgentSession,
+        execution_events: &mut Vec<AgentExecutionEvent>,
+        round: usize,
+    ) -> Result<AnalysisResult, AgentError> {
+        self.emit_workflow_stage(
+            session_state,
+            execution_events,
+            round,
+            AgentWorkflowStage::Analysis,
+            "analyzing_requirements",
+        )
+        .await;
+
+        let analysis_prompt = Message {
+            role: MessageRole::System,
+            content: concat!(
+                "Analyze the user's request. Respond ONLY with JSON:\n",
+                r#"{"summary":"...","affected_scope":["..."],"constraints":["..."],"#,
+                r#""scenario_hint":"coding|normal|fast_path","risks":["..."]}"#,
+            )
+            .to_string(),
+            name: None,
+            tool_calls: None,
+        };
+
+        let mut analysis_messages = messages.to_vec();
+        analysis_messages.push(analysis_prompt);
+
+        let request = CompletionRequest {
+            model: self.provider.config().default_model.clone(),
+            messages: analysis_messages,
+            temperature: Some(0.1),
+            max_tokens: Some(2048),
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            stop: None,
+            stream: false,
+            tools: None,
+        };
+
+        let response = self
+            .provider
+            .complete(&request)
+            .await
+            .map_err(|e| AgentError::LlmError(e.to_string()))?;
+
+        let content = response
+            .choices
+            .first()
+            .map(|c| c.message.content.as_str())
+            .unwrap_or("");
+
+        let result: AnalysisResult = serde_json::from_str(content).unwrap_or_else(|_| {
+            AnalysisResult {
+                summary: content.to_string(),
+                affected_scope: vec![],
+                constraints: vec![],
+                scenario_hint: TodoExecutionScenario::Normal,
+                risks: vec![],
+            }
+        });
+
+        self.emit_event(
+            session_state,
+            execution_events,
+            AgentExecutionEvent {
+                kind: AgentExecutionEventKind::AnalysisComplete,
+                timestamp: chrono::Utc::now(),
+                message: format!("analysis_complete: {}", result.summary),
+                round,
+                tool_name: None,
+                tool_call_id: None,
+                duration_ms: None,
+                is_error: false,
+                workflow_stage: Some(AgentWorkflowStage::Analysis),
+                workflow_detail: Some("analysis_done".to_string()),
+                workflow_stage_index: Some(AgentWorkflowStage::Analysis.index()),
+                workflow_stage_total: Some(AgentWorkflowStage::TOTAL_STAGES),
+            },
+        )
+        .await;
+
+        Ok(result)
+    }
+
+    /// Independent LLM call to produce a TODO plan.
+    /// Always returns at least 1 item (falls back to a default if LLM output is empty).
+    #[allow(dead_code)]
+    async fn run_planning_round(
+        &self,
+        analysis: &AnalysisResult,
+        messages: &[Message],
+        session_state: &mut AgentSession,
+        execution_events: &mut Vec<AgentExecutionEvent>,
+        round: usize,
+    ) -> Result<Vec<String>, AgentError> {
+        self.emit_workflow_stage(
+            session_state,
+            execution_events,
+            round,
+            AgentWorkflowStage::Planning,
+            "generating_todo_list",
+        )
+        .await;
+
+        let planning_prompt = Message {
+            role: MessageRole::System,
+            content: format!(
+                "Based on this analysis, create a TODO list.\n\
+                 Analysis: {}\n\
+                 Affected: {:?}\n\
+                 Respond ONLY with JSON: {{\"todos\":[\"task1\",\"task2\",...]}}",
+                analysis.summary, analysis.affected_scope,
+            ),
+            name: None,
+            tool_calls: None,
+        };
+
+        let mut planning_messages = messages.to_vec();
+        planning_messages.push(planning_prompt);
+
+        let request = CompletionRequest {
+            model: self.provider.config().default_model.clone(),
+            messages: planning_messages,
+            temperature: Some(0.1),
+            max_tokens: Some(2048),
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            stop: None,
+            stream: false,
+            tools: None,
+        };
+
+        let response = self
+            .provider
+            .complete(&request)
+            .await
+            .map_err(|e| AgentError::LlmError(e.to_string()))?;
+
+        let content = response
+            .choices
+            .first()
+            .map(|c| c.message.content.as_str())
+            .unwrap_or("");
+
+        // Try to parse {"todos": [...]}
+        let todos: Vec<String> = serde_json::from_str::<serde_json::Value>(content)
+            .ok()
+            .and_then(|v| v.get("todos").cloned())
+            .and_then(|arr| serde_json::from_value(arr).ok())
+            .unwrap_or_default();
+
+        // Fallback: must produce at least 1 TODO
+        let todos = if todos.is_empty() {
+            vec![format!(
+                "Execute user request: {}",
+                analysis.summary
+            )]
+        } else {
+            todos
+        };
+
+        self.emit_event(
+            session_state,
+            execution_events,
+            AgentExecutionEvent {
+                kind: AgentExecutionEventKind::PlanningComplete,
+                timestamp: chrono::Utc::now(),
+                message: format!("planning_complete: {} todos", todos.len()),
+                round,
+                tool_name: None,
+                tool_call_id: None,
+                duration_ms: None,
+                is_error: false,
+                workflow_stage: Some(AgentWorkflowStage::Planning),
+                workflow_detail: Some("planning_done".to_string()),
+                workflow_stage_index: Some(AgentWorkflowStage::Planning.index()),
+                workflow_stage_total: Some(AgentWorkflowStage::TOTAL_STAGES),
+            },
+        )
+        .await;
+
+        Ok(todos)
+    }
+
     // ── tool execution ──────────────────────────────────────────────
 
     async fn execute_tool_calls(
@@ -876,7 +1114,9 @@ impl ConversationRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ai_agent::TaskStorage;
+    use crate::ai_agent::{
+        AnalysisResult, ContextSnapshot, TaskStorage, TodoExecutionScenario,
+    };
     use crate::llm::provider::{
         Choice, CompletionResponse, ModelInfo, ModelPermission, ProviderConfig, ProviderType,
         StreamHandler, ToolCallFunction, Usage,
@@ -1364,5 +1604,325 @@ mod tests {
         assert_eq!(result.tool_calls.len(), 1);
         assert_eq!(result.tool_calls[0].name, "write");
         assert_eq!(tool_executor.calls.lock().await.len(), 1);
+    }
+
+    // ── Phase 2: front-stage method tests ───────────────────────────
+
+    #[test]
+    fn test_estimate_context_tokens_basic() {
+        // ~4 chars per token heuristic
+        let messages = vec![
+            Message {
+                role: MessageRole::User,
+                content: "Hello world, this is a test message".to_string(), // 34 chars
+                name: None,
+                tool_calls: None,
+            },
+            Message {
+                role: MessageRole::Assistant,
+                content: "I understand".to_string(), // 12 chars
+                name: None,
+                tool_calls: None,
+            },
+        ];
+        let estimate = ConversationRunner::estimate_context_tokens(&messages);
+        assert!(estimate > 0, "estimate should be non-zero for non-empty messages");
+        // 46 chars total → ~11 tokens at 4 chars/token; allow ±20%
+        assert!(
+            estimate >= 8 && estimate <= 16,
+            "estimate {} outside expected range 8..=16",
+            estimate,
+        );
+    }
+
+    #[test]
+    fn test_estimate_context_tokens_empty() {
+        let messages: Vec<Message> = vec![];
+        let estimate = ConversationRunner::estimate_context_tokens(&messages);
+        assert_eq!(estimate, 0);
+    }
+
+    #[tokio::test]
+    async fn test_load_context_counts_tools() {
+        let runner = make_runner(
+            Arc::new(ScriptedProvider::new(vec![])),
+            Arc::new(MockToolExecutor::new()),
+        );
+        let messages = vec![Message {
+            role: MessageRole::User,
+            content: "test".to_string(),
+            name: None,
+            tool_calls: None,
+        }];
+
+        let snapshot = runner.load_context(&messages);
+        // MockToolExecutor has 1 tool ("write")
+        assert_eq!(snapshot.tool_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_load_context_includes_token_estimate() {
+        let runner = make_runner(
+            Arc::new(ScriptedProvider::new(vec![])),
+            Arc::new(MockToolExecutor::new()),
+        );
+        let messages = vec![Message {
+            role: MessageRole::User,
+            content: "Hello there, please analyze my code and refactor it".to_string(),
+            name: None,
+            tool_calls: None,
+        }];
+
+        let snapshot = runner.load_context(&messages);
+        assert!(
+            snapshot.estimated_tokens > 0,
+            "estimated_tokens should be > 0 for non-empty messages"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_compress_context_skips_when_under_threshold() {
+        let runner = make_runner(
+            Arc::new(ScriptedProvider::new(vec![])),
+            Arc::new(MockToolExecutor::new()),
+        );
+        let mut messages = vec![
+            Message {
+                role: MessageRole::System,
+                content: "You are an assistant".to_string(),
+                name: None,
+                tool_calls: None,
+            },
+            Message {
+                role: MessageRole::User,
+                content: "short".to_string(),
+                name: None,
+                tool_calls: None,
+            },
+        ];
+        let snapshot = ContextSnapshot {
+            tool_count: 1,
+            skill_count: 0,
+            mcp_tool_count: 0,
+            memory_facts: vec![],
+            project_constraints: vec![],
+            estimated_tokens: 10, // well under threshold
+        };
+        let original_len = messages.len();
+        let compressed = runner.compress_context(&mut messages, &snapshot);
+        assert!(!compressed, "should not compress when under threshold");
+        assert_eq!(messages.len(), original_len);
+    }
+
+    #[tokio::test]
+    async fn test_compress_context_truncates_when_over_threshold() {
+        let runner = make_runner(
+            Arc::new(ScriptedProvider::new(vec![])),
+            Arc::new(MockToolExecutor::new()),
+        );
+        // Create many messages to exceed threshold
+        let mut messages: Vec<Message> = std::iter::once(Message {
+            role: MessageRole::System,
+            content: "You are an assistant".to_string(),
+            name: None,
+            tool_calls: None,
+        })
+        .chain((0..80).map(|i| Message {
+            role: if i % 2 == 0 {
+                MessageRole::User
+            } else {
+                MessageRole::Assistant
+            },
+            content: format!("Message {} with padding content for token count", i),
+            name: None,
+            tool_calls: None,
+        }))
+        .collect();
+        let snapshot = ContextSnapshot {
+            tool_count: 1,
+            skill_count: 0,
+            mcp_tool_count: 0,
+            memory_facts: vec![],
+            project_constraints: vec![],
+            estimated_tokens: 999_999, // way over threshold
+        };
+        let compressed = runner.compress_context(&mut messages, &snapshot);
+        assert!(compressed, "should compress when over threshold");
+        assert!(messages.len() < 81, "messages should be truncated");
+    }
+
+    #[tokio::test]
+    async fn test_run_analysis_round_returns_result() {
+        let analysis_json = serde_json::json!({
+            "summary": "User wants to refactor auth module",
+            "affected_scope": ["auth/mod.rs", "auth/jwt.rs"],
+            "constraints": ["must maintain backward compatibility"],
+            "scenario_hint": "coding",
+            "risks": ["breaking API changes"]
+        });
+        let response = CompletionResponse {
+            id: "analysis".to_string(),
+            object: "chat.completion".to_string(),
+            created: 0,
+            model: "mock-model".to_string(),
+            choices: vec![Choice {
+                index: 0,
+                message: Message {
+                    role: MessageRole::Assistant,
+                    content: analysis_json.to_string(),
+                    name: None,
+                    tool_calls: None,
+                },
+                finish_reason: Some("stop".to_string()),
+                logprobs: None,
+            }],
+            usage: Some(Usage {
+                prompt_tokens: 100,
+                completion_tokens: 50,
+                total_tokens: 150,
+            }),
+        };
+        let runner = make_runner(
+            Arc::new(ScriptedProvider::new(vec![response])),
+            Arc::new(MockToolExecutor::new()),
+        );
+        let messages = vec![Message {
+            role: MessageRole::User,
+            content: "refactor auth module".to_string(),
+            name: None,
+            tool_calls: None,
+        }];
+        let mut session = AgentSession::new("analysis-test".to_string());
+        let mut events = Vec::new();
+
+        let result = runner
+            .run_analysis_round(&messages, &mut session, &mut events, 0)
+            .await
+            .expect("should parse analysis result");
+        assert_eq!(result.summary, "User wants to refactor auth module");
+        assert_eq!(result.affected_scope.len(), 2);
+        assert!(matches!(result.scenario_hint, TodoExecutionScenario::Coding));
+        // Should emit Analysis workflow stage
+        assert!(events.iter().any(|e| e.workflow_stage == Some(AgentWorkflowStage::Analysis)));
+    }
+
+    #[tokio::test]
+    async fn test_run_planning_round_produces_at_least_one_todo() {
+        let planning_json = serde_json::json!({
+            "todos": [
+                "Extract JWT logic into jwt.rs",
+                "Move middleware to middleware.rs",
+                "Update mod.rs exports"
+            ]
+        });
+        let response = CompletionResponse {
+            id: "planning".to_string(),
+            object: "chat.completion".to_string(),
+            created: 0,
+            model: "mock-model".to_string(),
+            choices: vec![Choice {
+                index: 0,
+                message: Message {
+                    role: MessageRole::Assistant,
+                    content: planning_json.to_string(),
+                    name: None,
+                    tool_calls: None,
+                },
+                finish_reason: Some("stop".to_string()),
+                logprobs: None,
+            }],
+            usage: Some(Usage {
+                prompt_tokens: 80,
+                completion_tokens: 30,
+                total_tokens: 110,
+            }),
+        };
+        let analysis = AnalysisResult {
+            summary: "Refactor auth module".to_string(),
+            affected_scope: vec!["auth/mod.rs".to_string()],
+            constraints: vec![],
+            scenario_hint: TodoExecutionScenario::Coding,
+            risks: vec![],
+        };
+        let runner = make_runner(
+            Arc::new(ScriptedProvider::new(vec![response])),
+            Arc::new(MockToolExecutor::new()),
+        );
+        let messages = vec![Message {
+            role: MessageRole::User,
+            content: "refactor auth module".to_string(),
+            name: None,
+            tool_calls: None,
+        }];
+        let mut session = AgentSession::new("planning-test".to_string());
+        let mut events = Vec::new();
+
+        let todos = runner
+            .run_planning_round(&analysis, &messages, &mut session, &mut events, 0)
+            .await
+            .expect("should produce todos");
+        assert!(
+            !todos.is_empty(),
+            "planning round must produce at least 1 TODO"
+        );
+        assert_eq!(todos.len(), 3);
+        assert_eq!(todos[0], "Extract JWT logic into jwt.rs");
+        // Should emit Planning workflow stage
+        assert!(events.iter().any(|e| e.workflow_stage == Some(AgentWorkflowStage::Planning)));
+    }
+
+    #[tokio::test]
+    async fn test_run_planning_round_empty_output_fallback() {
+        // LLM returns empty/unparseable content → fallback to default TODO
+        let response = CompletionResponse {
+            id: "planning-empty".to_string(),
+            object: "chat.completion".to_string(),
+            created: 0,
+            model: "mock-model".to_string(),
+            choices: vec![Choice {
+                index: 0,
+                message: Message {
+                    role: MessageRole::Assistant,
+                    content: "I'm not sure what to do.".to_string(),
+                    name: None,
+                    tool_calls: None,
+                },
+                finish_reason: Some("stop".to_string()),
+                logprobs: None,
+            }],
+            usage: Some(Usage {
+                prompt_tokens: 50,
+                completion_tokens: 10,
+                total_tokens: 60,
+            }),
+        };
+        let analysis = AnalysisResult {
+            summary: "Quick question".to_string(),
+            affected_scope: vec![],
+            constraints: vec![],
+            scenario_hint: TodoExecutionScenario::Normal,
+            risks: vec![],
+        };
+        let runner = make_runner(
+            Arc::new(ScriptedProvider::new(vec![response])),
+            Arc::new(MockToolExecutor::new()),
+        );
+        let messages = vec![Message {
+            role: MessageRole::User,
+            content: "what is this?".to_string(),
+            name: None,
+            tool_calls: None,
+        }];
+        let mut session = AgentSession::new("planning-fallback-test".to_string());
+        let mut events = Vec::new();
+
+        let todos = runner
+            .run_planning_round(&analysis, &messages, &mut session, &mut events, 0)
+            .await
+            .expect("should fallback, not error");
+        assert!(
+            !todos.is_empty(),
+            "must produce at least 1 TODO even with empty LLM output"
+        );
     }
 }
