@@ -15,6 +15,8 @@
 | **BugFix** | ✅ 已完成 | Shell 执行修复 + Ctrl+C 任务中断 |
 | **P1-Scene** | ✅ 已完成 | repl.rs 模块化提取 + Scene 上下文自适应 TUI |
 | **P1-TuiCrate** | ✅ 已完成 | TUI 独立 Crate 提取（ndc-tui） |
+| **P1-TaskTodo** | ✅ 已完成 | Agent 驱动 TODO 规划流程（Task 系统集成） |
+| **P1-Workflow** | 待开始 | TODO 驱动工作流重构（Pipeline 重新设计） |
 | **P1** | 待开始 | 核心自治能力与治理 |
 | **P2** | 待开始 | 多 Agent 与知识回灌体验 |
 
@@ -85,6 +87,351 @@ repl.rs（5301 行）重构为 `tui/` 模块层次结构（9 子模块、153 测
 - **问题**: Ctrl+C 始终退出整个 REPL，无法中断正在运行的 Agent 任务
 - **修复**: 处理中按 Ctrl+C 中断当前任务（`JoinHandle::abort()`）并显示 `[Interrupted]`；空闲时 Ctrl+C 退出 REPL
 - **新增**: `AgentError::Cancelled` 变体；状态栏动态提示（处理中显示 "Ctrl+C interrupt"）
+
+---
+
+### P1-TaskTodo: Agent 驱动 TODO 规划流程
+
+> 前置：P1-TuiCrate ✅  
+> 预计 Phase：5 Phase  
+> 关键设计文档：待创建 `docs/design/p1-task-todo-planning.md`
+
+**目标**: 用户输入任务描述后，Agent 自动进行 planning 并产生 TODO 列表，使用 NDC 既有 Task 系统持久化维护，按 project/session 隔离，在 TUI 当前会话中持久展示，支持状态跟踪与完成标记。
+
+#### 核心设计决策
+
+**1. 复用 Task 模型 vs 新建轻量模型**
+
+复用现有 `Task` 结构体（`crates/core/src/task.rs`），但以"精简模式"使用：
+- `intent` / `verdict` / `quality_gate` / `snapshots` 保持 `None`（这些是重量级编排字段）
+- 仅使用 `id` / `title` / `description` / `state` / `metadata`（含 `tags`、`priority`）
+- `metadata.tags` 中注入 `project:<project_id>` 和 `session:<session_id>` 标签用于隔离筛选
+- **理由**: 避免引入新类型导致 Storage trait 膨胀，同时保持与未来 orchestrator 编排的兼容性
+
+**2. 项目/会话隔离策略**
+
+- Task 的 `metadata.tags` 存储隔离标签：`["project:<project_id>", "session:<session_id>"]`
+- Storage trait 扩展 `list_tasks_by_tags(tags: &[String]) -> Result<Vec<Task>, String>` 方法
+- SQLite 实现通过 JSON 字段查询（tags 已序列化为 JSON array）
+- MemoryStorage 内存过滤
+- 删除行为：不物理删除，标记 `Cancelled` 状态即可
+
+**3. TUI 持久展示方案 — 右侧边栏**
+
+在会话主区域右侧新增可折叠 TODO 侧边栏，采用水平分割布局：
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ [0] Title Bar                                           │
+│ [1] Workflow Progress                                   │
+├───────────────────────────────────┬─────────────────────┤
+│                                   │  📋 TODO (3/7)      │
+│  [2] Conversation Body            │ ─────────────────── │
+│  (弹性填充)                       │  ✓ 1. 数据库迁移   │
+│                                   │  ▶ 2. 编写测试     │
+│                                   │  ☐ 3. 用户认证     │
+│                                   │  ☐ 4. API 接口     │
+│                                   │  ...还有 3 项       │
+├───────────────────────────────────┴─────────────────────┤
+│ [3] Permission Bar (条件)                                │
+│ [4] Status Hint                                         │
+│ [5] Input Area                                          │
+└─────────────────────────────────────────────────────────┘
+```
+
+- TODO 侧边栏在 Conversation Body 右侧，与会话内容水平并排
+- 仅分割 Conversation Body 行区域，Title/Workflow/StatusHint/Input 保持全宽
+- 侧边栏宽度：固定 `Constraint::Length(28)` 字符（紧凑显示标题足够）
+- 折叠时侧边栏宽度为 0，Conversation Body 占满全宽
+- 默认展开，无 TODO 任务时自动折叠
+- 快捷键 `Ctrl+T` 切换折叠/展开
+- 显示格式：`[状态图标] 序号. 标题`（单行紧凑），标题超宽截断加 `…`
+- 顶部标题行显示完成进度：`📋 TODO (已完成/总数)`
+- 列表可滚动，超出面板高度时底部显示 `...还有 N 项`
+
+**4. Agent Planning 流程**
+
+```
+用户输入 → Agent 识别需要规划（含 /plan 命令或自动检测）
+    → Agent 调用 planning 工具
+    → 产生结构化 TODO 列表（JSON）
+    → 逐条创建 Task（带 project/session tags）
+    → 持久化到 Storage
+    → TUI 刷新 TODO Panel 显示
+    → Agent 按序执行，完成后标记状态
+```
+
+- `/plan <描述>` — 显式触发规划，Agent 分析描述并生成 TODO 列表
+- `/todo` — 查看当前会话 TODO 列表
+- `/todo done <编号>` — 手动标记某项完成
+- `/todo add <标题>` — 手动添加单条 TODO
+- Agent 自动模式下，完成子任务后自动调用 `complete_task` 更新状态
+
+#### 分 Phase 实施计划
+
+| Phase | 内容 | 预估 |
+|-------|------|------|
+| Phase 1 | ✅ Core + Storage 扩展（Task tags 隔离 + list_tasks_by_tags, 17+1 测试） | 1 天 |
+| Phase 2 | ✅ AgentBackend trait 扩展（TodoItem/TodoState DTO + 5 CRUD 方法 + interface 实现） | 1 天 |
+| Phase 3 | ✅ TUI TODO 右侧边栏（todo_panel.rs + layout split + Ctrl+O 切换 + 自动刷新, 6 测试） | 1.5 天 |
+| Phase 4 | ✅ 命令系统集成（/plan /todo 命令 + SlashCommandSpec 自动补全） | 1.5 天 |
+| Phase 5 | ✅ 端到端集成（TODO 刷新 + 文档收尾） | 1 天 |
+
+---
+
+#### Phase 1: Core + Storage 扩展
+
+**ndc-core 变更**:
+- `task.rs` — 新增辅助方法：
+  ```rust
+  impl Task {
+      /// 创建 TODO 任务（轻量模式，含 project/session 隔离标签）
+      pub fn new_todo(
+          title: String,
+          description: String,
+          project_id: &str,
+          session_id: &str,
+      ) -> Self { ... }
+
+      /// 检查是否匹配指定 tags
+      pub fn has_tags(&self, required: &[String]) -> bool { ... }
+
+      /// 快捷标记完成
+      pub fn mark_completed(&mut self) -> Result<(), TransitionError> { ... }
+  }
+  ```
+
+- `task.rs` — `TaskState` 新增 `Display` impl（TUI 渲染用）
+
+**ndc-storage 变更**:
+- `trait_.rs` — Storage trait 新增方法：
+  ```rust
+  async fn list_tasks_by_tags(&self, tags: &[String]) -> Result<Vec<Task>, String>;
+  ```
+- `sqlite.rs` — SQLite 实现 `list_tasks_by_tags`（JSON `tags` 字段 LIKE 查询）
+- `memory.rs` — MemoryStorage 实现 `list_tasks_by_tags`（内存过滤）
+
+**测试（Red→Green）**:
+- `Task::new_todo` 创建行为（含正确 tags）
+- `Task::has_tags` 过滤逻辑
+- `Task::mark_completed` 状态转换（从各种初始状态）
+- Storage `list_tasks_by_tags` 隔离正确性
+- 跨 project 隔离 / 跨 session 隔离
+
+---
+
+#### Phase 2: AgentBackend trait 扩展
+
+**ndc-tui `agent_backend.rs` 变更**:
+- 新增 DTO：
+  ```rust
+  /// TODO 任务的轻量视图（TUI 显示用）
+  #[derive(Debug, Clone)]
+  pub struct TodoItem {
+      pub id: String,          // TaskId 的字符串形式
+      pub index: usize,        // 会话内序号（1-based，方便用户引用）
+      pub title: String,
+      pub state: TodoState,
+  }
+
+  #[derive(Debug, Clone, PartialEq)]
+  pub enum TodoState {
+      Pending,
+      InProgress,
+      Completed,
+      Failed,
+      Cancelled,
+  }
+  ```
+
+- AgentBackend trait 新增方法：
+  ```rust
+  /// 获取当前会话的 TODO 列表
+  async fn list_session_todos(&self) -> anyhow::Result<Vec<TodoItem>>;
+
+  /// 创建 TODO（返回新建的 TodoItem）
+  async fn create_todo(&self, title: &str, description: &str) -> anyhow::Result<TodoItem>;
+
+  /// 批量创建 TODO（用于 Agent planning 输出）
+  async fn create_todos(&self, items: Vec<(String, String)>) -> anyhow::Result<Vec<TodoItem>>;
+
+  /// 更新 TODO 状态（按会话内序号）
+  async fn update_todo_state(&self, index: usize, state: TodoState) -> anyhow::Result<()>;
+
+  /// 标记 TODO 完成（按会话内序号）
+  async fn complete_todo(&self, index: usize) -> anyhow::Result<()>;
+  ```
+
+**ndc-interface `agent_backend_impl.rs` 变更**:
+- 实现上述 5 个新方法
+- `list_session_todos`: 调用 `storage.list_tasks_by_tags(&["project:<id>", "session:<id>"])`，映射为 `TodoItem`
+- `create_todo` / `create_todos`: 调用 `Task::new_todo()`，保存到 Storage
+- `update_todo_state` / `complete_todo`: 查找 Task → `request_transition()` → 保存
+
+**测试（Red→Green）**:
+- AgentBackend impl 的 CRUD 测试
+- 批量创建正确性
+- 状态更新联动 Storage 持久化
+- 序号索引的正确映射
+
+---
+
+#### Phase 3: TUI TODO 右侧边栏
+
+**布局改动**（`layout_manager.rs`）:
+- `tui_layout_constraints()` 签名不变（垂直层级不变）
+- 新增 `tui_session_split(area: Rect, show_todo: bool) -> (Rect, Option<Rect>)` 函数
+  - 在 `app.rs` 渲染时，对 Conversation Body 所在的 `chunks[2]` 做水平二分
+  - `show_todo = true` 时：`Layout::horizontal([Constraint::Min(30), Constraint::Length(28)])`
+  - `show_todo = false` 时：全部给 Conversation Body，返回 `(full_area, None)`
+- 侧边栏宽度 28 字符，留给会话区至少 30 字符保证可读
+- 终端宽度 < 60 时自动折叠侧边栏（空间不足）
+
+**渲染**（新文件 `todo_panel.rs`）:
+- `render_todo_sidebar(frame, area: Rect, items: &[TodoItem], scroll_offset: usize)`
+- 顶部标题行：`📋 TODO (2/5)` — 显示已完成/总数，带 `Block::bordered()` 边框
+- 列表区域：`[图标] 序号. 标题`，标题超过面板宽度时截断加 `…`
+- 状态图标映射：`Pending→☐  InProgress→▶  Completed→✓  Failed→✗  Cancelled→⊘`
+- 颜色：Pending=白, InProgress=黄, Completed=绿(dimmed), Failed=红, Cancelled=灰
+- 已完成项排到列表底部（视觉降优先级）
+- 超出可视高度时底部显示 `...还有 N 项`
+
+**状态管理**（`lib.rs` `ReplVisualizationState`）:
+- 新增 `show_todo_panel: bool`（默认 `true`）
+- 新增 `todo_items: Vec<TodoItem>`（TUI 侧缓存）
+- 新增 `todo_scroll_offset: usize`（侧边栏滚动偏移）
+
+**输入处理**（`input_handler.rs`）:
+- `Ctrl+T` → 切换 `show_todo_panel`
+- TODO 侧边栏不接受焦点，仅被动显示
+
+**事件刷新机制**:
+- 每次 Agent 完成一轮对话后，TUI 主循环调用 `backend.list_session_todos()` 刷新
+- 收到 TODO 变更事件时立即刷新（通过已有的 `AgentSessionExecutionEvent` 扩展）
+
+**测试（Red→Green）**:
+- `tui_session_split` 水平分割正确性（展开/折叠/窄终端自动折叠）
+- `render_todo_sidebar` 渲染输出验证（标题行、图标、截断、排序）
+- 状态图标映射
+- `Ctrl+T` 折叠/展开切换
+- 滚动偏移与 `...还有 N 项` 省略显示
+- 终端宽度 < 60 时自动隐藏
+
+---
+
+#### Phase 4: 命令系统集成
+
+**新增斜杠命令**:
+- `/plan <描述>` — 提交给 Agent 进行规划，Agent 返回结构化 TODO 列表
+- `/todo` — 列出当前会话 TODO（等价于手动刷新 TODO Panel）
+- `/todo add <标题>` — 手动添加单条 TODO
+- `/todo done <序号>` — 标记指定序号 TODO 为完成
+- `/todo remove <序号>` — 标记指定序号为取消
+
+**命令处理**（`input_handler.rs` 或 `app.rs` 的命令分发）:
+- `/plan` 走 `process_input` 但附加 system prompt 指引 Agent 输出 JSON 计划
+- `/todo` 系列直接操作 AgentBackend 方法
+
+**Agent Planning 工具**（`crates/runtime/src/tools/`）:
+- 新增 `planning_tool.rs`：Agent 可调用的工具，功能包括：
+  - `create_plan(items: Vec<{title, description}>)` — 批量创建 TODO
+  - `update_plan_item(index, state)` — 更新单项状态
+  - `get_current_plan()` — 获取当前 TODO 列表
+- 在 Agent system prompt 中注入 planning 工具的使用指引
+- 工具权限：`task_manage` 类别，默认 `Allow`（已在 SEC-H3 中配好）
+
+**测试（Red→Green）**:
+- `/plan` 命令解析与 Agent 调用
+- `/todo` 子命令解析
+- Planning 工具的 CRUD 行为
+- Agent 自动完成任务时状态联动
+
+---
+
+#### Phase 5: 端到端集成与收尾
+
+**自动规划检测**:
+- Agent 在 system prompt 中被告知：面对复杂任务时应先使用 planning 工具生成 TODO
+- Agent 自动调用 `create_plan` 工具创建任务列表
+- Agent 逐项执行，每完成一项调用 `update_plan_item` 标记
+
+**Session 恢复**:
+- 恢复已有 Session 时（`/session use <id>`），自动从 Storage 加载该 session 的 TODO 列表
+- 跨 session 的 TODO 不会互相干扰
+
+**状态持久化验证**:
+- 关闭 TUI → 重新打开 → 切换回同一 project/session → TODO 列表完整恢复
+- 状态变更即时持久化到 SQLite
+
+**文档更新**:
+- `docs/USER_GUIDE.md` — 新增 TODO/Planning 功能说明
+- `docs/design/p1-task-todo-planning.md` — 完整设计文档
+- `CLAUDE.md` — 必要时更新
+
+**测试（Red→Green）**:
+- 端到端：创建 → 展示 → 执行 → 完成 → 持久化 → 恢复
+- Session 隔离：两个 session 的 TODO 互不可见
+- Project 隔离：两个 project 的 TODO 互不可见
+- 大量 TODO 的性能测试（100+ items）
+
+---
+
+### P1-Workflow: TODO 驱动工作流重构
+
+> 前置：P1-TaskTodo ✅  
+> 设计文档：`docs/design/p1-workflow-todo-driven.md`  
+> 预计 Phase：6 Phase
+
+**背景**: 当前 5 阶段 Pipeline（Planning→Discovery→Executing→Verifying→Completing）是以 LLM 单轮对话为中心的线性流程，无法自动产生 TODO、无法围绕 TODO 进行结构化执行。需重构为 **TODO 驱动**的工作流，让 TODO 成为工作流的核心编排单元。
+
+**新工作流 Pipeline（8 阶段）**:
+
+```
+LoadContext → Compress → Analysis → Planning → [TodoLoop] → Review → Report
+                                        │
+                                        ▼
+                                  ┌───────────┐
+                                  │ Per-TODO:  │
+                                  │ Classify → │──→ Coding: Test→Code→Regress→Doc
+                                  │            │──→ Normal: Execute→Test→Doc
+                                  │ Review →   │
+                                  │ MarkDone   │
+                                  └───────────┘
+```
+
+| 阶段 | 索引 | 职责 |
+|------|------|------|
+| **LoadContext** | 1 | 加载工具清单、Skills、MCP 能力、项目记忆、会话历史 |
+| **Compress** | 2 | 上下文超限时压缩摘要（可跳过） |
+| **Analysis** | 3 | 结合上下文分析用户需求，产出需求理解文档 |
+| **Planning** | 4 | 将需求分解为 TODO 列表，写入 Task 系统（**必须产生 TODO**） |
+| **Executing** | 5 | 围绕 TODO 执行循环：场景判断→编码/普通路径→单项 Review→标记完成 |
+| **Verifying** | 6 | 所有 TODO 完成后，全局回归验证 |
+| **Completing** | 7 | 文档收尾、知识回灌 |
+| **Reporting** | 8 | 生成执行报告（变更摘要、测试结果、TODO 完成率） |
+
+**执行阶段场景分类**:
+
+- **编码场景**（文件变更类 TODO）: TDD 红绿循环
+  1. 先写失败测试（Red）
+  2. 最小实现通过测试（Green）
+  3. 回归测试确保不破坏
+  4. 更新相关文档
+- **普通场景**（配置、调研、文档类 TODO）:
+  1. 执行任务
+  2. 验证结果
+  3. 更新文档
+
+#### 分 Phase 实施计划
+
+| Phase | 内容 | 预估 |
+|-------|------|------|
+| Phase 1 | Core 模型扩展：`AgentWorkflowStage` 8 阶段 + `TodoExecutionScenario` 枚举 + Scene 映射更新 | 1 天 |
+| Phase 2 | ConversationRunner 主循环重构：LoadContext→Compress→Analysis→Planning 阶段实现 | 2 天 |
+| Phase 3 | TODO 执行循环：Per-TODO Classify→Execute→Review→MarkDone + TDD 路径 | 2 天 |
+| Phase 4 | Verifying + Completing + Reporting 阶段实现 | 1 天 |
+| Phase 5 | TUI 适配：Workflow Progress Bar 更新 + TODO 状态实时联动 + Scene 映射 | 1 天 |
+| Phase 6 | 端到端测试 + 文档收尾 | 1 天 |
 
 ---
 

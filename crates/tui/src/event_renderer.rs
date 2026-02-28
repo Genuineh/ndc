@@ -590,6 +590,20 @@ pub fn apply_tui_shortcut_action(
         TuiShortcutAction::ClearPanel => {
             entries.clear();
         }
+        TuiShortcutAction::ToggleTodoPanel => {
+            viz_state.show_todo_panel = !viz_state.show_todo_panel;
+            push_text_entry(
+                entries,
+                &format!(
+                    "[OK] TODO panel: {}",
+                    if viz_state.show_todo_panel {
+                        "VISIBLE"
+                    } else {
+                        "HIDDEN"
+                    }
+                ),
+            );
+        }
     }
 }
 
@@ -977,6 +991,7 @@ mod tests {
                     show_recent_thinking: 'y',
                     show_timeline: 'i',
                     clear_panel: 'l',
+                    toggle_todo: 'o',
                 };
                 let key = KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL);
                 let action = detect_tui_shortcut(&key, &map).expect("shortcut action");

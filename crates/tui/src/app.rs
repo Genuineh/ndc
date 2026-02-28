@@ -18,6 +18,8 @@ use ratatui::widgets::{
 };
 
 use crate::agent_backend::{AgentBackend, TuiPermissionRequest};
+use crate::layout_manager::tui_session_split;
+use crate::todo_panel::render_todo_sidebar;
 
 use super::*;
 
@@ -111,7 +113,10 @@ pub async fn run_repl_tui(
             let progress = build_workflow_progress_bar(viz_state, &theme);
             f.render_widget(Paragraph::new(progress), areas[1]);
 
-            // [2] Conversation body
+            // [2] Conversation body (with optional TODO sidebar)
+            let (conv_area, todo_area) =
+                tui_session_split(areas[body_idx], viz_state.show_todo_panel);
+
             let body_block = Block::default()
                 .title(Span::styled(
                     " Conversation ",
@@ -119,7 +124,7 @@ pub async fn run_repl_tui(
                 ))
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(theme.border_normal));
-            let inner = body_block.inner(areas[body_idx]);
+            let inner = body_block.inner(conv_area);
             session_view.body_height = (inner.height as usize).max(1);
             let styled_lines = style_chat_entries(entries.as_slice());
             let display_line_count = styled_lines.len();
@@ -128,14 +133,24 @@ pub async fn run_repl_tui(
                 .block(body_block)
                 .wrap(Wrap { trim: false })
                 .scroll((scroll, 0));
-            f.render_widget(body, areas[body_idx]);
+            f.render_widget(body, conv_area);
             if display_line_count > session_view.body_height {
                 let mut scrollbar_state = ScrollbarState::new(display_line_count)
                     .position(effective_chat_scroll(&entries, &session_view));
                 let scrollbar = Scrollbar::default()
                     .orientation(ScrollbarOrientation::VerticalRight)
                     .thumb_style(Style::default().fg(theme.text_muted));
-                f.render_stateful_widget(scrollbar, areas[body_idx], &mut scrollbar_state);
+                f.render_stateful_widget(scrollbar, conv_area, &mut scrollbar_state);
+            }
+
+            // Render TODO sidebar if visible
+            if let Some(sidebar) = todo_area {
+                render_todo_sidebar(
+                    f,
+                    sidebar,
+                    &viz_state.todo_items,
+                    viz_state.todo_scroll_offset,
+                );
             }
 
             // [3] Permission bar (conditional)
@@ -251,6 +266,11 @@ pub async fn run_repl_tui(
                             );
                         }
                     }
+                }
+
+                // Refresh TODO items after agent processing completes
+                if let Ok(items) = agent_manager.list_session_todos().await {
+                    viz_state.todo_items = items;
                 }
             }
         }

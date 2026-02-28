@@ -537,6 +537,11 @@ impl crate::Storage for SqliteStorage {
         .await
     }
 
+    async fn list_tasks_by_tags(&self, tags: &[String]) -> Result<Vec<Task>, String> {
+        let all = self.list_tasks().await?;
+        Ok(all.into_iter().filter(|t| t.has_tags(tags)).collect())
+    }
+
     async fn save_memory(&self, memory: &MemoryEntry) -> Result<(), String> {
         let pool = self.pool.clone();
 

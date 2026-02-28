@@ -49,6 +49,25 @@ pub struct TuiPermissionRequest {
     pub response_tx: tokio::sync::oneshot::Sender<bool>,
 }
 
+/// TODO 任务的轻量视图（TUI 显示用）
+#[derive(Debug, Clone)]
+pub struct TodoItem {
+    pub id: String,       // TaskId 的字符串形式
+    pub index: usize,     // 会话内序号（1-based）
+    pub title: String,
+    pub state: TodoState,
+}
+
+/// TODO 项状态（映射自 TaskState 的简化子集）
+#[derive(Debug, Clone, PartialEq)]
+pub enum TodoState {
+    Pending,
+    InProgress,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
 // ── Trait ────────────────────────────────────────────────────────────
 
 /// Abstraction over agent operations that the TUI requires.
@@ -66,16 +85,17 @@ pub trait AgentBackend: Send + Sync {
 
     async fn subscribe_execution_events(
         &self,
-    ) -> anyhow::Result<(
-        String,
-        tokio::sync::broadcast::Receiver<AgentSessionExecutionEvent>,
-    )>;
+    ) -> anyhow::Result<(String, tokio::sync::broadcast::Receiver<AgentSessionExecutionEvent>)>;
 
     // --- User input ---
     async fn process_input(&self, input: &str) -> anyhow::Result<AgentResponse>;
 
     // --- Provider / model ---
-    async fn switch_provider(&self, provider: &str, model: Option<&str>) -> anyhow::Result<()>;
+    async fn switch_provider(
+        &self,
+        provider: &str,
+        model: Option<&str>,
+    ) -> anyhow::Result<()>;
 
     async fn switch_model(&self, model: &str) -> anyhow::Result<()>;
 
@@ -95,7 +115,10 @@ pub trait AgentBackend: Send + Sync {
     ) -> anyhow::Result<Vec<String>>;
 
     // --- Project context ---
-    async fn switch_project_context(&self, path: PathBuf) -> anyhow::Result<ProjectSwitchInfo>;
+    async fn switch_project_context(
+        &self,
+        path: PathBuf,
+    ) -> anyhow::Result<ProjectSwitchInfo>;
 
     async fn discover_projects(&self, limit: usize) -> anyhow::Result<Vec<ProjectCandidate>>;
 
@@ -103,7 +126,30 @@ pub trait AgentBackend: Send + Sync {
     async fn handle_agent_command(&self, input: &str) -> anyhow::Result<()>;
 
     // --- Permission channel ---
-    async fn set_permission_channel(&self, tx: tokio::sync::mpsc::Sender<TuiPermissionRequest>);
+    async fn set_permission_channel(
+        &self,
+        tx: tokio::sync::mpsc::Sender<TuiPermissionRequest>,
+    );
+
+    // --- TODO management ---
+
+    /// 获取当前会话的 TODO 列表
+    async fn list_session_todos(&self) -> anyhow::Result<Vec<TodoItem>>;
+
+    /// 创建 TODO（返回新建的 TodoItem）
+    async fn create_todo(&self, title: &str, description: &str) -> anyhow::Result<TodoItem>;
+
+    /// 批量创建 TODO（用于 Agent planning 输出）
+    async fn create_todos(
+        &self,
+        items: Vec<(String, String)>,
+    ) -> anyhow::Result<Vec<TodoItem>>;
+
+    /// 更新 TODO 状态（按会话内序号）
+    async fn update_todo_state(&self, index: usize, state: TodoState) -> anyhow::Result<()>;
+
+    /// 标记 TODO 完成（按会话内序号）
+    async fn complete_todo(&self, index: usize) -> anyhow::Result<()>;
 }
 
 /// Convenience type alias used throughout the TUI crate.

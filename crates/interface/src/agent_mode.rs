@@ -231,6 +231,11 @@ impl AgentModeManager {
         *self.permission_tx.lock().await = Some(tx);
     }
 
+    /// Access the shared storage backend.
+    pub fn storage(&self) -> SharedStorage {
+        self._executor.context().storage.clone()
+    }
+
     /// 启用 Agent 模式
     pub async fn enable(&self, config: AgentModeConfig) -> Result<(), AgentError> {
         let detected_identity =

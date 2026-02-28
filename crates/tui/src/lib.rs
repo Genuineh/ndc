@@ -12,13 +12,14 @@ mod event_renderer;
 mod input_handler;
 mod layout_manager;
 pub mod scene;
+pub mod todo_panel;
 #[cfg(test)]
-pub mod test_helpers;
+pub(crate) mod test_helpers;
 
 // Re-export the trait and DTOs as the primary public API
 pub use agent_backend::{
     AgentBackend, AgentStatus, DynAgentBackend, ProjectCandidate, ProjectSwitchInfo,
-    TuiPermissionRequest,
+    TodoItem, TodoState, TuiPermissionRequest,
 };
 
 // Re-export TUI entry point and visualization state
@@ -56,6 +57,9 @@ pub struct ReplVisualizationState {
     pub latest_round_token_total: u64,
     pub permission_blocked: bool,
     pub permission_pending_message: Option<String>,
+    pub show_todo_panel: bool,
+    pub todo_items: Vec<TodoItem>,
+    pub todo_scroll_offset: usize,
 }
 
 impl ReplVisualizationState {
@@ -90,6 +94,9 @@ impl ReplVisualizationState {
             latest_round_token_total: 0,
             permission_blocked: false,
             permission_pending_message: None,
+            show_todo_panel: true,
+            todo_items: Vec::new(),
+            todo_scroll_offset: 0,
         }
     }
 }

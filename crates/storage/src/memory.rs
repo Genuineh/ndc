@@ -74,6 +74,16 @@ impl Storage for MemoryStorage {
         Ok(guard.0.values().cloned().collect())
     }
 
+    async fn list_tasks_by_tags(&self, tags: &[String]) -> Result<Vec<Task>, String> {
+        let guard = self.tasks.lock().await;
+        Ok(guard
+            .0
+            .values()
+            .filter(|task| task.has_tags(tags))
+            .cloned()
+            .collect())
+    }
+
     async fn save_memory(&self, memory: &MemoryEntry) -> Result<(), String> {
         let mut guard = self.memories.lock().await;
         let (map, order) = &mut *guard;
@@ -312,5 +322,53 @@ mod tests {
         storage.save_task(&task2).await.unwrap();
         assert!(storage.get_task(&task.id).await.unwrap().is_none());
         assert!(storage.get_task(&task2.id).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_list_tasks_by_tags_filters_correctly() {
+        let storage = MemoryStorage::new();
+
+        let todo_p1_s1 = Task::new_todo("t1".into(), "d".into(), "p1", "s1");
+        let todo_p1_s2 = Task::new_todo("t2".into(), "d".into(), "p1", "s2");
+        let todo_p2_s1 = Task::new_todo("t3".into(), "d".into(), "p2", "s1");
+        let plain = make_task();
+
+        storage.save_task(&todo_p1_s1).await.unwrap();
+        storage.save_task(&todo_p1_s2).await.unwrap();
+        storage.save_task(&todo_p2_s1).await.unwrap();
+        storage.save_task(&plain).await.unwrap();
+
+        // Filter by project:p1 + session:s1
+        let result = storage
+            .list_tasks_by_tags(&["project:p1".into(), "session:s1".into()])
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].title, "t1");
+
+        // Filter by project:p1 only
+        let result = storage
+            .list_tasks_by_tags(&["project:p1".into()])
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 2);
+
+        // Filter by todo tag
+        let result = storage
+            .list_tasks_by_tags(&["todo".into()])
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 3);
+
+        // Empty tags returns all
+        let result = storage.list_tasks_by_tags(&[]).await.unwrap();
+        assert_eq!(result.len(), 4);
+
+        // Non-matching tag returns none
+        let result = storage
+            .list_tasks_by_tags(&["project:nonexistent".into()])
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 0);
     }
 }

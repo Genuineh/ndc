@@ -2,7 +2,7 @@
 //!
 //! Extracted from `repl.rs` (SEC-S1 God Object refactoring).
 
-use ratatui::layout::Constraint;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -541,6 +541,22 @@ pub fn tui_layout_constraints(has_permission: bool, input_lines: u16) -> Vec<Con
     c.push(Constraint::Length(1));
     c.push(Constraint::Length(input_height));
     c
+}
+
+/// Split a conversation body area horizontally into (conversation, todo_sidebar).
+///
+/// When `show_todo` is true and the area is wide enough (>= 60 columns),
+/// the right 28 columns are allocated to the TODO sidebar.
+/// Otherwise the full area is returned for conversation.
+pub fn tui_session_split(area: Rect, show_todo: bool) -> (Rect, Option<Rect>) {
+    if !show_todo || area.width < 60 {
+        return (area, None);
+    }
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(30), Constraint::Length(28)])
+        .split(area);
+    (chunks[0], Some(chunks[1]))
 }
 
 pub fn resolve_stream_state(
@@ -1463,5 +1479,37 @@ mod tests {
             let state = ReplVisualizationState::new(false);
             assert!(matches!(state.verbosity, DisplayVerbosity::Normal));
         });
+    }
+}
+
+#[cfg(test)]
+mod session_split_tests {
+    use super::*;
+    use ratatui::layout::Rect;
+
+    #[test]
+    fn test_split_hidden_returns_full_area() {
+        let area = Rect::new(0, 0, 100, 30);
+        let (conv, todo) = tui_session_split(area, false);
+        assert_eq!(conv, area);
+        assert!(todo.is_none());
+    }
+
+    #[test]
+    fn test_split_visible_wide_returns_sidebar() {
+        let area = Rect::new(0, 0, 100, 30);
+        let (conv, todo) = tui_session_split(area, true);
+        assert!(conv.width > 0);
+        let sidebar = todo.expect("sidebar should be present when wide enough");
+        assert_eq!(sidebar.width, 28);
+        assert_eq!(conv.width + sidebar.width, area.width);
+    }
+
+    #[test]
+    fn test_split_narrow_no_sidebar() {
+        let area = Rect::new(0, 0, 50, 30);
+        let (conv, todo) = tui_session_split(area, true);
+        assert_eq!(conv, area);
+        assert!(todo.is_none());
     }
 }

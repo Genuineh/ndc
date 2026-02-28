@@ -10,6 +10,7 @@ use crate::agent::AgentRole;
 use crate::intent::{Action, Intent, Verdict};
 use crate::memory::MemoryId;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::path::PathBuf;
 
 /// 任务状态
@@ -23,6 +24,21 @@ pub enum TaskState {
     Completed,            // 已完成
     Failed,               // 失败
     Cancelled,            // 已取消
+}
+
+impl fmt::Display for TaskState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TaskState::Pending => write!(f, "Pending"),
+            TaskState::Preparing => write!(f, "Preparing"),
+            TaskState::InProgress => write!(f, "InProgress"),
+            TaskState::AwaitingVerification => write!(f, "AwaitingVerification"),
+            TaskState::Blocked => write!(f, "Blocked"),
+            TaskState::Completed => write!(f, "Completed"),
+            TaskState::Failed => write!(f, "Failed"),
+            TaskState::Cancelled => write!(f, "Cancelled"),
+        }
+    }
 }
 
 /// Git Worktree 快照（使用 git worktree 实现精确回滚）
@@ -368,6 +384,99 @@ impl Task {
     pub fn latest_lightweight_snapshot(&self) -> Option<&LightweightSnapshot> {
         self.lightweight_snapshots.last()
     }
+
+    /// 创建 TODO 任务（轻量模式，含 project/session 隔离标签）
+    pub fn new_todo(
+        title: String,
+        description: String,
+        project_id: &str,
+        session_id: &str,
+    ) -> Self {
+        Self {
+            id: TaskId::new(),
+            intent: None,
+            verdict: None,
+            state: TaskState::Pending,
+            title,
+            description,
+            allowed_transitions: vec![TaskState::Preparing, TaskState::InProgress, TaskState::Completed, TaskState::Cancelled],
+            steps: vec![],
+            quality_gate: None,
+            snapshots: vec![],
+            lightweight_snapshots: vec![],
+            metadata: TaskMetadata {
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+                created_by: AgentRole::Historian,
+                priority: TaskPriority::Medium,
+                tags: vec![
+                    format!("project:{}", project_id),
+                    format!("session:{}", session_id),
+                    "todo".to_string(),
+                ],
+                work_records: vec![],
+            },
+        }
+    }
+
+    /// 检查是否包含所有指定 tags
+    pub fn has_tags(&self, required: &[String]) -> bool {
+        required.iter().all(|tag| self.metadata.tags.contains(tag))
+    }
+
+    /// 快捷标记完成（跳过中间状态，直接转到 Completed）
+    pub fn mark_completed(&mut self) -> Result<(), TransitionError> {
+        if self.state == TaskState::Completed {
+            return Ok(());
+        }
+        if self.state == TaskState::Failed || self.state == TaskState::Cancelled {
+            return Err(TransitionError::NotAllowed {
+                from: self.state.clone(),
+                to: TaskState::Completed,
+            });
+        }
+        self.state = TaskState::Completed;
+        self.allowed_transitions = vec![];
+        self.metadata.updated_at = chrono::Utc::now();
+        Ok(())
+    }
+
+    /// 快捷标记取消
+    pub fn mark_cancelled(&mut self) -> Result<(), TransitionError> {
+        if self.state == TaskState::Cancelled {
+            return Ok(());
+        }
+        if self.state == TaskState::Completed {
+            return Err(TransitionError::NotAllowed {
+                from: self.state.clone(),
+                to: TaskState::Cancelled,
+            });
+        }
+        self.state = TaskState::Cancelled;
+        self.allowed_transitions = vec![];
+        self.metadata.updated_at = chrono::Utc::now();
+        Ok(())
+    }
+
+    /// 快捷标记进行中
+    pub fn mark_in_progress(&mut self) -> Result<(), TransitionError> {
+        if self.state == TaskState::InProgress {
+            return Ok(());
+        }
+        if self.state == TaskState::Completed
+            || self.state == TaskState::Failed
+            || self.state == TaskState::Cancelled
+        {
+            return Err(TransitionError::NotAllowed {
+                from: self.state.clone(),
+                to: TaskState::InProgress,
+            });
+        }
+        self.state = TaskState::InProgress;
+        self.update_allowed_transitions();
+        self.metadata.updated_at = chrono::Utc::now();
+        Ok(())
+    }
 }
 
 /// 工作记录
@@ -418,3 +527,167 @@ pub type TaskId = ulid::Ulid;
 pub type SnapshotId = ulid::Ulid;
 pub type WorkRecordId = ulid::Ulid;
 pub type Timestamp = chrono::DateTime<chrono::Utc>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_task_state_display() {
+        assert_eq!(TaskState::Pending.to_string(), "Pending");
+        assert_eq!(TaskState::InProgress.to_string(), "InProgress");
+        assert_eq!(TaskState::Completed.to_string(), "Completed");
+        assert_eq!(TaskState::Cancelled.to_string(), "Cancelled");
+        assert_eq!(TaskState::Failed.to_string(), "Failed");
+        assert_eq!(TaskState::Preparing.to_string(), "Preparing");
+        assert_eq!(
+            TaskState::AwaitingVerification.to_string(),
+            "AwaitingVerification"
+        );
+        assert_eq!(TaskState::Blocked.to_string(), "Blocked");
+    }
+
+    #[test]
+    fn test_new_todo_creates_with_correct_tags() {
+        let task = Task::new_todo(
+            "Implement feature".into(),
+            "Details here".into(),
+            "proj-1",
+            "sess-1",
+        );
+        assert_eq!(task.title, "Implement feature");
+        assert_eq!(task.description, "Details here");
+        assert_eq!(task.state, TaskState::Pending);
+        assert!(task.intent.is_none());
+        assert!(task.verdict.is_none());
+        assert!(task.quality_gate.is_none());
+        assert!(task.steps.is_empty());
+        assert!(task.snapshots.is_empty());
+
+        let tags = &task.metadata.tags;
+        assert!(tags.contains(&"project:proj-1".to_string()));
+        assert!(tags.contains(&"session:sess-1".to_string()));
+        assert!(tags.contains(&"todo".to_string()));
+        assert_eq!(tags.len(), 3);
+    }
+
+    #[test]
+    fn test_new_todo_has_relaxed_transitions() {
+        let task = Task::new_todo("t".into(), "d".into(), "p", "s");
+        let at = &task.allowed_transitions;
+        assert!(at.contains(&TaskState::Preparing));
+        assert!(at.contains(&TaskState::InProgress));
+        assert!(at.contains(&TaskState::Completed));
+        assert!(at.contains(&TaskState::Cancelled));
+    }
+
+    #[test]
+    fn test_has_tags_all_present() {
+        let task = Task::new_todo("t".into(), "d".into(), "p1", "s1");
+        assert!(task.has_tags(&["project:p1".into(), "session:s1".into()]));
+        assert!(task.has_tags(&["todo".into()]));
+        assert!(task.has_tags(&[])); // empty tags always match
+    }
+
+    #[test]
+    fn test_has_tags_missing() {
+        let task = Task::new_todo("t".into(), "d".into(), "p1", "s1");
+        assert!(!task.has_tags(&["project:p2".into()]));
+        assert!(!task.has_tags(&["project:p1".into(), "session:s2".into()]));
+        assert!(!task.has_tags(&["nonexistent".into()]));
+    }
+
+    #[test]
+    fn test_has_tags_on_task_without_tags() {
+        let task = Task::new("t".into(), "d".into(), AgentRole::Implementer);
+        assert!(task.has_tags(&[]));
+        assert!(!task.has_tags(&["project:p1".into()]));
+    }
+
+    #[test]
+    fn test_mark_completed_from_pending() {
+        let mut task = Task::new_todo("t".into(), "d".into(), "p", "s");
+        assert!(task.mark_completed().is_ok());
+        assert_eq!(task.state, TaskState::Completed);
+        assert!(task.allowed_transitions.is_empty());
+    }
+
+    #[test]
+    fn test_mark_completed_from_in_progress() {
+        let mut task = Task::new_todo("t".into(), "d".into(), "p", "s");
+        task.state = TaskState::InProgress;
+        assert!(task.mark_completed().is_ok());
+        assert_eq!(task.state, TaskState::Completed);
+    }
+
+    #[test]
+    fn test_mark_completed_idempotent() {
+        let mut task = Task::new_todo("t".into(), "d".into(), "p", "s");
+        task.mark_completed().unwrap();
+        assert!(task.mark_completed().is_ok());
+        assert_eq!(task.state, TaskState::Completed);
+    }
+
+    #[test]
+    fn test_mark_completed_from_failed_errors() {
+        let mut task = Task::new_todo("t".into(), "d".into(), "p", "s");
+        task.state = TaskState::Failed;
+        assert!(task.mark_completed().is_err());
+    }
+
+    #[test]
+    fn test_mark_completed_from_cancelled_errors() {
+        let mut task = Task::new_todo("t".into(), "d".into(), "p", "s");
+        task.state = TaskState::Cancelled;
+        assert!(task.mark_completed().is_err());
+    }
+
+    #[test]
+    fn test_mark_cancelled_from_pending() {
+        let mut task = Task::new_todo("t".into(), "d".into(), "p", "s");
+        assert!(task.mark_cancelled().is_ok());
+        assert_eq!(task.state, TaskState::Cancelled);
+        assert!(task.allowed_transitions.is_empty());
+    }
+
+    #[test]
+    fn test_mark_cancelled_idempotent() {
+        let mut task = Task::new_todo("t".into(), "d".into(), "p", "s");
+        task.mark_cancelled().unwrap();
+        assert!(task.mark_cancelled().is_ok());
+    }
+
+    #[test]
+    fn test_mark_cancelled_from_completed_errors() {
+        let mut task = Task::new_todo("t".into(), "d".into(), "p", "s");
+        task.state = TaskState::Completed;
+        assert!(task.mark_cancelled().is_err());
+    }
+
+    #[test]
+    fn test_mark_in_progress_from_pending() {
+        let mut task = Task::new_todo("t".into(), "d".into(), "p", "s");
+        assert!(task.mark_in_progress().is_ok());
+        assert_eq!(task.state, TaskState::InProgress);
+    }
+
+    #[test]
+    fn test_mark_in_progress_idempotent() {
+        let mut task = Task::new_todo("t".into(), "d".into(), "p", "s");
+        task.mark_in_progress().unwrap();
+        assert!(task.mark_in_progress().is_ok());
+    }
+
+    #[test]
+    fn test_mark_in_progress_from_terminal_errors() {
+        for state in [TaskState::Completed, TaskState::Failed, TaskState::Cancelled] {
+            let mut task = Task::new_todo("t".into(), "d".into(), "p", "s");
+            task.state = state.clone();
+            assert!(
+                task.mark_in_progress().is_err(),
+                "should reject from {:?}",
+                state
+            );
+        }
+    }
+}

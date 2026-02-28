@@ -29,6 +29,7 @@
    - ndc-interface 旧 tui/ 目录已删除，ratatui/crossterm 依赖移至 ndc-tui
    - 设计文档: `docs/design/p1-tui-crate-extraction.md`
 7. 后续：
+   - **P1-TaskTodo**: Agent 驱动 TODO 规划流程（Task 系统集成 + TUI 持久展示 + project/session 隔离）
    - P1 核心自治能力（GoldMemory Top-K 注入、失败分类重试、执行前 invariant 检查）
    - P1 Telemetry 首批指标（autonomous_rate / intervention_cost / token_efficiency）
    - P1 MCP/Skills 工具发现与权限治理

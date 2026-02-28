@@ -62,6 +62,8 @@ cargo run -- repl
 - `/metrics`（查看运行指标：tool 耗时/错误率/权限等待/token）
 - `/timeline [N]`（查看最近 N 条执行时间线）
 - `/agent`
+- `/todo`（查看当前会话 TODO 列表）
+- `/plan step1, step2, step3`（批量创建 TODO 计划项）
 - `/clear`
 - `exit`
 - 输入以 `/` 开头时，Hints 面板会实时显示命令提示；按 `Tab`/`Shift+Tab` 可循环补全并遍历全部候选（提示会显示 `Selected [k/N]`）
@@ -76,6 +78,7 @@ TUI 快捷键（默认 REPL）：
 - `Ctrl+I`：即时查看最近 timeline
 - `Ctrl+P`：打开项目选择器（等价于 `/project pick`，TUI）
 - `Ctrl+L`：清空会话面板
+- `Ctrl+O`：切换 TODO 侧边栏显示/隐藏
 - `Up/Down`：按行滚动 Session 面板
 - `PgUp/PgDn`：按半页滚动 Session 面板
 - `Home/End`：跳转到 Session 顶部/底部

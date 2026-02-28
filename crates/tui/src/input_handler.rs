@@ -92,6 +92,7 @@ pub struct ReplTuiKeymap {
     pub show_recent_thinking: char,
     pub show_timeline: char,
     pub clear_panel: char,
+    pub toggle_todo: char,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +103,7 @@ pub enum TuiShortcutAction {
     ShowRecentThinking,
     ShowTimeline,
     ClearPanel,
+    ToggleTodoPanel,
 }
 
 #[derive(Debug, Clone)]
@@ -202,6 +204,14 @@ pub const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         _summary: "list or switch project",
     },
     SlashCommandSpec {
+        command: "/todo",
+        _summary: "list TODO items",
+    },
+    SlashCommandSpec {
+        command: "/plan",
+        _summary: "create TODO plan items",
+    },
+    SlashCommandSpec {
         command: "/exit",
         _summary: "exit repl",
     },
@@ -216,6 +226,7 @@ impl ReplTuiKeymap {
             show_recent_thinking: env_char("NDC_REPL_KEY_SHOW_RECENT_THINKING", 'y'),
             show_timeline: env_char("NDC_REPL_KEY_SHOW_TIMELINE", 'i'),
             clear_panel: env_char("NDC_REPL_KEY_CLEAR_PANEL", 'l'),
+            toggle_todo: env_char("NDC_REPL_KEY_TOGGLE_TODO", 'o'),
         }
     }
 }
@@ -270,6 +281,9 @@ pub fn detect_tui_shortcut(key: &KeyEvent, keymap: &ReplTuiKeymap) -> Option<Tui
     }
     if key_is_ctrl_char(key, keymap.clear_panel) {
         return Some(TuiShortcutAction::ClearPanel);
+    }
+    if key_is_ctrl_char(key, keymap.toggle_todo) {
+        return Some(TuiShortcutAction::ToggleTodoPanel);
     }
     None
 }
@@ -705,6 +719,7 @@ mod tests {
             show_recent_thinking: 'y',
             show_timeline: 'i',
             clear_panel: 'l',
+            toggle_todo: 'o',
         };
         assert_eq!(
             detect_tui_shortcut(
@@ -747,6 +762,13 @@ mod tests {
                 &map
             ),
             Some(TuiShortcutAction::ClearPanel)
+        );
+        assert_eq!(
+            detect_tui_shortcut(
+                &KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
+                &map
+            ),
+            Some(TuiShortcutAction::ToggleTodoPanel)
         );
         assert_eq!(
             detect_tui_shortcut(

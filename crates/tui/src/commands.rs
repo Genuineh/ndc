@@ -330,7 +330,10 @@ pub async fn handle_agent_dialogue(
 
 // ===== Display helpers (legacy/CLI) =====
 
-pub async fn show_agent_error(error: &anyhow::Error, agent_manager: &Arc<dyn AgentBackend>) {
+pub async fn show_agent_error(
+    error: &anyhow::Error,
+    agent_manager: &Arc<dyn AgentBackend>,
+) {
     let status = agent_manager.status().await;
     let error_msg = error.to_string();
 
@@ -517,11 +520,11 @@ pub async fn handle_tui_command(
         "/help" | "/h" => {
             push_text_entry(
                 entries,
-                "Commands: /help /provider /model /status /workflow /tokens /metrics /t /d /cards /v /stream /thinking /timeline [N] /copy /resume [id] [--cross] /new /session [N] /project [dir] /clear /exit",
+                "Commands: /help /provider /model /status /workflow /tokens /metrics /t /d /cards /v /stream /thinking /timeline [N] /copy /resume [id] [--cross] /new /session [N] /project [dir] /todo /plan /clear /exit",
             );
             push_text_entry(
                 entries,
-                "Shortcuts: Ctrl+T / Ctrl+D / Ctrl+E / Ctrl+Y / Ctrl+I / Ctrl+L",
+                "Shortcuts: Ctrl+T / Ctrl+D / Ctrl+E / Ctrl+Y / Ctrl+I / Ctrl+L / Ctrl+O",
             );
             push_text_entry(
                 entries,
@@ -730,7 +733,7 @@ pub async fn handle_tui_command(
             }
         }
         "/resume" | "/r" => {
-            let has_cross = parts.contains(&"--cross");
+            let has_cross = parts.iter().any(|p| *p == "--cross");
             let session_id = parts.iter().skip(1).find(|p| !p.starts_with("--")).copied();
             let result = if let Some(sid) = session_id {
                 agent_manager.use_session(sid, has_cross).await
@@ -827,6 +830,60 @@ pub async fn handle_tui_command(
                     }
                     Err(e) => push_text_entry(entries, &format!("[Error] {}", e)),
                 }
+            }
+        }
+        "/todo" => {
+            match agent_manager.list_session_todos().await {
+                Ok(items) if items.is_empty() => {
+                    push_text_entry(entries, "[Info] No TODO items in this session.");
+                }
+                Ok(items) => {
+                    push_text_entry(entries, "TODO items:");
+                    for item in &items {
+                        let icon = match item.state {
+                            crate::agent_backend::TodoState::Pending => "○",
+                            crate::agent_backend::TodoState::InProgress => "◎",
+                            crate::agent_backend::TodoState::Completed => "✓",
+                            crate::agent_backend::TodoState::Failed => "✗",
+                            crate::agent_backend::TodoState::Cancelled => "⊘",
+                        };
+                        push_text_entry(
+                            entries,
+                            &format!("  {} {}. {}", icon, item.index, item.title),
+                        );
+                    }
+                    viz_state.todo_items = items;
+                }
+                Err(e) => push_text_entry(entries, &format!("[Error] {}", e)),
+            }
+        }
+        "/plan" => {
+            if parts.len() > 1 {
+                // /plan <description> — create multiple TODO items
+                let description = parts[1..].join(" ");
+                let items: Vec<(String, String)> = description
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .map(|t| (t, String::new()))
+                    .collect();
+                if items.is_empty() {
+                    push_text_entry(entries, "[Error] Usage: /plan step1, step2, step3");
+                } else {
+                    match agent_manager.create_todos(items).await {
+                        Ok(items) => {
+                            push_text_entry(
+                                entries,
+                                &format!("[OK] Created {} TODO items", items.len()),
+                            );
+                            viz_state.todo_items = items;
+                        }
+                        Err(e) => push_text_entry(entries, &format!("[Error] {}", e)),
+                    }
+                }
+            } else {
+                push_text_entry(entries, "Usage: /plan step1, step2, step3");
+                push_text_entry(entries, "Creates TODO items for session planning.");
             }
         }
         "/exit" => return Ok(true),
