@@ -14,6 +14,7 @@ mod config;
 mod intent;
 pub mod llm;
 mod memory;
+pub mod redaction;
 mod task;
 mod todo;
 

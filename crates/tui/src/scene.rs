@@ -8,7 +8,7 @@ use ratatui::style::Color;
 
 /// Rendering-hint scene for the current TUI context.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Scene {
+pub enum Scene {
     /// Free-form conversation (default)
     Chat,
     /// Code / context analysis (discovery stage)
@@ -25,7 +25,7 @@ pub(crate) enum Scene {
 
 impl Scene {
     /// Short label for the title-bar badge.
-    pub(crate) fn badge_label(&self) -> &'static str {
+    pub fn badge_label(&self) -> &'static str {
         match self {
             Self::Chat => "对话",
             Self::Analyze => "分析",
@@ -37,7 +37,7 @@ impl Scene {
     }
 
     /// Accent color associated with this scene.
-    pub(crate) fn accent_color(&self) -> Color {
+    pub fn accent_color(&self) -> Color {
         match self {
             Self::Chat => Color::Cyan,
             Self::Analyze => Color::Blue,
@@ -59,7 +59,7 @@ impl Scene {
 /// - `"executing"` + shell tool      → Debug
 /// - `"verifying"` → Review
 /// - everything else → Chat
-pub(crate) fn classify_scene(workflow_stage: Option<&str>, tool_name: Option<&str>) -> Scene {
+pub fn classify_scene(workflow_stage: Option<&str>, tool_name: Option<&str>) -> Scene {
     match workflow_stage {
         Some("planning") => Scene::Plan,
         Some("discovery") => Scene::Analyze,

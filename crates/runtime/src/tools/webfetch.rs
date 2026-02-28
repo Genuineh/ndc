@@ -34,12 +34,12 @@ fn validate_url_safety(url_str: &str) -> Result<(), ToolError> {
     // Resolve hostname and check for private IPs
     if let Some(host) = parsed.host_str() {
         // Try to parse as IP directly
-        if let Ok(ip) = host.parse::<IpAddr>() {
-            if is_private_ip(&ip) {
-                return Err(ToolError::InvalidArgument(format!(
-                    "URL targets private/reserved IP address: {ip}"
-                )));
-            }
+        if let Ok(ip) = host.parse::<IpAddr>()
+            && is_private_ip(&ip)
+        {
+            return Err(ToolError::InvalidArgument(format!(
+                "URL targets private/reserved IP address: {ip}"
+            )));
         }
         // Block well-known dangerous hostnames
         let lower = host.to_ascii_lowercase();

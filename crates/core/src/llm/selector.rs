@@ -324,7 +324,7 @@ impl ModelSelector {
 
         // Calculate confidence
         let confidence = if sorted.len() > 1 {
-            (best_score - sorted[1].1).min(1.0).max(0.0)
+            (best_score - sorted[1].1).clamp(0.0, 1.0)
         } else {
             best_score
         };

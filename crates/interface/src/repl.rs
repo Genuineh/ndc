@@ -23,12 +23,10 @@ use tracing::{info, warn};
 use crate::redaction::{RedactionMode, sanitize_text};
 
 // Agent mode integration
-use crate::agent_mode::{
-    AgentModeConfig, AgentModeManager, PermissionRequest,
-};
+use crate::agent_mode::{AgentModeConfig, AgentModeManager};
 
-// TUI sub-modules (extracted to crate::tui)
-use crate::tui::*;
+// TUI crate (extracted from crate::tui)
+use ndc_tui::*;
 
 /// REPL 配置 (OpenCode 风格 - 极简)
 #[derive(Debug, Clone)]
@@ -137,8 +135,8 @@ pub async fn run_repl(history_file: PathBuf, executor: Arc<ndc_runtime::Executor
     }
 
     let permission_rx = if is_tui {
-        let (tx, rx) = tokio::sync::mpsc::channel::<PermissionRequest>(4);
-        agent_manager.set_permission_channel(tx).await;
+        let (tx, rx) = tokio::sync::mpsc::channel::<TuiPermissionRequest>(4);
+        <AgentModeManager as AgentBackend>::set_permission_channel(&*agent_manager, tx).await;
         Some(rx)
     } else {
         None
@@ -150,11 +148,12 @@ pub async fn run_repl(history_file: PathBuf, executor: Arc<ndc_runtime::Executor
         println!("[Warning] Failed to enable agent mode: {}", e);
     }
 
+    let agent_backend: Arc<dyn AgentBackend> = agent_manager.clone();
+
     if is_tui {
         if let Err(e) = run_repl_tui(
-            &config,
             &mut viz_state,
-            agent_manager.clone(),
+            agent_backend.clone(),
             permission_rx.unwrap(),
         )
         .await
@@ -207,10 +206,10 @@ Commands: /help, /provider, /model, /agent, /status, /stream, /workflow, /tokens
 
                 // 处理命令
                 if input.starts_with('/') {
-                    handle_command(input, &config, &mut viz_state, agent_manager.clone()).await;
+                    handle_command(input, &mut viz_state, agent_backend.clone()).await;
                 } else {
                     // 自然语言输入 - 直接发送给 AI Agent
-                    handle_agent_dialogue(input, &agent_manager, &mut viz_state).await;
+                    handle_agent_dialogue(input, &agent_backend, &mut viz_state).await;
                 }
             }
             Err(e) => {
@@ -222,8 +221,6 @@ Commands: /help, /provider, /model, /agent, /status, /stream, /workflow, /tokens
 
     info!("REPL exited");
 }
-
-
 
 #[cfg(test)]
 mod tests {
@@ -264,5 +261,4 @@ mod tests {
         assert!(!out.contains("abc123"));
         assert!(!out.contains("zyx987"));
     }
-
 }

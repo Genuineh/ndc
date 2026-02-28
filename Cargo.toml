@@ -6,6 +6,7 @@ members = [
     "crates/interface",
     "crates/runtime",
     "crates/storage",
+    "crates/tui",
     "bin",
 ]
 

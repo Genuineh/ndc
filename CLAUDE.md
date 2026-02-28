@@ -8,7 +8,8 @@ NDC（Neo Development Companion）是一个用 Rust 编写的 AI 驱动开发助
 |---|---|
 | `crates/core` | 核心领域模型、事件与 Agent 抽象 |
 | `crates/decision` | 决策引擎与规划逻辑 |
-| `crates/interface` | TUI REPL、CLI 命令处理 |
+| `crates/interface` | CLI 命令处理、REPL 入口、Agent 模式管理 |
+| `crates/tui` | ratatui TUI 渲染、输入处理、布局管理 |
 | `crates/runtime` | 工具执行、任务调度、运行时环境 |
 | `crates/storage` | 持久化存储抽象与实现 |
 | `bin` | 二进制入口 `ndc` |

@@ -1,7 +1,6 @@
 //! TUI application loop — the main ratatui event loop for the interactive session.
 
 use std::io;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -18,15 +17,14 @@ use ratatui::widgets::{
     Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
 };
 
-use crate::agent_mode::{AgentModeManager, PermissionRequest};
+use crate::agent_backend::{AgentBackend, TuiPermissionRequest};
 
 use super::*;
 
-pub(crate) async fn run_repl_tui(
-    _config: &crate::repl::ReplConfig,
+pub async fn run_repl_tui(
     viz_state: &mut ReplVisualizationState,
-    agent_manager: Arc<AgentModeManager>,
-    mut permission_rx: tokio::sync::mpsc::Receiver<PermissionRequest>,
+    agent_manager: std::sync::Arc<dyn AgentBackend>,
+    mut permission_rx: tokio::sync::mpsc::Receiver<TuiPermissionRequest>,
 ) -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -44,7 +42,7 @@ pub(crate) async fn run_repl_tui(
     let mut input_history = InputHistory::new(100);
     let mut completion_state: Option<ReplCommandCompletionState> = None;
     let mut processing_handle: Option<
-        tokio::task::JoinHandle<Result<ndc_core::AgentResponse, ndc_core::AgentError>>,
+        tokio::task::JoinHandle<anyhow::Result<ndc_core::AgentResponse>>,
     > = None;
     let mut streamed_count = 0usize;
     let mut streamed_any = false;
@@ -110,7 +108,7 @@ pub(crate) async fn run_repl_tui(
             );
 
             // [1] Workflow progress bar
-            let progress = build_workflow_progress_bar(&viz_state, &theme);
+            let progress = build_workflow_progress_bar(viz_state, &theme);
             f.render_widget(Paragraph::new(progress), areas[1]);
 
             // [2] Conversation body
@@ -142,7 +140,7 @@ pub(crate) async fn run_repl_tui(
 
             // [3] Permission bar (conditional)
             if has_permission {
-                let perm_lines = build_permission_bar(&viz_state, &theme);
+                let perm_lines = build_permission_bar(viz_state, &theme);
                 f.render_widget(Paragraph::new(Text::from(perm_lines)), areas[3]);
             }
 
@@ -150,7 +148,7 @@ pub(crate) async fn run_repl_tui(
             let hint_line = build_status_hint_bar(
                 input.as_str(),
                 completion_state.as_ref(),
-                &viz_state,
+                viz_state,
                 stream_state,
                 &theme,
                 is_processing,

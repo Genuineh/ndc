@@ -6,7 +6,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKi
 
 use super::{TUI_SCROLL_STEP, TuiSessionViewState, calc_log_scroll_usize, effective_log_scroll};
 
-pub(crate) const AVAILABLE_PROVIDERS: &[&str] = &[
+pub const AVAILABLE_PROVIDERS: &[&str] = &[
     "openai",
     "anthropic",
     "minimax",
@@ -18,15 +18,15 @@ pub(crate) const AVAILABLE_PROVIDERS: &[&str] = &[
 ];
 
 #[derive(Debug, Clone)]
-pub(crate) struct InputHistory {
-    pub(crate) entries: Vec<String>,
-    pub(crate) cursor: Option<usize>,
-    pub(crate) draft: String,
-    pub(crate) max_entries: usize,
+pub struct InputHistory {
+    pub entries: Vec<String>,
+    pub cursor: Option<usize>,
+    pub draft: String,
+    pub max_entries: usize,
 }
 
 impl InputHistory {
-    pub(crate) fn new(max_entries: usize) -> Self {
+    pub fn new(max_entries: usize) -> Self {
         Self {
             entries: Vec::new(),
             cursor: None,
@@ -35,7 +35,7 @@ impl InputHistory {
         }
     }
 
-    pub(crate) fn push(&mut self, entry: String) {
+    pub fn push(&mut self, entry: String) {
         if entry.trim().is_empty() {
             return;
         }
@@ -47,7 +47,7 @@ impl InputHistory {
         self.cursor = None;
     }
 
-    pub(crate) fn up(&mut self, current_input: &str) -> Option<&str> {
+    pub fn up(&mut self, current_input: &str) -> Option<&str> {
         if self.entries.is_empty() {
             return None;
         }
@@ -64,7 +64,7 @@ impl InputHistory {
         self.cursor.map(|i| self.entries[i].as_str())
     }
 
-    pub(crate) fn down(&mut self) -> Option<&str> {
+    pub fn down(&mut self) -> Option<&str> {
         match self.cursor {
             None => None,
             Some(i) if i + 1 >= self.entries.len() => {
@@ -78,24 +78,24 @@ impl InputHistory {
         }
     }
 
-    pub(crate) fn reset(&mut self) {
+    pub fn reset(&mut self) {
         self.cursor = None;
         self.draft.clear();
     }
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ReplTuiKeymap {
-    pub(crate) toggle_thinking: char,
-    pub(crate) toggle_details: char,
-    pub(crate) toggle_tool_cards: char,
-    pub(crate) show_recent_thinking: char,
-    pub(crate) show_timeline: char,
-    pub(crate) clear_panel: char,
+pub struct ReplTuiKeymap {
+    pub toggle_thinking: char,
+    pub toggle_details: char,
+    pub toggle_tool_cards: char,
+    pub show_recent_thinking: char,
+    pub show_timeline: char,
+    pub clear_panel: char,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TuiShortcutAction {
+pub enum TuiShortcutAction {
     ToggleThinking,
     ToggleDetails,
     ToggleToolCards,
@@ -105,18 +105,18 @@ pub(crate) enum TuiShortcutAction {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ReplCommandCompletionState {
-    pub(crate) suggestions: Vec<String>,
-    pub(crate) selected_index: usize,
+pub struct ReplCommandCompletionState {
+    pub suggestions: Vec<String>,
+    pub selected_index: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct SlashCommandSpec {
-    pub(crate) command: &'static str,
-    pub(crate) _summary: &'static str,
+pub struct SlashCommandSpec {
+    pub command: &'static str,
+    pub _summary: &'static str,
 }
 
-pub(crate) const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
+pub const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     SlashCommandSpec {
         command: "/help",
         _summary: "show help",
@@ -208,7 +208,7 @@ pub(crate) const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
 ];
 
 impl ReplTuiKeymap {
-    pub(crate) fn from_env() -> Self {
+    pub fn from_env() -> Self {
         Self {
             toggle_thinking: env_char("NDC_REPL_KEY_TOGGLE_THINKING", 't'),
             toggle_details: env_char("NDC_REPL_KEY_TOGGLE_DETAILS", 'd'),
@@ -220,7 +220,7 @@ impl ReplTuiKeymap {
     }
 }
 
-pub(crate) fn env_bool(key: &str) -> Option<bool> {
+pub fn env_bool(key: &str) -> Option<bool> {
     let value = std::env::var(key).ok()?.to_lowercase();
     match value.as_str() {
         "1" | "true" | "yes" | "on" => Some(true),
@@ -229,11 +229,11 @@ pub(crate) fn env_bool(key: &str) -> Option<bool> {
     }
 }
 
-pub(crate) fn env_usize(key: &str) -> Option<usize> {
+pub fn env_usize(key: &str) -> Option<usize> {
     std::env::var(key).ok()?.parse::<usize>().ok()
 }
 
-pub(crate) fn env_char(key: &str, default: char) -> char {
+pub fn env_char(key: &str, default: char) -> char {
     std::env::var(key)
         .ok()
         .and_then(|v| v.chars().next())
@@ -242,7 +242,7 @@ pub(crate) fn env_char(key: &str, default: char) -> char {
         .unwrap_or(default)
 }
 
-pub(crate) fn key_is_ctrl_char(key: &KeyEvent, ch: char) -> bool {
+pub fn key_is_ctrl_char(key: &KeyEvent, ch: char) -> bool {
     if !key.modifiers.contains(KeyModifiers::CONTROL) {
         return false;
     }
@@ -252,10 +252,7 @@ pub(crate) fn key_is_ctrl_char(key: &KeyEvent, ch: char) -> bool {
     }
 }
 
-pub(crate) fn detect_tui_shortcut(
-    key: &KeyEvent,
-    keymap: &ReplTuiKeymap,
-) -> Option<TuiShortcutAction> {
+pub fn detect_tui_shortcut(key: &KeyEvent, keymap: &ReplTuiKeymap) -> Option<TuiShortcutAction> {
     if key_is_ctrl_char(key, keymap.toggle_thinking) {
         return Some(TuiShortcutAction::ToggleThinking);
     }
@@ -277,7 +274,7 @@ pub(crate) fn detect_tui_shortcut(
     None
 }
 
-pub(crate) fn canonical_slash_command(command: &str) -> &str {
+pub fn canonical_slash_command(command: &str) -> &str {
     match command {
         "/providers" | "/provider" | "/p" => "/provider",
         "/thinking" | "/t" => "/thinking",
@@ -292,7 +289,7 @@ pub(crate) fn canonical_slash_command(command: &str) -> &str {
     }
 }
 
-pub(crate) fn slash_argument_options(command: &str) -> Option<&'static [&'static str]> {
+pub fn slash_argument_options(command: &str) -> Option<&'static [&'static str]> {
     match canonical_slash_command(command) {
         "/provider" => Some(AVAILABLE_PROVIDERS),
         "/stream" => Some(&["on", "off", "status"]),
@@ -304,7 +301,7 @@ pub(crate) fn slash_argument_options(command: &str) -> Option<&'static [&'static
     }
 }
 
-pub(crate) fn parse_slash_tokens(input: &str) -> Option<(String, String, Vec<String>, bool)> {
+pub fn parse_slash_tokens(input: &str) -> Option<(String, String, Vec<String>, bool)> {
     let raw = input.trim_start();
     if !raw.starts_with('/') {
         return None;
@@ -317,7 +314,7 @@ pub(crate) fn parse_slash_tokens(input: &str) -> Option<(String, String, Vec<Str
     Some((command_raw, command_norm, args, trailing_space))
 }
 
-pub(crate) fn matching_slash_commands(prefix: &str) -> Vec<SlashCommandSpec> {
+pub fn matching_slash_commands(prefix: &str) -> Vec<SlashCommandSpec> {
     let normalized = prefix.trim();
     if normalized.is_empty() || normalized == "/" {
         return SLASH_COMMAND_SPECS.to_vec();
@@ -329,7 +326,7 @@ pub(crate) fn matching_slash_commands(prefix: &str) -> Vec<SlashCommandSpec> {
         .collect()
 }
 
-pub(crate) fn completion_suggestions_for_input(input: &str) -> Vec<String> {
+pub fn completion_suggestions_for_input(input: &str) -> Vec<String> {
     let Some((command_raw, command_norm, args, trailing_space)) = parse_slash_tokens(input) else {
         return Vec::new();
     };
@@ -354,7 +351,7 @@ pub(crate) fn completion_suggestions_for_input(input: &str) -> Vec<String> {
 }
 
 #[cfg(test)]
-pub(crate) fn build_input_hint_lines(
+pub fn build_input_hint_lines(
     input: &str,
     completion: Option<&ReplCommandCompletionState>,
 ) -> Vec<String> {
@@ -448,7 +445,7 @@ pub(crate) fn build_input_hint_lines(
     lines
 }
 
-pub(crate) fn apply_slash_completion(
+pub fn apply_slash_completion(
     input: &mut String,
     completion: &mut Option<ReplCommandCompletionState>,
     reverse: bool,
@@ -486,11 +483,7 @@ pub(crate) fn apply_slash_completion(
     true
 }
 
-pub(crate) fn move_session_scroll(
-    session_view: &mut TuiSessionViewState,
-    log_count: usize,
-    delta: isize,
-) {
+pub fn move_session_scroll(session_view: &mut TuiSessionViewState, log_count: usize, delta: isize) {
     let max_scroll = calc_log_scroll_usize(log_count, session_view.body_height);
     let current = effective_log_scroll(log_count, session_view) as isize;
     let next = (current + delta).clamp(0, max_scroll as isize) as usize;
@@ -498,7 +491,7 @@ pub(crate) fn move_session_scroll(
     session_view.auto_follow = next >= max_scroll;
 }
 
-pub(crate) fn handle_session_scroll_key(
+pub fn handle_session_scroll_key(
     key: &KeyEvent,
     session_view: &mut TuiSessionViewState,
     log_count: usize,
@@ -535,7 +528,7 @@ pub(crate) fn handle_session_scroll_key(
     }
 }
 
-pub(crate) fn handle_session_scroll_mouse(
+pub fn handle_session_scroll_mouse(
     mouse: &MouseEvent,
     session_view: &mut TuiSessionViewState,
     log_count: usize,
@@ -556,8 +549,8 @@ pub(crate) fn handle_session_scroll_mouse(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::*;
     use crossterm::event::{KeyCode, KeyModifiers, MouseEvent, MouseEventKind};
-    use crate::tui::test_helpers::*;
 
     #[test]
     fn test_env_char_default_and_override() {
@@ -787,5 +780,4 @@ mod tests {
         let down = hist.down();
         assert_eq!(down, Some("my draft"));
     }
-
 }

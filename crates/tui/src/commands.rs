@@ -4,18 +4,17 @@ use std::io::{self, Write};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::agent_mode::{AgentModeManager, handle_agent_command};
-use crate::redaction::{RedactionMode, sanitize_text};
+use crate::agent_backend::AgentBackend;
+use ndc_core::redaction::{RedactionMode, sanitize_text};
 
 use super::*;
 
 // ===== Legacy CLI command handler =====
 
-pub(crate) async fn handle_command(
+pub async fn handle_command(
     input: &str,
-    _config: &crate::repl::ReplConfig,
     viz_state: &mut ReplVisualizationState,
-    agent_manager: Arc<AgentModeManager>,
+    agent_manager: Arc<dyn AgentBackend>,
 ) {
     let parts: Vec<&str> = input.split_whitespace().collect();
     let cmd = parts[0];
@@ -81,7 +80,7 @@ pub(crate) async fn handle_command(
             } else {
                 "/agent help".to_string()
             };
-            if let Err(e) = handle_agent_command(&agent_input, &agent_manager).await {
+            if let Err(e) = agent_manager.handle_agent_command(&agent_input).await {
                 println!("[Error] {}", e);
             }
         }
@@ -217,9 +216,9 @@ pub(crate) async fn handle_command(
 
 // ===== Legacy agent dialogue handler =====
 
-pub(crate) async fn handle_agent_dialogue(
+pub async fn handle_agent_dialogue(
     input: &str,
-    agent_manager: &Arc<AgentModeManager>,
+    agent_manager: &Arc<dyn AgentBackend>,
     viz_state: &mut ReplVisualizationState,
 ) {
     println!("[Agent] processing...");
@@ -331,10 +330,7 @@ pub(crate) async fn handle_agent_dialogue(
 
 // ===== Display helpers (legacy/CLI) =====
 
-pub(crate) async fn show_agent_error(
-    error: &ndc_core::AgentError,
-    agent_manager: &Arc<AgentModeManager>,
-) {
+pub async fn show_agent_error(error: &anyhow::Error, agent_manager: &Arc<dyn AgentBackend>) {
     let status = agent_manager.status().await;
     let error_msg = error.to_string();
 
@@ -424,7 +420,7 @@ pub(crate) async fn show_agent_error(
     println!();
 }
 
-pub(crate) fn show_help() {
+pub fn show_help() {
     println!(
         r#"
 Available Commands:
@@ -485,8 +481,8 @@ Environment Variables:
 
 // ===== TUI command routing =====
 
-pub(crate) async fn restore_session_to_panel(
-    agent_manager: &Arc<AgentModeManager>,
+pub async fn restore_session_to_panel(
+    agent_manager: &Arc<dyn AgentBackend>,
     viz_state: &mut ReplVisualizationState,
     entries: &mut Vec<ChatEntry>,
 ) {
@@ -510,10 +506,10 @@ pub(crate) async fn restore_session_to_panel(
     }
 }
 
-pub(crate) async fn handle_tui_command(
+pub async fn handle_tui_command(
     input: &str,
     viz_state: &mut ReplVisualizationState,
-    agent_manager: Arc<AgentModeManager>,
+    agent_manager: Arc<dyn AgentBackend>,
     entries: &mut Vec<ChatEntry>,
 ) -> io::Result<bool> {
     let parts: Vec<&str> = input.split_whitespace().collect();
@@ -714,7 +710,7 @@ pub(crate) async fn handle_tui_command(
             } else {
                 "/agent help".to_string()
             };
-            if let Err(e) = handle_agent_command(&agent_input, &agent_manager).await {
+            if let Err(e) = agent_manager.handle_agent_command(&agent_input).await {
                 push_text_entry(entries, &format!("[Error] {}", e));
             } else {
                 push_text_entry(entries, "[OK] agent command executed");
@@ -734,7 +730,7 @@ pub(crate) async fn handle_tui_command(
             }
         }
         "/resume" | "/r" => {
-            let has_cross = parts.iter().any(|p| *p == "--cross");
+            let has_cross = parts.contains(&"--cross");
             let session_id = parts.iter().skip(1).find(|p| !p.starts_with("--")).copied();
             let result = if let Some(sid) = session_id {
                 agent_manager.use_session(sid, has_cross).await
@@ -841,7 +837,7 @@ pub(crate) async fn handle_tui_command(
 
 // ===== Legacy display functions =====
 
-pub(crate) fn show_recent_thinking(
+pub fn show_recent_thinking(
     timeline: &[ndc_core::AgentExecutionEvent],
     limit: usize,
     mode: RedactionMode,
@@ -869,7 +865,7 @@ pub(crate) fn show_recent_thinking(
     println!();
 }
 
-pub(crate) fn show_workflow_overview(
+pub fn show_workflow_overview(
     timeline: &[ndc_core::AgentExecutionEvent],
     limit: usize,
     mode: RedactionMode,
@@ -930,7 +926,7 @@ pub(crate) fn show_workflow_overview(
     println!();
 }
 
-pub(crate) fn show_runtime_metrics(viz_state: &ReplVisualizationState) {
+pub fn show_runtime_metrics(viz_state: &ReplVisualizationState) {
     let metrics = compute_runtime_metrics(viz_state.timeline_cache.as_slice());
     println!();
     println!("Runtime Metrics:");
@@ -976,7 +972,7 @@ pub(crate) fn show_runtime_metrics(viz_state: &ReplVisualizationState) {
     println!();
 }
 
-pub(crate) fn show_timeline(
+pub fn show_timeline(
     timeline: &[ndc_core::AgentExecutionEvent],
     limit: usize,
     mode: RedactionMode,
@@ -1009,7 +1005,7 @@ pub(crate) fn show_timeline(
     println!();
 }
 
-pub(crate) async fn show_model_info(agent_manager: &AgentModeManager) {
+pub async fn show_model_info(agent_manager: &dyn AgentBackend) {
     let status = agent_manager.status().await;
     println!("Current Model Configuration:");
     println!();
@@ -1050,7 +1046,7 @@ pub(crate) async fn show_model_info(agent_manager: &AgentModeManager) {
     println!("  NDC_OLLAMA_MODEL, NDC_OLLAMA_URL");
 }
 
-pub(crate) fn show_agent_status(status: &crate::agent_mode::AgentModeStatus) {
+pub fn show_agent_status(status: &crate::AgentStatus) {
     println!();
     println!("+--------------------------------------------------------------------+");
     println!("|  Agent Status                                                        |");

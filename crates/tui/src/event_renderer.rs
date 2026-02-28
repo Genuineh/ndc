@@ -3,12 +3,12 @@
 //! Converts `AgentExecutionEvent`s to display strings (legacy mode)
 //! and provides helpers to append content to the TUI chat panel.
 
-use crate::redaction::sanitize_text;
+use ndc_core::redaction::sanitize_text;
 
 use super::*;
 
 /// Convert a single execution event into display lines (legacy/CLI mode).
-pub(crate) fn event_to_lines(
+pub fn event_to_lines(
     event: &ndc_core::AgentExecutionEvent,
     viz_state: &mut ReplVisualizationState,
 ) -> Vec<String> {
@@ -131,7 +131,7 @@ pub(crate) fn event_to_lines(
         }
         ndc_core::AgentExecutionEventKind::ToolCallEnd => {
             let tool = event.tool_name.as_deref().unwrap_or("unknown");
-            let duration = event.duration_ms.map(|d| format_duration_ms(d));
+            let duration = event.duration_ms.map(format_duration_ms);
             let status_icon = if event.is_error { "✗" } else { "✓" };
 
             match v {
@@ -150,18 +150,14 @@ pub(crate) fn event_to_lines(
                         } else {
                             lines.push(format!("[ToolEnd] {} {}{}", status_icon, tool, dur));
                         }
+                    } else if let Some(preview) = extract_tool_result_preview(&event.message) {
+                        let (msg, truncated) =
+                            truncate_output(&sanitize_text(preview, viz_state.redaction_mode), 100);
+                        lines.push(format!("[ToolEnd] {} {}{}", status_icon, tool, dur));
+                        let suffix = if truncated { " …" } else { "" };
+                        lines.push(format!("  └─ {}{}", msg, suffix));
                     } else {
-                        if let Some(preview) = extract_tool_result_preview(&event.message) {
-                            let (msg, truncated) = truncate_output(
-                                &sanitize_text(preview, viz_state.redaction_mode),
-                                100,
-                            );
-                            lines.push(format!("[ToolEnd] {} {}{}", status_icon, tool, dur));
-                            let suffix = if truncated { " …" } else { "" };
-                            lines.push(format!("  └─ {}{}", msg, suffix));
-                        } else {
-                            lines.push(format!("[ToolEnd] {} {}{}", status_icon, tool, dur));
-                        }
+                        lines.push(format!("[ToolEnd] {} {}{}", status_icon, tool, dur));
                     }
                 }
                 DisplayVerbosity::Normal => {
@@ -174,13 +170,13 @@ pub(crate) fn event_to_lines(
                             sanitize_text(preview, viz_state.redaction_mode)
                         ));
                     }
-                    if viz_state.expand_tool_cards {
-                        if let Some(args) = extract_tool_args_preview(&event.message) {
-                            lines.push(format!(
-                                "  └─ input : {}",
-                                sanitize_text(args, viz_state.redaction_mode)
-                            ));
-                        }
+                    if viz_state.expand_tool_cards
+                        && let Some(args) = extract_tool_args_preview(&event.message)
+                    {
+                        lines.push(format!(
+                            "  └─ input : {}",
+                            sanitize_text(args, viz_state.redaction_mode)
+                        ));
                     }
                 }
                 DisplayVerbosity::Verbose => {
@@ -267,43 +263,41 @@ pub(crate) fn event_to_lines(
         }
         ndc_core::AgentExecutionEventKind::StepStart
         | ndc_core::AgentExecutionEventKind::StepFinish
-        | ndc_core::AgentExecutionEventKind::Verification => {
-            match v {
-                DisplayVerbosity::Compact => {}
-                DisplayVerbosity::Normal => {
-                    if matches!(event.kind, ndc_core::AgentExecutionEventKind::StepFinish)
-                        && event.duration_ms.is_some()
-                    {
-                        lines.push(format!(
-                            "[Step][r{}] {}{}",
-                            event.round,
-                            sanitize_text(&event.message, viz_state.redaction_mode),
-                            event
-                                .duration_ms
-                                .map(|d| format!(" ({})", format_duration_ms(d)))
-                                .unwrap_or_default()
-                        ));
-                    }
-                }
-                DisplayVerbosity::Verbose => {
-                    if !viz_state.show_tool_details
-                        && matches!(event.kind, ndc_core::AgentExecutionEventKind::StepStart)
-                    {
-                        lines.push(format!("[Agent][r{}] thinking...", event.round));
-                    } else if viz_state.show_tool_details {
-                        lines.push(format!(
-                            "[Step][r{}] {}{}",
-                            event.round,
-                            sanitize_text(&event.message, viz_state.redaction_mode),
-                            event
-                                .duration_ms
-                                .map(|d| format!(" ({}ms)", d))
-                                .unwrap_or_default()
-                        ));
-                    }
+        | ndc_core::AgentExecutionEventKind::Verification => match v {
+            DisplayVerbosity::Compact => {}
+            DisplayVerbosity::Normal => {
+                if matches!(event.kind, ndc_core::AgentExecutionEventKind::StepFinish)
+                    && event.duration_ms.is_some()
+                {
+                    lines.push(format!(
+                        "[Step][r{}] {}{}",
+                        event.round,
+                        sanitize_text(&event.message, viz_state.redaction_mode),
+                        event
+                            .duration_ms
+                            .map(|d| format!(" ({})", format_duration_ms(d)))
+                            .unwrap_or_default()
+                    ));
                 }
             }
-        }
+            DisplayVerbosity::Verbose => {
+                if !viz_state.show_tool_details
+                    && matches!(event.kind, ndc_core::AgentExecutionEventKind::StepStart)
+                {
+                    lines.push(format!("[Agent][r{}] thinking...", event.round));
+                } else if viz_state.show_tool_details {
+                    lines.push(format!(
+                        "[Step][r{}] {}{}",
+                        event.round,
+                        sanitize_text(&event.message, viz_state.redaction_mode),
+                        event
+                            .duration_ms
+                            .map(|d| format!(" ({}ms)", d))
+                            .unwrap_or_default()
+                    ));
+                }
+            }
+        },
         ndc_core::AgentExecutionEventKind::Error => {
             lines.push(format!(
                 "[Error][r{}] {}",
@@ -317,10 +311,7 @@ pub(crate) fn event_to_lines(
     lines
 }
 
-pub(crate) fn append_recent_thinking(
-    entries: &mut Vec<ChatEntry>,
-    viz_state: &ReplVisualizationState,
-) {
+pub fn append_recent_thinking(entries: &mut Vec<ChatEntry>, viz_state: &ReplVisualizationState) {
     let total = viz_state.timeline_cache.len();
     let start = total.saturating_sub(viz_state.timeline_limit);
     push_text_entry(entries, "");
@@ -352,10 +343,7 @@ pub(crate) fn append_recent_thinking(
     }
 }
 
-pub(crate) fn append_recent_timeline(
-    entries: &mut Vec<ChatEntry>,
-    viz_state: &ReplVisualizationState,
-) {
+pub fn append_recent_timeline(entries: &mut Vec<ChatEntry>, viz_state: &ReplVisualizationState) {
     push_text_entry(entries, "");
     push_text_entry(
         entries,
@@ -391,7 +379,7 @@ pub(crate) fn append_recent_timeline(
     }
 }
 
-pub(crate) fn append_workflow_overview(
+pub fn append_workflow_overview(
     entries: &mut Vec<ChatEntry>,
     viz_state: &ReplVisualizationState,
     mode: WorkflowOverviewMode,
@@ -467,10 +455,7 @@ pub(crate) fn append_workflow_overview(
     }
 }
 
-pub(crate) fn append_token_usage(
-    entries: &mut Vec<ChatEntry>,
-    viz_state: &ReplVisualizationState,
-) {
+pub fn append_token_usage(entries: &mut Vec<ChatEntry>, viz_state: &ReplVisualizationState) {
     push_text_entry(entries, "");
     push_text_entry(
         entries,
@@ -487,10 +472,7 @@ pub(crate) fn append_token_usage(
     );
 }
 
-pub(crate) fn append_runtime_metrics(
-    entries: &mut Vec<ChatEntry>,
-    viz_state: &ReplVisualizationState,
-) {
+pub fn append_runtime_metrics(entries: &mut Vec<ChatEntry>, viz_state: &ReplVisualizationState) {
     let metrics = compute_runtime_metrics(viz_state.timeline_cache.as_slice());
     push_text_entry(entries, "");
     push_text_entry(entries, "Runtime Metrics:");
@@ -553,7 +535,7 @@ pub(crate) fn append_runtime_metrics(
     );
 }
 
-pub(crate) fn apply_tui_shortcut_action(
+pub fn apply_tui_shortcut_action(
     action: TuiShortcutAction,
     viz_state: &mut ReplVisualizationState,
     entries: &mut Vec<ChatEntry>,
@@ -611,7 +593,7 @@ pub(crate) fn apply_tui_shortcut_action(
     }
 }
 
-pub(crate) fn render_execution_events(
+pub fn render_execution_events(
     events: &[ndc_core::AgentExecutionEvent],
     viz_state: &mut ReplVisualizationState,
 ) {
@@ -625,8 +607,8 @@ pub(crate) fn render_execution_events(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::*;
     use crossterm::event::{KeyCode, KeyModifiers};
-    use crate::tui::test_helpers::*;
 
     #[test]
     fn test_show_recent_thinking_empty() {
@@ -1578,5 +1560,4 @@ mod tests {
         assert!(lines[0].contains("shell"));
         assert!(lines[0].contains("cargo build"));
     }
-
 }

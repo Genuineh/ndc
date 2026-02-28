@@ -23,8 +23,10 @@ struct SqliteConnectionManager {
 }
 
 impl SqliteConnectionManager {
-    fn file(path: &PathBuf) -> Self {
-        Self { path: path.clone() }
+    fn file(path: &std::path::Path) -> Self {
+        Self {
+            path: path.to_path_buf(),
+        }
     }
 }
 

@@ -5,7 +5,7 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use crate::redaction::sanitize_text;
+use ndc_core::redaction::sanitize_text;
 
 use super::{
     DisplayVerbosity, ReplVisualizationState, TIMELINE_CACHE_MAX_EVENTS, TuiSessionViewState,
@@ -17,30 +17,30 @@ use super::{
 use ndc_core::{AgentExecutionEvent, AgentExecutionEventKind, AgentSessionExecutionEvent};
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct TuiTheme {
-    pub(crate) text_strong: Color,
-    pub(crate) text_base: Color,
-    pub(crate) text_muted: Color,
-    pub(crate) text_dim: Color,
-    pub(crate) primary: Color,
-    pub(crate) success: Color,
-    pub(crate) warning: Color,
-    pub(crate) danger: Color,
-    pub(crate) info: Color,
-    pub(crate) user_accent: Color,
-    pub(crate) assistant_accent: Color,
-    pub(crate) tool_accent: Color,
-    pub(crate) thinking_accent: Color,
-    pub(crate) border_normal: Color,
-    pub(crate) border_active: Color,
-    pub(crate) border_dim: Color,
-    pub(crate) progress_done: Color,
-    pub(crate) progress_active: Color,
-    pub(crate) progress_pending: Color,
+pub struct TuiTheme {
+    pub text_strong: Color,
+    pub text_base: Color,
+    pub text_muted: Color,
+    pub text_dim: Color,
+    pub primary: Color,
+    pub success: Color,
+    pub warning: Color,
+    pub danger: Color,
+    pub info: Color,
+    pub user_accent: Color,
+    pub assistant_accent: Color,
+    pub tool_accent: Color,
+    pub thinking_accent: Color,
+    pub border_normal: Color,
+    pub border_active: Color,
+    pub border_dim: Color,
+    pub progress_done: Color,
+    pub progress_active: Color,
+    pub progress_pending: Color,
 }
 
 impl TuiTheme {
-    pub(crate) fn default_dark() -> Self {
+    pub fn default_dark() -> Self {
         Self {
             text_strong: Color::White,
             text_base: Color::Gray,
@@ -67,7 +67,7 @@ impl TuiTheme {
 
 /// Status of a tool call card.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ToolCardStatus {
+pub enum ToolCardStatus {
     Running,
     Completed,
     Failed,
@@ -75,19 +75,19 @@ pub(crate) enum ToolCardStatus {
 
 /// A collapsible card representing a tool call execution.
 #[derive(Debug, Clone)]
-pub(crate) struct ToolCallCard {
-    pub(crate) name: String,
-    pub(crate) status: ToolCardStatus,
-    pub(crate) duration: Option<String>,
-    pub(crate) args_summary: Option<String>,
-    pub(crate) output_preview: Option<String>,
-    pub(crate) is_error: bool,
-    pub(crate) collapsed: bool,
+pub struct ToolCallCard {
+    pub name: String,
+    pub status: ToolCardStatus,
+    pub duration: Option<String>,
+    pub args_summary: Option<String>,
+    pub output_preview: Option<String>,
+    pub is_error: bool,
+    pub collapsed: bool,
 }
 
 /// A single line in a diff preview.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum DiffLine {
+pub enum DiffLine {
     /// Added line (rendered green with `+` prefix)
     Added(String),
     /// Removed line (rendered red with `-` prefix)
@@ -98,7 +98,7 @@ pub(crate) enum DiffLine {
 
 /// A single structured entry in the conversation log.
 #[derive(Debug, Clone)]
-pub(crate) enum ChatEntry {
+pub enum ChatEntry {
     /// Visual separator (blank line)
     Separator,
     /// User input message with turn identifier
@@ -137,9 +137,9 @@ pub(crate) enum ChatEntry {
     },
 }
 
-pub(crate) const TUI_MAX_CHAT_ENTRIES: usize = 3000;
+pub const TUI_MAX_CHAT_ENTRIES: usize = 3000;
 
-pub(crate) fn push_chat_entry(entries: &mut Vec<ChatEntry>, entry: ChatEntry) {
+pub fn push_chat_entry(entries: &mut Vec<ChatEntry>, entry: ChatEntry) {
     entries.push(entry);
     if entries.len() > TUI_MAX_CHAT_ENTRIES {
         let overflow = entries.len() - TUI_MAX_CHAT_ENTRIES;
@@ -147,14 +147,14 @@ pub(crate) fn push_chat_entry(entries: &mut Vec<ChatEntry>, entry: ChatEntry) {
     }
 }
 
-pub(crate) fn push_chat_entries(entries: &mut Vec<ChatEntry>, new_entries: Vec<ChatEntry>) {
+pub fn push_chat_entries(entries: &mut Vec<ChatEntry>, new_entries: Vec<ChatEntry>) {
     for entry in new_entries {
         push_chat_entry(entries, entry);
     }
 }
 
 /// Count the number of rendered display lines a single ChatEntry will produce.
-pub(crate) fn chat_entry_display_lines(entry: &ChatEntry) -> usize {
+pub fn chat_entry_display_lines(entry: &ChatEntry) -> usize {
     match entry {
         ChatEntry::Separator => 1,
         ChatEntry::UserMessage { content, .. } => {
@@ -204,12 +204,12 @@ pub(crate) fn chat_entry_display_lines(entry: &ChatEntry) -> usize {
 }
 
 /// Total rendered display lines for a slice of entries.
-pub(crate) fn total_display_lines(entries: &[ChatEntry]) -> usize {
+pub fn total_display_lines(entries: &[ChatEntry]) -> usize {
     entries.iter().map(chat_entry_display_lines).sum()
 }
 
 /// Render structured chat entries to styled ratatui Lines.
-pub(crate) fn style_chat_entries(entries: &[ChatEntry]) -> Vec<Line<'static>> {
+pub fn style_chat_entries(entries: &[ChatEntry]) -> Vec<Line<'static>> {
     let theme = TuiTheme::default_dark();
     let mut lines = Vec::new();
     for entry in entries {
@@ -219,11 +219,7 @@ pub(crate) fn style_chat_entries(entries: &[ChatEntry]) -> Vec<Line<'static>> {
 }
 
 /// Render a single ChatEntry into styled Lines.
-pub(crate) fn style_chat_entry(
-    entry: &ChatEntry,
-    theme: &TuiTheme,
-    lines: &mut Vec<Line<'static>>,
-) {
+pub fn style_chat_entry(entry: &ChatEntry, theme: &TuiTheme, lines: &mut Vec<Line<'static>>) {
     match entry {
         ChatEntry::Separator => {
             lines.push(Line::default());
@@ -476,7 +472,7 @@ pub(crate) fn style_chat_entry(
 }
 
 /// Convert an AgentExecutionEvent into structured ChatEntry variants.
-pub(crate) fn event_to_entries(
+pub fn event_to_entries(
     event: &AgentExecutionEvent,
     viz_state: &mut ReplVisualizationState,
 ) -> Vec<ChatEntry> {
@@ -632,11 +628,11 @@ pub(crate) fn event_to_entries(
                 collapsed: !viz_state.expand_tool_cards,
             }));
             // Generate DiffPreview for write/edit tool completions
-            if !event.is_error && is_write_tool_name(tool) {
-                if let Some(preview) = build_diff_preview(&event.message, viz_state.redaction_mode)
-                {
-                    entries.push(preview);
-                }
+            if !event.is_error
+                && is_write_tool_name(tool)
+                && let Some(preview) = build_diff_preview(&event.message, viz_state.redaction_mode)
+            {
+                entries.push(preview);
             }
         }
         AgentExecutionEventKind::TokenUsage => {
@@ -741,7 +737,7 @@ pub(crate) fn event_to_entries(
 }
 
 /// Drain live execution events into structured chat entries.
-pub(crate) fn drain_live_chat_entries(
+pub fn drain_live_chat_entries(
     receiver: &mut Option<tokio::sync::broadcast::Receiver<AgentSessionExecutionEvent>>,
     expected_session_id: Option<&str>,
     viz_state: &mut ReplVisualizationState,
@@ -796,7 +792,7 @@ pub(crate) fn drain_live_chat_entries(
 }
 
 /// Compute effective scroll offset for chat entries (display-line based).
-pub(crate) fn effective_chat_scroll(entries: &[ChatEntry], view: &TuiSessionViewState) -> usize {
+pub fn effective_chat_scroll(entries: &[ChatEntry], view: &TuiSessionViewState) -> usize {
     let total = total_display_lines(entries);
     if view.auto_follow || total <= view.body_height {
         total.saturating_sub(view.body_height)
@@ -807,7 +803,7 @@ pub(crate) fn effective_chat_scroll(entries: &[ChatEntry], view: &TuiSessionView
 }
 
 /// Toggle collapse state for all tool cards in entries.
-pub(crate) fn toggle_all_tool_cards(entries: &mut [ChatEntry]) {
+pub fn toggle_all_tool_cards(entries: &mut [ChatEntry]) {
     for entry in entries.iter_mut() {
         if let ChatEntry::ToolCard(card) = entry {
             card.collapsed = !card.collapsed;
@@ -816,7 +812,7 @@ pub(crate) fn toggle_all_tool_cards(entries: &mut [ChatEntry]) {
 }
 
 /// Toggle collapse state for all reasoning blocks in entries.
-pub(crate) fn toggle_all_reasoning_blocks(entries: &mut [ChatEntry]) {
+pub fn toggle_all_reasoning_blocks(entries: &mut [ChatEntry]) {
     for entry in entries.iter_mut() {
         if let ChatEntry::ReasoningBlock { collapsed, .. } = entry {
             *collapsed = !*collapsed;
@@ -827,7 +823,7 @@ pub(crate) fn toggle_all_reasoning_blocks(entries: &mut [ChatEntry]) {
 /// Bridge function: push a plain text string as a typed ChatEntry.
 /// Empty text becomes Separator; "[Error]" prefix becomes ErrorNote;
 /// "[Warning]" or "[Tip]" becomes WarningNote; everything else SystemNote.
-pub(crate) fn push_text_entry(entries: &mut Vec<ChatEntry>, text: &str) {
+pub fn push_text_entry(entries: &mut Vec<ChatEntry>, text: &str) {
     if text.is_empty() {
         push_chat_entry(entries, ChatEntry::Separator);
     } else if text.starts_with("[Error]") {
@@ -869,9 +865,9 @@ fn is_write_tool_name(tool_name: &str) -> bool {
 ///
 /// Extracts the file path from `args_preview:` and generates simple diff lines
 /// from `result_preview:`. Returns `None` if information is insufficient.
-pub(crate) fn build_diff_preview(
+pub fn build_diff_preview(
     message: &str,
-    redaction_mode: crate::redaction::RedactionMode,
+    redaction_mode: ndc_core::redaction::RedactionMode,
 ) -> Option<ChatEntry> {
     let path = extract_diff_path(message)?;
     let result = extract_tool_result_preview(message)?;
@@ -915,7 +911,7 @@ fn extract_diff_path(message: &str) -> Option<&str> {
 }
 
 /// Convert ChatEntry list to plain text for export (/copy command).
-pub(crate) fn entries_to_plain_text(entries: &[ChatEntry]) -> String {
+pub fn entries_to_plain_text(entries: &[ChatEntry]) -> String {
     let mut lines = Vec::new();
     for entry in entries {
         match entry {
@@ -1002,15 +998,15 @@ pub(crate) fn entries_to_plain_text(entries: &[ChatEntry]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::test_helpers::*;
+    use crate::test_helpers::*;
 
     #[test]
     fn test_build_diff_preview_from_message() {
-        use crate::tui::build_diff_preview;
+        use crate::build_diff_preview;
         let msg = r#"tool_call_end: write_file | args_preview: {"path":"src/main.rs"} | result_preview: +new line
 -old line
  context"#;
-        let preview = build_diff_preview(msg, crate::redaction::RedactionMode::Off);
+        let preview = build_diff_preview(msg, ndc_core::redaction::RedactionMode::Off);
         assert!(preview.is_some(), "expected DiffPreview");
         if let Some(ChatEntry::DiffPreview {
             path,
@@ -1031,9 +1027,9 @@ mod tests {
 
     #[test]
     fn test_build_diff_preview_missing_path_returns_none() {
-        use crate::tui::build_diff_preview;
+        use crate::build_diff_preview;
         let msg = "tool_call_end: write_file | result_preview: +added";
-        let preview = build_diff_preview(msg, crate::redaction::RedactionMode::Off);
+        let preview = build_diff_preview(msg, ndc_core::redaction::RedactionMode::Off);
         assert!(preview.is_none(), "no path → no preview");
     }
 
@@ -1948,5 +1944,4 @@ mod tests {
         assert!(has_reasoning, "expected expanded reasoning");
         assert_eq!(tool_cards.len(), 2, "expected 2 tool cards (start + end)");
     }
-
 }

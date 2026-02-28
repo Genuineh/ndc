@@ -30,7 +30,7 @@ impl SessionStore {
         let entries = self
             .project_sessions
             .entry(session.project_id.clone())
-            .or_insert_with(Vec::new);
+            .or_default();
         if !entries.iter().any(|id| id == &session.id) {
             entries.push(session.id.clone());
         }

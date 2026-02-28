@@ -5,17 +5,14 @@ use std::sync::{Mutex, OnceLock};
 
 use super::*;
 
-pub(crate) fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+pub fn env_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
         .lock()
         .expect("env lock poisoned")
 }
 
-pub(crate) fn with_env_overrides<T>(
-    updates: &[(&str, Option<&str>)],
-    f: impl FnOnce() -> T,
-) -> T {
+pub fn with_env_overrides<T>(updates: &[(&str, Option<&str>)], f: impl FnOnce() -> T) -> T {
     let _guard = env_lock();
     let previous = updates
         .iter()
@@ -37,7 +34,7 @@ pub(crate) fn with_env_overrides<T>(
     result
 }
 
-pub(crate) fn mk_event(
+pub fn mk_event(
     kind: ndc_core::AgentExecutionEventKind,
     message: &str,
     round: usize,
@@ -62,7 +59,7 @@ pub(crate) fn mk_event(
     }
 }
 
-pub(crate) fn mk_event_at(
+pub fn mk_event_at(
     kind: ndc_core::AgentExecutionEventKind,
     message: &str,
     round: usize,
@@ -84,7 +81,7 @@ pub(crate) fn mk_event_at(
     }
 }
 
-pub(crate) fn render_event_snapshot(
+pub fn render_event_snapshot(
     events: &[ndc_core::AgentExecutionEvent],
     viz: &mut ReplVisualizationState,
 ) -> Vec<String> {
@@ -95,14 +92,14 @@ pub(crate) fn render_event_snapshot(
     out
 }
 
-pub(crate) fn line_plain(line: &Line<'_>) -> String {
+pub fn line_plain(line: &Line<'_>) -> String {
     line.spans
         .iter()
         .map(|s| s.content.as_ref())
         .collect::<String>()
 }
 
-pub(crate) fn render_entries_snapshot(
+pub fn render_entries_snapshot(
     events: &[ndc_core::AgentExecutionEvent],
     viz: &mut ReplVisualizationState,
 ) -> Vec<ChatEntry> {
@@ -113,7 +110,7 @@ pub(crate) fn render_entries_snapshot(
     out
 }
 
-pub(crate) fn entry_lines_plain(entry: &ChatEntry) -> Vec<String> {
+pub fn entry_lines_plain(entry: &ChatEntry) -> Vec<String> {
     let theme = TuiTheme::default_dark();
     let mut lines = Vec::new();
     style_chat_entry(entry, &theme, &mut lines);

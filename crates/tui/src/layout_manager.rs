@@ -11,9 +11,9 @@ use super::{
     matching_slash_commands, parse_slash_tokens, slash_argument_options,
 };
 
-pub(crate) const TUI_SCROLL_STEP: usize = 3;
-pub(crate) const TIMELINE_CACHE_MAX_EVENTS: usize = 1_000;
-pub(crate) const WORKFLOW_STAGE_ORDER: &[&str] = &[
+pub const TUI_SCROLL_STEP: usize = 3;
+pub const TIMELINE_CACHE_MAX_EVENTS: usize = 1_000;
+pub const WORKFLOW_STAGE_ORDER: &[&str] = &[
     "planning",
     "discovery",
     "executing",
@@ -22,14 +22,14 @@ pub(crate) const WORKFLOW_STAGE_ORDER: &[&str] = &[
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DisplayVerbosity {
+pub enum DisplayVerbosity {
     Compact,
     Normal,
     Verbose,
 }
 
 impl DisplayVerbosity {
-    pub(crate) fn next(self) -> Self {
+    pub fn next(self) -> Self {
         match self {
             Self::Compact => Self::Normal,
             Self::Normal => Self::Verbose,
@@ -37,7 +37,7 @@ impl DisplayVerbosity {
         }
     }
 
-    pub(crate) fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             Self::Compact => "compact",
             Self::Normal => "normal",
@@ -45,7 +45,7 @@ impl DisplayVerbosity {
         }
     }
 
-    pub(crate) fn parse(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
             "compact" | "c" => Some(Self::Compact),
             "normal" | "n" => Some(Self::Normal),
@@ -56,13 +56,13 @@ impl DisplayVerbosity {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum WorkflowOverviewMode {
+pub enum WorkflowOverviewMode {
     Compact,
     Verbose,
 }
 
 impl WorkflowOverviewMode {
-    pub(crate) fn parse(value: Option<&str>) -> Result<Self, String> {
+    pub fn parse(value: Option<&str>) -> Result<Self, String> {
         let Some(raw) = value else {
             return Ok(Self::Verbose);
         };
@@ -73,7 +73,7 @@ impl WorkflowOverviewMode {
         }
     }
 
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             WorkflowOverviewMode::Compact => "compact",
             WorkflowOverviewMode::Verbose => "verbose",
@@ -82,10 +82,10 @@ impl WorkflowOverviewMode {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct TuiSessionViewState {
-    pub(crate) scroll_offset: usize,
-    pub(crate) auto_follow: bool,
-    pub(crate) body_height: usize,
+pub struct TuiSessionViewState {
+    pub scroll_offset: usize,
+    pub auto_follow: bool,
+    pub body_height: usize,
 }
 
 impl Default for TuiSessionViewState {
@@ -98,7 +98,7 @@ impl Default for TuiSessionViewState {
     }
 }
 
-pub(crate) fn short_session_id(value: Option<&str>) -> String {
+pub fn short_session_id(value: Option<&str>) -> String {
     let session = value.unwrap_or("-");
     let max = 12usize;
     if session.chars().count() <= max {
@@ -108,7 +108,7 @@ pub(crate) fn short_session_id(value: Option<&str>) -> String {
     format!("{}…", prefix)
 }
 
-pub(crate) fn workflow_progress_descriptor(
+pub fn workflow_progress_descriptor(
     stage_name: Option<&str>,
     stage_index: Option<u32>,
     stage_total: Option<u32>,
@@ -133,8 +133,8 @@ pub(crate) fn workflow_progress_descriptor(
 }
 
 #[cfg(test)]
-pub(crate) fn build_status_line(
-    status: &crate::agent_mode::AgentModeStatus,
+pub fn build_status_line(
+    status: &crate::AgentStatus,
     viz_state: &ReplVisualizationState,
     is_processing: bool,
     session_view: &TuiSessionViewState,
@@ -199,7 +199,7 @@ pub(crate) fn build_status_line(
     )
 }
 
-pub(crate) fn tool_status_narrative(tool_name: Option<&str>) -> &'static str {
+pub fn tool_status_narrative(tool_name: Option<&str>) -> &'static str {
     match tool_name {
         Some("read" | "read_file") => "Reading file...",
         Some("grep" | "glob" | "list" | "list_dir") => "Searching codebase...",
@@ -213,8 +213,8 @@ pub(crate) fn tool_status_narrative(tool_name: Option<&str>) -> &'static str {
     }
 }
 
-pub(crate) fn build_title_bar<'a>(
-    status: &crate::agent_mode::AgentModeStatus,
+pub fn build_title_bar<'a>(
+    status: &crate::AgentStatus,
     is_processing: bool,
     active_tool: Option<&str>,
     theme: &TuiTheme,
@@ -245,10 +245,7 @@ pub(crate) fn build_title_bar<'a>(
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(" ", Style::default()),
-        Span::styled(
-            format!("{}", project_name),
-            Style::default().fg(theme.primary),
-        ),
+        Span::styled(project_name.to_string(), Style::default().fg(theme.primary)),
         Span::styled(
             format!("  {}  ", short_session_id(status.session_id.as_deref())),
             Style::default().fg(theme.text_dim),
@@ -261,7 +258,7 @@ pub(crate) fn build_title_bar<'a>(
     ])
 }
 
-pub(crate) fn build_workflow_progress_bar<'a>(
+pub fn build_workflow_progress_bar<'a>(
     viz_state: &ReplVisualizationState,
     theme: &TuiTheme,
 ) -> Line<'a> {
@@ -302,7 +299,7 @@ pub(crate) fn build_workflow_progress_bar<'a>(
     Line::from(spans)
 }
 
-pub(crate) fn build_permission_bar<'a>(
+pub fn build_permission_bar<'a>(
     viz_state: &ReplVisualizationState,
     theme: &TuiTheme,
 ) -> Vec<Line<'a>> {
@@ -328,7 +325,7 @@ pub(crate) fn build_permission_bar<'a>(
     ]
 }
 
-pub(crate) fn build_status_hint_bar<'a>(
+pub fn build_status_hint_bar<'a>(
     input: &str,
     completion: Option<&ReplCommandCompletionState>,
     viz_state: &ReplVisualizationState,
@@ -336,31 +333,31 @@ pub(crate) fn build_status_hint_bar<'a>(
     theme: &TuiTheme,
     is_processing: bool,
 ) -> Line<'a> {
-    if let Some((_raw, norm, args, trailing_space)) = parse_slash_tokens(input) {
-        if completion.is_none() {
-            if args.is_empty() && !trailing_space {
-                let matches = matching_slash_commands(&norm);
-                let cmds: String = matches
-                    .iter()
-                    .map(|s| s.command)
-                    .collect::<Vec<_>>()
-                    .join("  ");
-                return Line::from(vec![
-                    Span::styled(" ", Style::default()),
-                    Span::styled(cmds, Style::default().fg(theme.text_muted)),
-                    Span::styled("  Tab: complete", Style::default().fg(theme.text_dim)),
-                ]);
-            }
-            if let Some(opts) = slash_argument_options(&norm) {
-                let opts_str = opts.join("  ");
-                return Line::from(vec![
-                    Span::styled(
-                        format!(" {}: ", canonical_slash_command(&norm)),
-                        Style::default().fg(theme.primary),
-                    ),
-                    Span::styled(opts_str, Style::default().fg(theme.text_muted)),
-                ]);
-            }
+    if let Some((_raw, norm, args, trailing_space)) = parse_slash_tokens(input)
+        && completion.is_none()
+    {
+        if args.is_empty() && !trailing_space {
+            let matches = matching_slash_commands(&norm);
+            let cmds: String = matches
+                .iter()
+                .map(|s| s.command)
+                .collect::<Vec<_>>()
+                .join("  ");
+            return Line::from(vec![
+                Span::styled(" ", Style::default()),
+                Span::styled(cmds, Style::default().fg(theme.text_muted)),
+                Span::styled("  Tab: complete", Style::default().fg(theme.text_dim)),
+            ]);
+        }
+        if let Some(opts) = slash_argument_options(&norm) {
+            let opts_str = opts.join("  ");
+            return Line::from(vec![
+                Span::styled(
+                    format!(" {}: ", canonical_slash_command(&norm)),
+                    Style::default().fg(theme.primary),
+                ),
+                Span::styled(opts_str, Style::default().fg(theme.text_muted)),
+            ]);
         }
     }
 
@@ -425,7 +422,7 @@ pub(crate) fn build_status_hint_bar<'a>(
     Line::from(spans)
 }
 
-pub(crate) fn format_token_count(n: u64) -> String {
+pub fn format_token_count(n: u64) -> String {
     if n >= 1_000_000 {
         format!("{:.1}M", n as f64 / 1_000_000.0)
     } else if n >= 1_000 {
@@ -435,7 +432,7 @@ pub(crate) fn format_token_count(n: u64) -> String {
     }
 }
 
-pub(crate) fn token_progress_bar(current: u64, capacity: u64) -> String {
+pub fn token_progress_bar(current: u64, capacity: u64) -> String {
     let ratio = if capacity == 0 {
         0.0
     } else {
@@ -446,7 +443,7 @@ pub(crate) fn token_progress_bar(current: u64, capacity: u64) -> String {
     format!("[{}{}]", "█".repeat(filled), "░".repeat(empty))
 }
 
-pub(crate) fn truncate_output(text: &str, max_chars: usize) -> (String, bool) {
+pub fn truncate_output(text: &str, max_chars: usize) -> (String, bool) {
     if text.len() <= max_chars {
         (text.to_string(), false)
     } else {
@@ -458,7 +455,7 @@ pub(crate) fn truncate_output(text: &str, max_chars: usize) -> (String, bool) {
     }
 }
 
-pub(crate) fn capitalize_stage(stage: &str) -> String {
+pub fn capitalize_stage(stage: &str) -> String {
     let mut chars = stage.chars();
     match chars.next() {
         None => String::new(),
@@ -466,7 +463,7 @@ pub(crate) fn capitalize_stage(stage: &str) -> String {
     }
 }
 
-pub(crate) fn extract_tool_summary(tool_name: &str, args_json: &str) -> String {
+pub fn extract_tool_summary(tool_name: &str, args_json: &str) -> String {
     let extract_field = |field: &str| -> Option<String> {
         let key = format!("\"{}\":", field);
         let idx = args_json.find(&key)?;
@@ -516,7 +513,7 @@ pub(crate) fn extract_tool_summary(tool_name: &str, args_json: &str) -> String {
     }
 }
 
-pub(crate) fn format_duration_ms(ms: u64) -> String {
+pub fn format_duration_ms(ms: u64) -> String {
     if ms >= 60_000 {
         format!("{:.1}m", ms as f64 / 60_000.0)
     } else if ms >= 1_000 {
@@ -526,12 +523,12 @@ pub(crate) fn format_duration_ms(ms: u64) -> String {
     }
 }
 
-pub(crate) fn input_line_count(input: &str) -> u16 {
+pub fn input_line_count(input: &str) -> u16 {
     let lines = input.chars().filter(|c| *c == '\n').count() as u16 + 1;
     lines.clamp(1, 4)
 }
 
-pub(crate) fn tui_layout_constraints(has_permission: bool, input_lines: u16) -> Vec<Constraint> {
+pub fn tui_layout_constraints(has_permission: bool, input_lines: u16) -> Vec<Constraint> {
     let input_height = input_lines + 2;
     let mut c = vec![
         Constraint::Length(1),
@@ -546,7 +543,7 @@ pub(crate) fn tui_layout_constraints(has_permission: bool, input_lines: u16) -> 
     c
 }
 
-pub(crate) fn resolve_stream_state(
+pub fn resolve_stream_state(
     is_processing: bool,
     live_events_enabled: bool,
     has_live_receiver: bool,
@@ -560,7 +557,7 @@ pub(crate) fn resolve_stream_state(
     if has_live_receiver { "live" } else { "poll" }
 }
 
-pub(crate) fn apply_stream_command(
+pub fn apply_stream_command(
     viz_state: &mut ReplVisualizationState,
     arg: Option<&str>,
 ) -> Result<String, String> {
@@ -594,7 +591,7 @@ pub(crate) fn apply_stream_command(
     ))
 }
 
-pub(crate) fn apply_tokens_command(
+pub fn apply_tokens_command(
     viz_state: &mut ReplVisualizationState,
     arg: Option<&str>,
 ) -> Result<String, String> {
@@ -629,15 +626,15 @@ pub(crate) fn apply_tokens_command(
 }
 
 #[cfg(test)]
-pub(crate) fn calc_log_scroll(log_count: usize, body_height: usize) -> u16 {
+pub fn calc_log_scroll(log_count: usize, body_height: usize) -> u16 {
     log_count.saturating_sub(body_height).min(u16::MAX as usize) as u16
 }
 
-pub(crate) fn calc_log_scroll_usize(log_count: usize, body_height: usize) -> usize {
+pub fn calc_log_scroll_usize(log_count: usize, body_height: usize) -> usize {
     log_count.saturating_sub(body_height)
 }
 
-pub(crate) fn effective_log_scroll(log_count: usize, session_view: &TuiSessionViewState) -> usize {
+pub fn effective_log_scroll(log_count: usize, session_view: &TuiSessionViewState) -> usize {
     let max_scroll = calc_log_scroll_usize(log_count, session_view.body_height);
     if session_view.auto_follow {
         max_scroll
@@ -646,7 +643,7 @@ pub(crate) fn effective_log_scroll(log_count: usize, session_view: &TuiSessionVi
     }
 }
 
-pub(crate) fn append_timeline_events(
+pub fn append_timeline_events(
     timeline: &mut Vec<ndc_core::AgentExecutionEvent>,
     incoming: &[ndc_core::AgentExecutionEvent],
     capacity: usize,
@@ -659,17 +656,17 @@ pub(crate) fn append_timeline_events(
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ReplRuntimeMetrics {
-    pub(crate) tool_calls_total: usize,
-    pub(crate) tool_calls_failed: usize,
-    pub(crate) tool_duration_samples: usize,
-    pub(crate) tool_duration_total_ms: u64,
-    pub(crate) permission_waits: usize,
-    pub(crate) error_events: usize,
+pub struct ReplRuntimeMetrics {
+    pub tool_calls_total: usize,
+    pub tool_calls_failed: usize,
+    pub tool_duration_samples: usize,
+    pub tool_duration_total_ms: u64,
+    pub permission_waits: usize,
+    pub error_events: usize,
 }
 
 impl ReplRuntimeMetrics {
-    pub(crate) fn avg_tool_duration_ms(self) -> Option<u64> {
+    pub fn avg_tool_duration_ms(self) -> Option<u64> {
         if self.tool_duration_samples == 0 {
             None
         } else {
@@ -677,7 +674,7 @@ impl ReplRuntimeMetrics {
         }
     }
 
-    pub(crate) fn tool_error_rate_percent(self) -> u64 {
+    pub fn tool_error_rate_percent(self) -> u64 {
         if self.tool_calls_total == 0 {
             0
         } else {
@@ -686,9 +683,7 @@ impl ReplRuntimeMetrics {
     }
 }
 
-pub(crate) fn compute_runtime_metrics(
-    timeline: &[ndc_core::AgentExecutionEvent],
-) -> ReplRuntimeMetrics {
+pub fn compute_runtime_metrics(timeline: &[ndc_core::AgentExecutionEvent]) -> ReplRuntimeMetrics {
     let mut metrics = ReplRuntimeMetrics::default();
     for event in timeline {
         match event.kind {
@@ -715,20 +710,20 @@ pub(crate) fn compute_runtime_metrics(
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct WorkflowStageProgress {
-    pub(crate) count: usize,
-    pub(crate) total_ms: u64,
+pub struct WorkflowStageProgress {
+    pub count: usize,
+    pub total_ms: u64,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub(crate) struct WorkflowProgressSummary {
-    pub(crate) stages: std::collections::BTreeMap<String, WorkflowStageProgress>,
-    pub(crate) current_stage: Option<String>,
-    pub(crate) current_stage_active_ms: u64,
-    pub(crate) history_may_be_partial: bool,
+pub struct WorkflowProgressSummary {
+    pub stages: std::collections::BTreeMap<String, WorkflowStageProgress>,
+    pub current_stage: Option<String>,
+    pub current_stage_active_ms: u64,
+    pub history_may_be_partial: bool,
 }
 
-pub(crate) fn compute_workflow_progress_summary(
+pub fn compute_workflow_progress_summary(
     timeline: &[ndc_core::AgentExecutionEvent],
     now: chrono::DateTime<chrono::Utc>,
 ) -> WorkflowProgressSummary {
@@ -776,7 +771,7 @@ pub(crate) fn compute_workflow_progress_summary(
     summary
 }
 
-pub(crate) fn group_timeline_by_stage<'a>(
+pub fn group_timeline_by_stage<'a>(
     timeline: &'a [ndc_core::AgentExecutionEvent],
 ) -> Vec<(String, Vec<&'a ndc_core::AgentExecutionEvent>)> {
     let mut groups = Vec::<(String, Vec<&'a ndc_core::AgentExecutionEvent>)>::new();
@@ -798,7 +793,7 @@ pub(crate) fn group_timeline_by_stage<'a>(
     groups
 }
 
-pub(crate) fn extract_preview<'a>(message: &'a str, marker: &str) -> Option<&'a str> {
+pub fn extract_preview<'a>(message: &'a str, marker: &str) -> Option<&'a str> {
     let idx = message.find(marker)?;
     let start = idx + marker.len();
     let rest = message[start..].trim_start();
@@ -806,19 +801,19 @@ pub(crate) fn extract_preview<'a>(message: &'a str, marker: &str) -> Option<&'a 
     Some(rest[..cut].trim())
 }
 
-pub(crate) fn extract_tool_args_preview(message: &str) -> Option<&str> {
+pub fn extract_tool_args_preview(message: &str) -> Option<&str> {
     extract_preview(message, "args_preview:")
 }
 
-pub(crate) fn extract_tool_result_preview(message: &str) -> Option<&str> {
+pub fn extract_tool_result_preview(message: &str) -> Option<&str> {
     extract_preview(message, "result_preview:")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::*;
     use ratatui::layout::Constraint;
-    use crate::tui::test_helpers::*;
 
     #[test]
     fn test_append_timeline_events_respects_capacity() {
@@ -1115,13 +1110,12 @@ mod tests {
 
     #[test]
     fn test_build_status_line_contains_session() {
-        let status = crate::agent_mode::AgentModeStatus {
+        let status = crate::AgentStatus {
             enabled: true,
             agent_name: "build".to_string(),
             provider: "openai".to_string(),
             model: "gpt-4o".to_string(),
             session_id: Some("agent-1234567890abcdef".to_string()),
-            active_task_id: None,
             project_id: None,
             project_root: None,
             worktree: None,
@@ -1142,13 +1136,12 @@ mod tests {
 
     #[test]
     fn test_build_status_line_manual_scroll() {
-        let status = crate::agent_mode::AgentModeStatus {
+        let status = crate::AgentStatus {
             enabled: true,
             agent_name: "build".to_string(),
             provider: "openai".to_string(),
             model: "gpt-4o".to_string(),
             session_id: Some("agent-1".to_string()),
-            active_task_id: None,
             project_id: None,
             project_root: None,
             worktree: None,
@@ -1471,5 +1464,4 @@ mod tests {
             assert!(matches!(state.verbosity, DisplayVerbosity::Normal));
         });
     }
-
 }

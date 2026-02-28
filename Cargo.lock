@@ -1411,6 +1411,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "futures-util",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
@@ -1448,14 +1449,13 @@ dependencies = [
  "axum",
  "chrono",
  "clap",
- "crossterm 0.29.0",
  "futures",
  "indicatif",
  "ndc-core",
  "ndc-decision",
  "ndc-runtime",
+ "ndc-tui",
  "prost",
- "ratatui",
  "regex",
  "serde",
  "serde_json",
@@ -1518,6 +1518,20 @@ dependencies = [
  "tracing",
  "ulid",
  "uuid",
+]
+
+[[package]]
+name = "ndc-tui"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "crossterm 0.29.0",
+ "ndc-core",
+ "ratatui",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

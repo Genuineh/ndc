@@ -30,8 +30,6 @@ tracing-subscriber = "0.3"
 
 # CLI
 clap = { version = "4", features = ["derive"] }
-ratatui = "0.29"
-crossterm = "0.29"
 
 # Progress bars
 indicatif = "0.17"
@@ -49,6 +47,7 @@ ulid = "1"
 ndc-core = { path = "../core" }
 ndc-decision = { path = "../decision" }
 ndc-runtime = { path = "../runtime" }
+ndc-tui = { path = "../tui" }
 
 # gRPC (optional)
 tonic = { version = "0.12", optional = true }

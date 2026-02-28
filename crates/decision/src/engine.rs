@@ -274,7 +274,7 @@ impl BasicDecisionEngine {
     }
 
     /// 判断是否为配置文件
-    fn is_config_file(path: &std::path::PathBuf) -> bool {
+    fn is_config_file(path: &std::path::Path) -> bool {
         let path_str = path.to_string_lossy();
         path_str.contains("Cargo.toml")
             || path_str.contains("package.json")

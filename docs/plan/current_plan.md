@@ -1,7 +1,7 @@
 # NDC 架构排查与重规划（2026-02-12）
 
 > 最新同步：2025-07-25  
-> 当前阶段：`P1-TuiCrate` 📋 规划完成（TUI 独立 Crate 提取，待实施）  
+> 当前阶段：`P1-TuiCrate` ✅ 已完成（TUI 独立 Crate 提取）  
 > 上一阶段：`P1-Scene` ✅ 已完成（repl.rs 模块化提取 + Scene 上下文自适应 TUI — 全部 4 Phases 完成）
 
 ## 当前快照（2025-07-25）
@@ -22,10 +22,11 @@
    - Phase 4 ✅: 收尾（测试迁移 + 集成验证 + 文档更新）
    - 设计文档: `docs/design/p1-scene-adaptive-tui.md`（v5）
    - 测试: 153 通过（chat_renderer: 42 + event_renderer: 32 + layout_manager: 48 + input_handler: 13 + scene: 12 + mod: 2 + repl: 4）
-6. **下一步**: P1-TuiCrate（TUI 独立 Crate 提取）
-   - 将 `crates/interface/src/tui/` 提取为独立 crate `ndc-tui`
+6. **已完成**: P1-TuiCrate（TUI 独立 Crate 提取）
+   - `crates/interface/src/tui/` 提取为独立 crate `ndc-tui`（149 测试全部通过）
    - redaction 模块迁移至 ndc-core（消除循环依赖）
-   - AgentBackend trait 实现依赖反转
+   - AgentBackend trait 实现依赖反转（14 async methods + 4 DTO types）
+   - ndc-interface 旧 tui/ 目录已删除，ratatui/crossterm 依赖移至 ndc-tui
    - 设计文档: `docs/design/p1-tui-crate-extraction.md`
 7. 后续：
    - P1 核心自治能力（GoldMemory Top-K 注入、失败分类重试、执行前 invariant 检查）

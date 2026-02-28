@@ -1,58 +1,65 @@
-//! TUI module — chat rendering, input handling, layout management.
+//! NDC TUI — Terminal User Interface for NDC.
 //!
-//! This module owns the visual and input sub-systems of the TUI REPL.
-//! `repl.rs` uses `crate::tui::*` to access all exported items.
+//! This crate provides the ratatui-based interactive session UI.
+//! It depends on `ndc-core` for domain types and defines the
+//! `AgentBackend` trait that `ndc-interface` implements.
 
-use std::collections::BTreeSet;
-
-use crate::redaction::RedactionMode;
-
+pub mod agent_backend;
 mod app;
 mod chat_renderer;
 mod commands;
 mod event_renderer;
 mod input_handler;
 mod layout_manager;
-pub(crate) mod scene;
+pub mod scene;
 #[cfg(test)]
-pub(crate) mod test_helpers;
+pub mod test_helpers;
 
-// Re-export all pub(crate) items for consumers (repl.rs, tests, etc.)
-// Also makes items available via `super::` for sub-module cross-references.
-pub(crate) use app::*;
-pub(crate) use chat_renderer::*;
-pub(crate) use commands::*;
-pub(crate) use event_renderer::*;
-pub(crate) use input_handler::*;
-pub(crate) use layout_manager::*;
+// Re-export the trait and DTOs as the primary public API
+pub use agent_backend::{
+    AgentBackend, AgentStatus, DynAgentBackend, ProjectCandidate, ProjectSwitchInfo,
+    TuiPermissionRequest,
+};
 
-// ── ReplVisualizationState (moved from repl.rs) ──────────────────────
+// Re-export TUI entry point and visualization state
+pub use app::*;
+pub use chat_renderer::*;
+pub use commands::*;
+pub use event_renderer::*;
+pub use input_handler::*;
+pub use layout_manager::*;
+
+use std::collections::BTreeSet;
+
+use ndc_core::redaction::RedactionMode;
+
+// ── ReplVisualizationState ──────────────────────────────────────────
 
 #[derive(Debug, Clone)]
-pub(crate) struct ReplVisualizationState {
-    pub(crate) show_thinking: bool,
-    pub(crate) show_tool_details: bool,
-    pub(crate) expand_tool_cards: bool,
-    pub(crate) live_events_enabled: bool,
-    pub(crate) show_usage_metrics: bool,
-    pub(crate) verbosity: DisplayVerbosity,
-    pub(crate) last_emitted_round: usize,
-    pub(crate) timeline_limit: usize,
-    pub(crate) timeline_cache: Vec<ndc_core::AgentExecutionEvent>,
-    pub(crate) redaction_mode: RedactionMode,
-    pub(crate) hidden_thinking_round_hints: BTreeSet<usize>,
-    pub(crate) current_workflow_stage: Option<String>,
-    pub(crate) current_workflow_stage_index: Option<u32>,
-    pub(crate) current_workflow_stage_total: Option<u32>,
-    pub(crate) current_workflow_stage_started_at: Option<chrono::DateTime<chrono::Utc>>,
-    pub(crate) session_token_total: u64,
-    pub(crate) latest_round_token_total: u64,
-    pub(crate) permission_blocked: bool,
-    pub(crate) permission_pending_message: Option<String>,
+pub struct ReplVisualizationState {
+    pub show_thinking: bool,
+    pub show_tool_details: bool,
+    pub expand_tool_cards: bool,
+    pub live_events_enabled: bool,
+    pub show_usage_metrics: bool,
+    pub verbosity: DisplayVerbosity,
+    pub last_emitted_round: usize,
+    pub timeline_limit: usize,
+    pub timeline_cache: Vec<ndc_core::AgentExecutionEvent>,
+    pub redaction_mode: RedactionMode,
+    pub hidden_thinking_round_hints: BTreeSet<usize>,
+    pub current_workflow_stage: Option<String>,
+    pub current_workflow_stage_index: Option<u32>,
+    pub current_workflow_stage_total: Option<u32>,
+    pub current_workflow_stage_started_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub session_token_total: u64,
+    pub latest_round_token_total: u64,
+    pub permission_blocked: bool,
+    pub permission_pending_message: Option<String>,
 }
 
 impl ReplVisualizationState {
-    pub(crate) fn new(show_thinking: bool) -> Self {
+    pub fn new(show_thinking: bool) -> Self {
         let show_thinking = env_bool("NDC_DISPLAY_THINKING").unwrap_or(show_thinking);
         let show_tool_details = env_bool("NDC_TOOL_DETAILS").unwrap_or(false);
         let expand_tool_cards = env_bool("NDC_TOOL_CARDS_EXPANDED").unwrap_or(false);
@@ -90,7 +97,7 @@ impl ReplVisualizationState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::test_helpers::*;
+    use crate::test_helpers::*;
 
     #[test]
     fn test_visualization_state_default() {
@@ -144,5 +151,4 @@ mod tests {
             },
         );
     }
-
 }

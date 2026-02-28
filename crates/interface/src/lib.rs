@@ -10,6 +10,7 @@
 //! - repl/: 交互式 REPL
 //! - daemon/: gRPC 服务
 
+mod agent_backend_impl;
 pub mod agent_mode;
 pub mod cli;
 pub mod daemon;
@@ -20,7 +21,6 @@ pub(crate) mod provider_config;
 pub mod redaction;
 pub mod repl;
 pub(crate) mod session_archive;
-pub(crate) mod tui;
 
 #[cfg(feature = "grpc")]
 pub mod generated;
