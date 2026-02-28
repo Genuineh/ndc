@@ -288,6 +288,17 @@ pub(crate) fn build_workflow_progress_bar<'a>(
         };
         spans.push(Span::styled(text, style));
     }
+
+    // Append Scene badge after progress bar
+    let scene = super::scene::classify_scene(current, None);
+    spans.push(Span::styled("  ", Style::default()));
+    spans.push(Span::styled(
+        format!("[{}]", scene.badge_label()),
+        Style::default()
+            .fg(scene.accent_color())
+            .add_modifier(Modifier::BOLD),
+    ));
+
     Line::from(spans)
 }
 
@@ -801,4 +812,664 @@ pub(crate) fn extract_tool_args_preview(message: &str) -> Option<&str> {
 
 pub(crate) fn extract_tool_result_preview(message: &str) -> Option<&str> {
     extract_preview(message, "result_preview:")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::layout::Constraint;
+    use crate::tui::test_helpers::*;
+
+    #[test]
+    fn test_append_timeline_events_respects_capacity() {
+        let mut timeline = Vec::new();
+        let mk = |idx: usize| ndc_core::AgentExecutionEvent {
+            kind: ndc_core::AgentExecutionEventKind::StepStart,
+            timestamp: chrono::Utc::now(),
+            message: format!("event-{}", idx),
+            round: idx,
+            tool_name: None,
+            tool_call_id: None,
+            duration_ms: None,
+            is_error: false,
+            workflow_stage: None,
+            workflow_detail: None,
+            workflow_stage_index: None,
+            workflow_stage_total: None,
+        };
+        let incoming = vec![mk(1), mk(2), mk(3)];
+        append_timeline_events(&mut timeline, &incoming, 2);
+        assert_eq!(timeline.len(), 2);
+        assert_eq!(timeline[0].message, "event-2");
+        assert_eq!(timeline[1].message, "event-3");
+    }
+
+    #[test]
+    fn test_resolve_stream_state_variants() {
+        assert_eq!(resolve_stream_state(false, false, false), "off");
+        assert_eq!(resolve_stream_state(false, true, false), "ready");
+        assert_eq!(resolve_stream_state(true, true, true), "live");
+        assert_eq!(resolve_stream_state(true, true, false), "poll");
+    }
+
+    #[test]
+    fn test_apply_stream_command() {
+        let mut viz = ReplVisualizationState::new(false);
+        let message = apply_stream_command(&mut viz, Some("off")).expect("off");
+        assert!(!viz.live_events_enabled);
+        assert!(message.contains("OFF"));
+
+        let message = apply_stream_command(&mut viz, Some("on")).expect("on");
+        assert!(viz.live_events_enabled);
+        assert!(message.contains("ON"));
+
+        let message = apply_stream_command(&mut viz, Some("status")).expect("status");
+        assert!(message.contains("ON"));
+
+        apply_stream_command(&mut viz, None).expect("toggle");
+        assert!(!viz.live_events_enabled);
+
+        let err = apply_stream_command(&mut viz, Some("bad")).expect_err("invalid mode");
+        assert!(err.contains("Usage: /stream"));
+    }
+
+    #[test]
+    fn test_extract_tool_result_preview() {
+        let msg = "tool_call_end: read (ok) | result_preview: README.md Cargo.toml";
+        assert_eq!(
+            extract_tool_result_preview(msg),
+            Some("README.md Cargo.toml")
+        );
+        assert_eq!(
+            extract_tool_result_preview("tool_call_end: read (ok)"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_extract_tool_previews_combined() {
+        let msg = "tool_call_end: read (ok) | args_preview: {\"path\":\"README.md\"} | result_preview: ok";
+        assert_eq!(
+            extract_tool_args_preview(msg),
+            Some("{\"path\":\"README.md\"}")
+        );
+        assert_eq!(extract_tool_result_preview(msg), Some("ok"));
+    }
+
+    #[test]
+    fn test_compute_workflow_progress_summary_counts_and_durations() {
+        let base = chrono::Utc::now();
+        let timeline = vec![
+            mk_event_at(
+                ndc_core::AgentExecutionEventKind::WorkflowStage,
+                "workflow_stage: planning | build_prompt_and_context",
+                0,
+                base,
+            ),
+            mk_event_at(
+                ndc_core::AgentExecutionEventKind::WorkflowStage,
+                "workflow_stage: executing | llm_round_start",
+                1,
+                base + chrono::Duration::milliseconds(120),
+            ),
+            mk_event_at(
+                ndc_core::AgentExecutionEventKind::WorkflowStage,
+                "workflow_stage: completing | finalize_response_and_idle",
+                1,
+                base + chrono::Duration::milliseconds(360),
+            ),
+        ];
+        let summary = compute_workflow_progress_summary(
+            &timeline,
+            base + chrono::Duration::milliseconds(600),
+        );
+
+        assert_eq!(summary.current_stage.as_deref(), Some("completing"));
+        assert_eq!(summary.current_stage_active_ms, 240);
+
+        let planning = summary.stages.get("planning").copied().unwrap_or_default();
+        let executing = summary.stages.get("executing").copied().unwrap_or_default();
+        let completing = summary
+            .stages
+            .get("completing")
+            .copied()
+            .unwrap_or_default();
+        assert_eq!(planning.count, 1);
+        assert_eq!(planning.total_ms, 120);
+        assert_eq!(executing.count, 1);
+        assert_eq!(executing.total_ms, 240);
+        assert_eq!(completing.count, 1);
+        assert_eq!(completing.total_ms, 240);
+    }
+
+    #[test]
+    fn test_group_timeline_by_stage_contiguous_partitions() {
+        let timeline = vec![
+            mk_event(
+                ndc_core::AgentExecutionEventKind::WorkflowStage,
+                "workflow_stage: planning | build_prompt_and_context",
+                0,
+                None,
+                None,
+                None,
+                false,
+            ),
+            mk_event(
+                ndc_core::AgentExecutionEventKind::StepStart,
+                "llm_round_1_start",
+                1,
+                None,
+                None,
+                None,
+                false,
+            ),
+            mk_event(
+                ndc_core::AgentExecutionEventKind::WorkflowStage,
+                "workflow_stage: executing | llm_round_start",
+                1,
+                None,
+                None,
+                None,
+                false,
+            ),
+            mk_event(
+                ndc_core::AgentExecutionEventKind::ToolCallEnd,
+                "tool_call_end: list (ok)",
+                1,
+                Some("list"),
+                Some("call-1"),
+                Some(3),
+                false,
+            ),
+        ];
+        let grouped = group_timeline_by_stage(&timeline);
+        assert_eq!(grouped.len(), 2);
+        assert_eq!(grouped[0].0, "planning");
+        assert_eq!(grouped[0].1.len(), 2);
+        assert_eq!(grouped[1].0, "executing");
+        assert_eq!(grouped[1].1.len(), 2);
+    }
+
+    #[test]
+    fn test_compute_runtime_metrics_counts_errors_and_duration() {
+        let timeline = vec![
+            mk_event(
+                ndc_core::AgentExecutionEventKind::ToolCallEnd,
+                "tool_call_end: list (ok)",
+                1,
+                Some("list"),
+                Some("call-1"),
+                Some(3),
+                false,
+            ),
+            mk_event(
+                ndc_core::AgentExecutionEventKind::ToolCallEnd,
+                "tool_call_end: write (error)",
+                1,
+                Some("write"),
+                Some("call-2"),
+                Some(7),
+                true,
+            ),
+            mk_event(
+                ndc_core::AgentExecutionEventKind::PermissionAsked,
+                "permission_asked: write requires approval",
+                1,
+                Some("write"),
+                Some("call-2"),
+                None,
+                true,
+            ),
+            mk_event(
+                ndc_core::AgentExecutionEventKind::Error,
+                "max_tool_calls_exceeded",
+                2,
+                None,
+                None,
+                None,
+                true,
+            ),
+        ];
+        let metrics = compute_runtime_metrics(&timeline);
+        assert_eq!(metrics.tool_calls_total, 2);
+        assert_eq!(metrics.tool_calls_failed, 1);
+        assert_eq!(metrics.permission_waits, 1);
+        assert_eq!(metrics.error_events, 1);
+        assert_eq!(metrics.avg_tool_duration_ms(), Some(5));
+        assert_eq!(metrics.tool_error_rate_percent(), 50);
+    }
+
+    #[test]
+    fn test_tui_layout_constraints_fixed_input_panel() {
+        let constraints = tui_layout_constraints(false, 1);
+        assert_eq!(
+            constraints,
+            vec![
+                Constraint::Length(1), // title bar
+                Constraint::Length(1), // workflow progress
+                Constraint::Min(5),    // conversation
+                Constraint::Length(1), // status hint
+                Constraint::Length(3), // input (1 line + 2 border)
+            ]
+        );
+    }
+
+    #[test]
+    fn test_tui_layout_constraints_with_permission() {
+        let constraints = tui_layout_constraints(true, 1);
+        assert_eq!(
+            constraints,
+            vec![
+                Constraint::Length(1), // title bar
+                Constraint::Length(1), // workflow progress
+                Constraint::Min(5),    // conversation
+                Constraint::Length(2), // permission bar
+                Constraint::Length(1), // status hint
+                Constraint::Length(3), // input (1 line + 2 border)
+            ]
+        );
+    }
+
+    #[test]
+    fn test_calc_log_scroll() {
+        assert_eq!(calc_log_scroll(3, 10), 0);
+        assert_eq!(calc_log_scroll(25, 10), 15);
+    }
+
+    #[test]
+    fn test_effective_log_scroll_auto_follow_and_manual() {
+        let mut view = TuiSessionViewState {
+            scroll_offset: 0,
+            auto_follow: true,
+            body_height: 10,
+        };
+        assert_eq!(effective_log_scroll(30, &view), 20);
+        view.auto_follow = false;
+        view.scroll_offset = 6;
+        assert_eq!(effective_log_scroll(30, &view), 6);
+    }
+
+    #[test]
+    fn test_workflow_overview_mode_parse() {
+        assert_eq!(
+            WorkflowOverviewMode::parse(None).expect("default"),
+            WorkflowOverviewMode::Verbose
+        );
+        assert_eq!(
+            WorkflowOverviewMode::parse(Some("compact")).expect("compact"),
+            WorkflowOverviewMode::Compact
+        );
+        assert_eq!(
+            WorkflowOverviewMode::parse(Some("verbose")).expect("verbose"),
+            WorkflowOverviewMode::Verbose
+        );
+        assert!(WorkflowOverviewMode::parse(Some("unknown")).is_err());
+    }
+
+    #[test]
+    fn test_short_session_id() {
+        assert_eq!(short_session_id(None), "-");
+        assert_eq!(short_session_id(Some("abc")), "abc");
+        assert_eq!(short_session_id(Some("1234567890abcdef")), "1234567890ab…");
+    }
+
+    #[test]
+    fn test_build_status_line_contains_session() {
+        let status = crate::agent_mode::AgentModeStatus {
+            enabled: true,
+            agent_name: "build".to_string(),
+            provider: "openai".to_string(),
+            model: "gpt-4o".to_string(),
+            session_id: Some("agent-1234567890abcdef".to_string()),
+            active_task_id: None,
+            project_id: None,
+            project_root: None,
+            worktree: None,
+        };
+        let viz = ReplVisualizationState::new(false);
+        let view = TuiSessionViewState::default();
+        let line = build_status_line(&status, &viz, true, &view, "live");
+        assert!(line.contains("provider=openai"));
+        assert!(line.contains("model=gpt-4o"));
+        assert!(line.contains("session=agent-123456"));
+        assert!(line.contains("workflow_progress=-"));
+        assert!(line.contains("workflow_ms="));
+        assert!(line.contains("blocked=no"));
+        assert!(line.contains("stream=live"));
+        assert!(line.contains("scroll=follow"));
+        assert!(line.contains("state=processing"));
+    }
+
+    #[test]
+    fn test_build_status_line_manual_scroll() {
+        let status = crate::agent_mode::AgentModeStatus {
+            enabled: true,
+            agent_name: "build".to_string(),
+            provider: "openai".to_string(),
+            model: "gpt-4o".to_string(),
+            session_id: Some("agent-1".to_string()),
+            active_task_id: None,
+            project_id: None,
+            project_root: None,
+            worktree: None,
+        };
+        let viz = ReplVisualizationState::new(false);
+        let view = TuiSessionViewState {
+            scroll_offset: 5,
+            auto_follow: false,
+            body_height: 10,
+        };
+        let line = build_status_line(&status, &viz, false, &view, "ready");
+        assert!(line.contains("workflow_progress=-"));
+        assert!(line.contains("workflow_ms="));
+        assert!(line.contains("blocked=no"));
+        assert!(line.contains("stream=ready"));
+        assert!(line.contains("scroll=manual"));
+        assert!(line.contains("state=idle"));
+    }
+
+    #[test]
+    fn test_workflow_progress_descriptor_known_and_unknown() {
+        assert_eq!(workflow_progress_descriptor(None, None, None), "-");
+        assert_eq!(
+            workflow_progress_descriptor(Some("unknown"), None, None),
+            "-"
+        );
+        assert_eq!(
+            workflow_progress_descriptor(Some("planning"), None, None),
+            "20%(1/5)"
+        );
+        assert_eq!(
+            workflow_progress_descriptor(Some("verifying"), None, None),
+            "80%(4/5)"
+        );
+        assert_eq!(
+            workflow_progress_descriptor(Some("executing"), Some(3), Some(5)),
+            "60%(3/5)"
+        );
+    }
+
+    #[test]
+    fn test_workflow_progress_bar_scene_badge() {
+        let theme = TuiTheme::default_dark();
+        let mut viz = ReplVisualizationState::new(false);
+        // No workflow stage → Chat badge
+        let line = build_workflow_progress_bar(&viz, &theme);
+        let plain = line_plain(&line);
+        assert!(
+            plain.contains("[对话]"),
+            "expected Chat badge, got: {}",
+            plain
+        );
+
+        // Planning → Plan badge
+        viz.current_workflow_stage = Some("planning".to_string());
+        let line = build_workflow_progress_bar(&viz, &theme);
+        let plain = line_plain(&line);
+        assert!(
+            plain.contains("[规划]"),
+            "expected Plan badge, got: {}",
+            plain
+        );
+
+        // Executing → Implement badge
+        viz.current_workflow_stage = Some("executing".to_string());
+        let line = build_workflow_progress_bar(&viz, &theme);
+        let plain = line_plain(&line);
+        assert!(
+            plain.contains("[实现]"),
+            "expected Implement badge, got: {}",
+            plain
+        );
+    }
+
+    #[test]
+    fn test_input_line_count_empty() {
+        assert_eq!(input_line_count(""), 1);
+    }
+
+    #[test]
+    fn test_input_line_count_single_line() {
+        assert_eq!(input_line_count("hello world"), 1);
+    }
+
+    #[test]
+    fn test_input_line_count_multiline() {
+        assert_eq!(input_line_count("line1\nline2\nline3"), 3);
+    }
+
+    #[test]
+    fn test_input_line_count_clamps_at_four() {
+        assert_eq!(input_line_count("1\n2\n3\n4\n5\n6"), 4);
+    }
+
+    #[test]
+    fn test_input_line_count_trailing_newline() {
+        assert_eq!(input_line_count("a\n"), 2);
+    }
+
+    #[test]
+    fn test_tui_layout_constraints_multiline_input() {
+        let c = tui_layout_constraints(false, 3);
+        // input_height = 3 + 2 = 5
+        assert_eq!(
+            c,
+            vec![
+                Constraint::Length(1), // title bar
+                Constraint::Length(1), // workflow progress
+                Constraint::Min(5),    // conversation
+                Constraint::Length(1), // status hint
+                Constraint::Length(5), // input (3 lines + 2 border)
+            ]
+        );
+    }
+
+    #[test]
+    fn test_tui_layout_constraints_multiline_with_permission() {
+        let c = tui_layout_constraints(true, 2);
+        assert_eq!(
+            c,
+            vec![
+                Constraint::Length(1), // title bar
+                Constraint::Length(1), // workflow progress
+                Constraint::Min(5),    // conversation
+                Constraint::Length(2), // permission bar
+                Constraint::Length(1), // status hint
+                Constraint::Length(4), // input (2 lines + 2 border)
+            ]
+        );
+    }
+
+    #[test]
+    fn test_format_token_count_small() {
+        assert_eq!(format_token_count(0), "0");
+        assert_eq!(format_token_count(500), "500");
+        assert_eq!(format_token_count(999), "999");
+    }
+
+    #[test]
+    fn test_format_token_count_thousands() {
+        assert_eq!(format_token_count(1000), "1.0k");
+        assert_eq!(format_token_count(1500), "1.5k");
+        assert_eq!(format_token_count(32000), "32.0k");
+        assert_eq!(format_token_count(128000), "128.0k");
+    }
+
+    #[test]
+    fn test_format_token_count_millions() {
+        assert_eq!(format_token_count(1_000_000), "1.0M");
+        assert_eq!(format_token_count(2_500_000), "2.5M");
+    }
+
+    #[test]
+    fn test_token_progress_bar_empty() {
+        assert_eq!(token_progress_bar(0, 128_000), "[░░░░░░░░]");
+    }
+
+    #[test]
+    fn test_token_progress_bar_half() {
+        let bar = token_progress_bar(64_000, 128_000);
+        assert_eq!(bar, "[████░░░░]");
+    }
+
+    #[test]
+    fn test_token_progress_bar_full() {
+        assert_eq!(token_progress_bar(128_000, 128_000), "[████████]");
+    }
+
+    #[test]
+    fn test_token_progress_bar_over_capacity() {
+        // Should clamp at 100%
+        assert_eq!(token_progress_bar(200_000, 128_000), "[████████]");
+    }
+
+    #[test]
+    fn test_token_progress_bar_zero_capacity() {
+        assert_eq!(token_progress_bar(100, 0), "[░░░░░░░░]");
+    }
+
+    #[test]
+    fn test_truncate_output_short() {
+        let (text, truncated) = truncate_output("hello", 200);
+        assert_eq!(text, "hello");
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn test_truncate_output_exact() {
+        let input = "a".repeat(200);
+        let (text, truncated) = truncate_output(&input, 200);
+        assert_eq!(text.len(), 200);
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn test_truncate_output_long() {
+        let input = "x".repeat(300);
+        let (text, truncated) = truncate_output(&input, 200);
+        assert_eq!(text.len(), 200);
+        assert!(truncated);
+    }
+
+    #[test]
+    fn test_truncate_output_unicode_boundary() {
+        // '中' is 3 bytes, so 2 chars = 6 bytes
+        let input = "中文测试数据超长";
+        let (text, truncated) = truncate_output(input, 6);
+        assert_eq!(text, "中文");
+        assert!(truncated);
+    }
+
+    #[test]
+    fn test_display_verbosity_parse() {
+        assert!(matches!(
+            DisplayVerbosity::parse("compact"),
+            Some(DisplayVerbosity::Compact)
+        ));
+        assert!(matches!(
+            DisplayVerbosity::parse("c"),
+            Some(DisplayVerbosity::Compact)
+        ));
+        assert!(matches!(
+            DisplayVerbosity::parse("normal"),
+            Some(DisplayVerbosity::Normal)
+        ));
+        assert!(matches!(
+            DisplayVerbosity::parse("n"),
+            Some(DisplayVerbosity::Normal)
+        ));
+        assert!(matches!(
+            DisplayVerbosity::parse("verbose"),
+            Some(DisplayVerbosity::Verbose)
+        ));
+        assert!(matches!(
+            DisplayVerbosity::parse("v"),
+            Some(DisplayVerbosity::Verbose)
+        ));
+        assert!(matches!(
+            DisplayVerbosity::parse("debug"),
+            Some(DisplayVerbosity::Verbose)
+        ));
+        assert!(DisplayVerbosity::parse("unknown").is_none());
+    }
+
+    #[test]
+    fn test_display_verbosity_cycle() {
+        assert!(matches!(
+            DisplayVerbosity::Compact.next(),
+            DisplayVerbosity::Normal
+        ));
+        assert!(matches!(
+            DisplayVerbosity::Normal.next(),
+            DisplayVerbosity::Verbose
+        ));
+        assert!(matches!(
+            DisplayVerbosity::Verbose.next(),
+            DisplayVerbosity::Compact
+        ));
+    }
+
+    #[test]
+    fn test_display_verbosity_label() {
+        assert_eq!(DisplayVerbosity::Compact.label(), "compact");
+        assert_eq!(DisplayVerbosity::Normal.label(), "normal");
+        assert_eq!(DisplayVerbosity::Verbose.label(), "verbose");
+    }
+
+    #[test]
+    fn test_capitalize_stage() {
+        assert_eq!(capitalize_stage("planning"), "Planning");
+        assert_eq!(capitalize_stage("discovery"), "Discovery");
+        assert_eq!(capitalize_stage(""), "");
+        assert_eq!(capitalize_stage("a"), "A");
+    }
+
+    #[test]
+    fn test_format_duration_ms() {
+        assert_eq!(format_duration_ms(450), "450ms");
+        assert_eq!(format_duration_ms(1500), "1.5s");
+        assert_eq!(format_duration_ms(60000), "1.0m");
+        assert_eq!(format_duration_ms(90000), "1.5m");
+        assert_eq!(format_duration_ms(0), "0ms");
+    }
+
+    #[test]
+    fn test_extract_tool_summary_shell() {
+        let s = extract_tool_summary("shell", r#"{"command":"ls -la","working_dir":"."}"#);
+        assert_eq!(s, "ls -la");
+    }
+
+    #[test]
+    fn test_extract_tool_summary_read() {
+        let s = extract_tool_summary("read", r#"{"path":"README.md"}"#);
+        assert_eq!(s, "README.md");
+    }
+
+    #[test]
+    fn test_extract_tool_summary_grep() {
+        let s = extract_tool_summary("grep", r#"{"pattern":"fn main"}"#);
+        assert_eq!(s, "fn main");
+    }
+
+    #[test]
+    fn test_extract_tool_summary_unknown_tool() {
+        let s = extract_tool_summary("custom_tool", r#"{"path":"src/lib.rs"}"#);
+        assert_eq!(s, "src/lib.rs");
+    }
+
+    #[test]
+    fn test_extract_tool_summary_no_match() {
+        let s = extract_tool_summary("custom_tool", r#"{"foo":"bar"}"#);
+        // Falls through to raw truncation
+        assert!(!s.is_empty());
+    }
+
+    #[test]
+    fn test_verbosity_env_override() {
+        with_env_overrides(&[("NDC_DISPLAY_VERBOSITY", Some("normal"))], || {
+            let state = ReplVisualizationState::new(false);
+            assert!(matches!(state.verbosity, DisplayVerbosity::Normal));
+        });
+    }
+
 }

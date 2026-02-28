@@ -552,3 +552,240 @@ pub(crate) fn handle_session_scroll_mouse(
         _ => false,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyModifiers, MouseEvent, MouseEventKind};
+    use crate::tui::test_helpers::*;
+
+    #[test]
+    fn test_env_char_default_and_override() {
+        with_env_overrides(&[("NDC_REPL_KEY_TOGGLE_THINKING", None)], || {
+            assert_eq!(env_char("NDC_REPL_KEY_TOGGLE_THINKING", 't'), 't');
+            unsafe {
+                std::env::set_var("NDC_REPL_KEY_TOGGLE_THINKING", "X");
+            }
+            assert_eq!(env_char("NDC_REPL_KEY_TOGGLE_THINKING", 't'), 'x');
+        });
+    }
+
+    #[test]
+    fn test_handle_session_scroll_key_page_navigation() {
+        use crossterm::event::KeyEvent;
+        let mut view = TuiSessionViewState {
+            scroll_offset: 0,
+            auto_follow: true,
+            body_height: 10,
+        };
+        assert!(handle_session_scroll_key(
+            &KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE),
+            &mut view,
+            30
+        ));
+        assert_eq!(view.scroll_offset, 15);
+        assert!(!view.auto_follow);
+        assert!(handle_session_scroll_key(
+            &KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
+            &mut view,
+            30
+        ));
+        assert_eq!(view.scroll_offset, 20);
+        assert!(view.auto_follow);
+        assert!(handle_session_scroll_key(
+            &KeyEvent::new(KeyCode::End, KeyModifiers::NONE),
+            &mut view,
+            30
+        ));
+        assert_eq!(view.scroll_offset, 20);
+        assert!(view.auto_follow);
+    }
+
+    #[test]
+    fn test_build_input_hint_line_for_slash() {
+        let hints = build_input_hint_lines("/", None);
+        let joined = hints.join(" ");
+        assert!(joined.contains("/help"));
+        assert!(joined.contains("/provider"));
+        assert!(joined.contains("Tab"));
+    }
+
+    #[test]
+    fn test_apply_slash_completion_cycles_matches() {
+        let mut input = "/p".to_string();
+        let mut state = None;
+        assert!(apply_slash_completion(&mut input, &mut state, false));
+        assert_eq!(input, "/provider");
+        assert!(apply_slash_completion(&mut input, &mut state, false));
+        assert_eq!(input, "/providers");
+        assert!(apply_slash_completion(&mut input, &mut state, true));
+        assert_eq!(input, "/provider");
+    }
+
+    #[test]
+    fn test_apply_slash_completion_provider_argument() {
+        let mut input = "/provider ".to_string();
+        let mut state = None;
+        assert!(apply_slash_completion(&mut input, &mut state, false));
+        assert_eq!(input, "/provider openai");
+        assert!(apply_slash_completion(&mut input, &mut state, false));
+        assert_eq!(input, "/provider anthropic");
+    }
+
+    #[test]
+    fn test_build_input_hint_line_selected_entry() {
+        let selected = ReplCommandCompletionState {
+            suggestions: vec![
+                "/help".to_string(),
+                "/provider".to_string(),
+                "/providers".to_string(),
+            ],
+            selected_index: 1,
+        };
+        let hints = build_input_hint_lines("/", Some(&selected));
+        let joined = hints.join(" ");
+        assert!(joined.contains("Selected [2/3]"));
+        assert!(joined.contains("/provider"));
+    }
+
+    #[test]
+    fn test_build_input_hint_line_provider_options() {
+        let hints = build_input_hint_lines("/provider ", None);
+        let joined = hints.join(" ");
+        assert!(joined.contains("openai"));
+        assert!(joined.contains("anthropic"));
+        assert!(joined.contains("ollama"));
+    }
+
+    #[test]
+    fn test_build_input_hint_line_workflow_options() {
+        let hints = build_input_hint_lines("/workflow ", None);
+        let joined = hints.join(" ");
+        assert!(joined.contains("compact"));
+        assert!(joined.contains("verbose"));
+    }
+
+    #[test]
+    fn test_apply_slash_completion_workflow_argument() {
+        let mut input = "/workflow ".to_string();
+        let mut state = None;
+        assert!(apply_slash_completion(&mut input, &mut state, false));
+        assert_eq!(input, "/workflow compact");
+        assert!(apply_slash_completion(&mut input, &mut state, false));
+        assert_eq!(input, "/workflow verbose");
+    }
+
+    #[test]
+    fn test_handle_session_scroll_mouse() {
+        let mut view = TuiSessionViewState {
+            scroll_offset: 0,
+            auto_follow: true,
+            body_height: 10,
+        };
+        let up = MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert!(handle_session_scroll_mouse(&up, &mut view, 30));
+        assert_eq!(view.scroll_offset, 17);
+        assert!(!view.auto_follow);
+        let down = MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert!(handle_session_scroll_mouse(&down, &mut view, 30));
+        assert_eq!(view.scroll_offset, 20);
+        assert!(view.auto_follow);
+    }
+
+    #[test]
+    fn test_detect_tui_shortcut_actions() {
+        use crossterm::event::KeyEvent;
+        let map = ReplTuiKeymap {
+            toggle_thinking: 't',
+            toggle_details: 'd',
+            toggle_tool_cards: 'e',
+            show_recent_thinking: 'y',
+            show_timeline: 'i',
+            clear_panel: 'l',
+        };
+        assert_eq!(
+            detect_tui_shortcut(
+                &KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
+                &map
+            ),
+            Some(TuiShortcutAction::ToggleThinking)
+        );
+        assert_eq!(
+            detect_tui_shortcut(
+                &KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+                &map
+            ),
+            Some(TuiShortcutAction::ToggleDetails)
+        );
+        assert_eq!(
+            detect_tui_shortcut(
+                &KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL),
+                &map
+            ),
+            Some(TuiShortcutAction::ToggleToolCards)
+        );
+        assert_eq!(
+            detect_tui_shortcut(
+                &KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL),
+                &map
+            ),
+            Some(TuiShortcutAction::ShowRecentThinking)
+        );
+        assert_eq!(
+            detect_tui_shortcut(
+                &KeyEvent::new(KeyCode::Char('i'), KeyModifiers::CONTROL),
+                &map
+            ),
+            Some(TuiShortcutAction::ShowTimeline)
+        );
+        assert_eq!(
+            detect_tui_shortcut(
+                &KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL),
+                &map
+            ),
+            Some(TuiShortcutAction::ClearPanel)
+        );
+        assert_eq!(
+            detect_tui_shortcut(
+                &KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+                &map
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn test_input_history_multiline_entries() {
+        let mut hist = InputHistory::new(10);
+        hist.push("line1\nline2".to_string());
+        hist.push("single".to_string());
+        assert_eq!(hist.entries.len(), 2);
+
+        // Navigate up to get latest
+        let up1 = hist.up("current");
+        assert_eq!(up1, Some("single"));
+        let up2 = hist.up("");
+        assert_eq!(up2, Some("line1\nline2"));
+    }
+
+    #[test]
+    fn test_input_history_down_restores_draft() {
+        let mut hist = InputHistory::new(10);
+        hist.push("old".to_string());
+
+        hist.up("my draft");
+        let down = hist.down();
+        assert_eq!(down, Some("my draft"));
+    }
+
+}

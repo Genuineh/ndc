@@ -613,7 +613,10 @@ impl NdcConfigLoader {
             }
         };
 
-        if !config.approved_permissions.contains(&permission.to_string()) {
+        if !config
+            .approved_permissions
+            .contains(&permission.to_string())
+        {
             config.approved_permissions.push(permission.to_string());
         }
 

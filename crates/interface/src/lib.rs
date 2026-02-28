@@ -20,6 +20,7 @@ pub(crate) mod provider_config;
 pub mod redaction;
 pub mod repl;
 pub(crate) mod session_archive;
+pub(crate) mod tui;
 
 #[cfg(feature = "grpc")]
 pub mod generated;

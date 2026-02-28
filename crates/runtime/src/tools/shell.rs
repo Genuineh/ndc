@@ -19,12 +19,27 @@ use tracing::debug;
 /// The security gateway (`enforce_shell_command`) handles risk-based
 /// prompting for everything else; this list is the absolute hard-stop.
 const DENIED_COMMANDS: &[&str] = &[
-    "shutdown", "reboot", "init", "poweroff", "halt",
-    "mkfs", "fdisk", "parted",
-    "iptables", "ip6tables", "nft",
-    "passwd", "useradd", "userdel", "usermod", "groupadd",
-    "mount", "umount",
-    "insmod", "rmmod", "modprobe",
+    "shutdown",
+    "reboot",
+    "init",
+    "poweroff",
+    "halt",
+    "mkfs",
+    "fdisk",
+    "parted",
+    "iptables",
+    "ip6tables",
+    "nft",
+    "passwd",
+    "useradd",
+    "userdel",
+    "usermod",
+    "groupadd",
+    "mount",
+    "umount",
+    "insmod",
+    "rmmod",
+    "modprobe",
     "systemctl",
 ];
 
@@ -108,7 +123,9 @@ impl Tool for ShellTool {
         // are provided, the caller passed a full shell command string (e.g. "echo hello"
         // or "cargo test --workspace"). Execute via `sh -c` so the shell interprets it,
         // rather than treating the whole string as an executable name.
-        let needs_shell = args.is_empty() && command.contains(|c: char| c.is_whitespace() || "|&;<>()$`\"'\\!{}*?[]#~".contains(c));
+        let needs_shell = args.is_empty()
+            && command
+                .contains(|c: char| c.is_whitespace() || "|&;<>()$`\"'\\!{}*?[]#~".contains(c));
 
         let mut cmd = if needs_shell {
             let mut c = Command::new("sh");
@@ -318,7 +335,11 @@ mod tests {
         assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
         let r = result.unwrap();
         assert!(r.success, "Command should succeed");
-        assert!(r.output.contains("hello"), "Output should contain 'hello', got: {}", r.output);
+        assert!(
+            r.output.contains("hello"),
+            "Output should contain 'hello', got: {}",
+            r.output
+        );
     }
 
     #[tokio::test]
