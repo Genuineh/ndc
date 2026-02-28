@@ -1479,16 +1479,16 @@ mod tests {
             tool_call_id: None,
             duration_ms: None,
             is_error: false,
-            workflow_stage: Some(ndc_core::AgentWorkflowStage::Discovery),
+            workflow_stage: Some(ndc_core::AgentWorkflowStage::Executing),
             workflow_detail: Some("tool_calls_planned".to_string()),
-            workflow_stage_index: Some(2),
+            workflow_stage_index: Some(5),
             workflow_stage_total: Some(ndc_core::AgentWorkflowStage::TOTAL_STAGES),
         };
         let mapped = AgentGrpcService::map_execution_event(event);
         assert_eq!(mapped.kind, "WorkflowStage");
-        assert_eq!(mapped.workflow_stage, "discovery");
+        assert_eq!(mapped.workflow_stage, "executing");
         assert_eq!(mapped.workflow_detail, "tool_calls_planned");
-        assert_eq!(mapped.workflow_stage_index, 2);
+        assert_eq!(mapped.workflow_stage_index, 5);
         assert_eq!(
             mapped.workflow_stage_total,
             ndc_core::AgentWorkflowStage::TOTAL_STAGES

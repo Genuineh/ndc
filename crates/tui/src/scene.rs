@@ -53,22 +53,22 @@ impl Scene {
 /// stage and the most recent tool name.
 ///
 /// The mapping is intentionally simple (pure pattern match, < 1 ms):
+/// - `"load_context"` / `"compress"` / `"analysis"` → Analyze
 /// - `"planning"`  → Plan
-/// - `"discovery"` → Analyze
 /// - `"executing"` + write/edit tool → Implement
 /// - `"executing"` + shell tool      → Debug
-/// - `"verifying"` → Review
+/// - `"verifying"` / `"completing"` / `"reporting"` → Review
 /// - everything else → Chat
 pub fn classify_scene(workflow_stage: Option<&str>, tool_name: Option<&str>) -> Scene {
     match workflow_stage {
+        Some("load_context") | Some("compress") | Some("analysis") => Scene::Analyze,
         Some("planning") => Scene::Plan,
-        Some("discovery") => Scene::Analyze,
         Some("executing") => match tool_name {
             Some(t) if is_write_tool(t) => Scene::Implement,
             Some(t) if is_shell_tool(t) => Scene::Debug,
             _ => Scene::Implement,
         },
-        Some("verifying") | Some("completing") => Scene::Review,
+        Some("verifying") | Some("completing") | Some("reporting") => Scene::Review,
         _ => Scene::Chat,
     }
 }
@@ -120,8 +120,9 @@ mod tests {
     }
 
     #[test]
-    fn test_discovery_stage() {
-        assert_eq!(classify_scene(Some("discovery"), None), Scene::Analyze);
+    fn test_discovery_stage_maps_to_chat() {
+        // Discovery was removed in P1-Workflow; old "discovery" stage falls to Chat
+        assert_eq!(classify_scene(Some("discovery"), None), Scene::Chat);
     }
 
     #[test]
@@ -177,6 +178,34 @@ mod tests {
     #[test]
     fn test_completing_stage() {
         assert_eq!(classify_scene(Some("completing"), None), Scene::Review);
+    }
+
+    // ── P1-Workflow new stage mappings ────────────────────────────
+
+    #[test]
+    fn test_load_context_stage() {
+        assert_eq!(classify_scene(Some("load_context"), None), Scene::Analyze);
+    }
+
+    #[test]
+    fn test_compress_stage() {
+        assert_eq!(classify_scene(Some("compress"), None), Scene::Analyze);
+    }
+
+    #[test]
+    fn test_analysis_stage() {
+        assert_eq!(classify_scene(Some("analysis"), None), Scene::Analyze);
+    }
+
+    #[test]
+    fn test_reporting_stage() {
+        assert_eq!(classify_scene(Some("reporting"), None), Scene::Review);
+    }
+
+    #[test]
+    fn test_discovery_stage_no_longer_valid() {
+        // Discovery was removed in P1-Workflow; fallback to Chat
+        assert_eq!(classify_scene(Some("discovery"), None), Scene::Chat);
     }
 
     // ── badge_label tests ─────────────────────────────────────────

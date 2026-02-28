@@ -306,7 +306,13 @@ pub fn event_to_lines(
             ));
         }
         ndc_core::AgentExecutionEventKind::SessionStatus
-        | ndc_core::AgentExecutionEventKind::Text => {}
+        | ndc_core::AgentExecutionEventKind::Text
+        | ndc_core::AgentExecutionEventKind::TodoStateChange
+        | ndc_core::AgentExecutionEventKind::AnalysisComplete
+        | ndc_core::AgentExecutionEventKind::PlanningComplete
+        | ndc_core::AgentExecutionEventKind::TodoExecutionStart
+        | ndc_core::AgentExecutionEventKind::TodoExecutionEnd
+        | ndc_core::AgentExecutionEventKind::Report => {}
     }
     lines
 }
@@ -731,7 +737,7 @@ mod tests {
         let mut viz = ReplVisualizationState::new(false);
         let event = mk_event(
             ndc_core::AgentExecutionEventKind::WorkflowStage,
-            "workflow_stage: discovery | tool_calls_planned",
+            "workflow_stage: executing | tool_calls_planned",
             2,
             None,
             None,
@@ -739,8 +745,8 @@ mod tests {
             false,
         );
         let lines = event_to_lines(&event, &mut viz);
-        assert_eq!(viz.current_workflow_stage.as_deref(), Some("discovery"));
-        assert_eq!(viz.current_workflow_stage_index, Some(2));
+        assert_eq!(viz.current_workflow_stage.as_deref(), Some("executing"));
+        assert_eq!(viz.current_workflow_stage_index, Some(5));
         assert_eq!(
             viz.current_workflow_stage_total,
             Some(ndc_core::AgentWorkflowStage::TOTAL_STAGES)
@@ -749,7 +755,7 @@ mod tests {
         assert!(!viz.permission_blocked);
         // Compact mode: single [Stage] line
         assert!(lines.iter().any(|line| line.contains("[Stage]")));
-        assert!(lines.iter().any(|line| line.contains("Discovery")));
+        assert!(lines.iter().any(|line| line.contains("Executing")));
     }
 
     #[test]
@@ -883,7 +889,7 @@ mod tests {
         let mut entries: Vec<ChatEntry> = Vec::new();
         append_workflow_overview(&mut entries, &viz, WorkflowOverviewMode::Verbose);
         let joined = entries_to_plain_text(&entries);
-        assert!(joined.contains("Workflow Overview (verbose) current=executing progress=60%(3/5)"));
+        assert!(joined.contains("Workflow Overview (verbose) current=executing progress=62%(5/8)"));
         assert!(joined.contains("Workflow Progress"));
         assert!(joined.contains("planning count="));
         assert!(joined.contains("executing count="));
@@ -1439,16 +1445,16 @@ mod tests {
             tool_call_id: None,
             duration_ms: None,
             is_error: false,
-            workflow_stage: Some(ndc_core::AgentWorkflowStage::Discovery),
+            workflow_stage: Some(ndc_core::AgentWorkflowStage::Analysis),
             workflow_detail: Some("scanning files".to_string()),
-            workflow_stage_index: Some(2),
+            workflow_stage_index: Some(3),
             workflow_stage_total: Some(ndc_core::AgentWorkflowStage::TOTAL_STAGES),
         };
         let lines = event_to_lines(&event, &mut viz);
         assert!(
             lines
                 .iter()
-                .any(|l| l.contains("Discovery") && l.contains("scanning files"))
+                .any(|l| l.contains("Analysis") && l.contains("scanning files"))
         );
     }
 

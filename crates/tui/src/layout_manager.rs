@@ -14,11 +14,14 @@ use super::{
 pub const TUI_SCROLL_STEP: usize = 3;
 pub const TIMELINE_CACHE_MAX_EVENTS: usize = 1_000;
 pub const WORKFLOW_STAGE_ORDER: &[&str] = &[
+    "load_context",
+    "compress",
+    "analysis",
     "planning",
-    "discovery",
     "executing",
     "verifying",
     "completing",
+    "reporting",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1186,15 +1189,15 @@ mod tests {
         );
         assert_eq!(
             workflow_progress_descriptor(Some("planning"), None, None),
-            "20%(1/5)"
+            "50%(4/8)"
         );
         assert_eq!(
             workflow_progress_descriptor(Some("verifying"), None, None),
-            "80%(4/5)"
+            "75%(6/8)"
         );
         assert_eq!(
-            workflow_progress_descriptor(Some("executing"), Some(3), Some(5)),
-            "60%(3/5)"
+            workflow_progress_descriptor(Some("executing"), Some(5), Some(8)),
+            "62%(5/8)"
         );
     }
 
@@ -1428,7 +1431,7 @@ mod tests {
     #[test]
     fn test_capitalize_stage() {
         assert_eq!(capitalize_stage("planning"), "Planning");
-        assert_eq!(capitalize_stage("discovery"), "Discovery");
+        assert_eq!(capitalize_stage("load_context"), "Load_context");
         assert_eq!(capitalize_stage(""), "");
         assert_eq!(capitalize_stage("a"), "A");
     }

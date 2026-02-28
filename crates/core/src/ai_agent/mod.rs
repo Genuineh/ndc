@@ -126,52 +126,109 @@ pub enum AgentExecutionEventKind {
     PermissionAsked,
     SessionStatus,
     Error,
+    /// TODO 状态变更事件（用于 TUI 实时刷新）
+    TodoStateChange,
+    /// 分析结果事件
+    AnalysisComplete,
+    /// 规划结果事件（含 TODO 列表）
+    PlanningComplete,
+    /// 单项 TODO 执行开始
+    TodoExecutionStart,
+    /// 单项 TODO 执行结束
+    TodoExecutionEnd,
+    /// 执行报告
+    Report,
 }
 
 /// Workflow 阶段（统一语义）
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentWorkflowStage {
+    LoadContext,
+    Compress,
+    Analysis,
     Planning,
-    Discovery,
     Executing,
     Verifying,
     Completing,
+    Reporting,
 }
 
 impl AgentWorkflowStage {
-    pub const TOTAL_STAGES: u32 = 5;
+    pub const TOTAL_STAGES: u32 = 8;
 
     pub fn as_str(self) -> &'static str {
         match self {
+            AgentWorkflowStage::LoadContext => "load_context",
+            AgentWorkflowStage::Compress => "compress",
+            AgentWorkflowStage::Analysis => "analysis",
             AgentWorkflowStage::Planning => "planning",
-            AgentWorkflowStage::Discovery => "discovery",
             AgentWorkflowStage::Executing => "executing",
             AgentWorkflowStage::Verifying => "verifying",
             AgentWorkflowStage::Completing => "completing",
+            AgentWorkflowStage::Reporting => "reporting",
         }
     }
 
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
+            "load_context" => Some(AgentWorkflowStage::LoadContext),
+            "compress" => Some(AgentWorkflowStage::Compress),
+            "analysis" => Some(AgentWorkflowStage::Analysis),
             "planning" => Some(AgentWorkflowStage::Planning),
-            "discovery" => Some(AgentWorkflowStage::Discovery),
             "executing" => Some(AgentWorkflowStage::Executing),
             "verifying" => Some(AgentWorkflowStage::Verifying),
             "completing" => Some(AgentWorkflowStage::Completing),
+            "reporting" => Some(AgentWorkflowStage::Reporting),
             _ => None,
         }
     }
 
     pub fn index(self) -> u32 {
         match self {
-            AgentWorkflowStage::Planning => 1,
-            AgentWorkflowStage::Discovery => 2,
-            AgentWorkflowStage::Executing => 3,
-            AgentWorkflowStage::Verifying => 4,
-            AgentWorkflowStage::Completing => 5,
+            AgentWorkflowStage::LoadContext => 1,
+            AgentWorkflowStage::Compress => 2,
+            AgentWorkflowStage::Analysis => 3,
+            AgentWorkflowStage::Planning => 4,
+            AgentWorkflowStage::Executing => 5,
+            AgentWorkflowStage::Verifying => 6,
+            AgentWorkflowStage::Completing => 7,
+            AgentWorkflowStage::Reporting => 8,
         }
     }
+}
+
+/// TODO 执行场景分类
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoExecutionScenario {
+    /// 代码变更场景 — 强制 TDD 红绿循环 (支持 Scene 降级)
+    Coding,
+    /// 非代码场景 — 执行→验证→文档
+    Normal,
+    /// 单步短命令或纯文答 — 快路径跳过多余步骤
+    FastPath,
+}
+
+/// LoadContext 阶段的输出
+#[derive(Debug, Clone)]
+pub struct ContextSnapshot {
+    pub tool_count: usize,
+    pub skill_count: usize,
+    pub mcp_tool_count: usize,
+    pub memory_facts: Vec<String>,
+    pub project_constraints: Vec<String>,
+    pub estimated_tokens: usize,
+}
+
+/// Analysis 阶段的输出
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnalysisResult {
+    pub summary: String,
+    pub affected_scope: Vec<String>,
+    pub constraints: Vec<String>,
+    pub scenario_hint: TodoExecutionScenario,
+    pub risks: Vec<String>,
 }
 
 impl std::fmt::Display for AgentWorkflowStage {
@@ -455,5 +512,115 @@ mod tests {
         let err = AgentError::PermissionDenied("Operation not allowed".to_string());
         assert!(err.to_string().contains("Permission denied"));
         assert!(err.to_string().contains("Operation not allowed"));
+    }
+
+    // ── P1-Workflow Phase 1: 8-stage pipeline tests (RED) ──────────
+
+    #[test]
+    fn test_workflow_stage_total_is_8() {
+        assert_eq!(AgentWorkflowStage::TOTAL_STAGES, 8);
+    }
+
+    #[test]
+    fn test_workflow_stage_8_variants_as_str_roundtrip() {
+        let stages = [
+            (AgentWorkflowStage::LoadContext, "load_context", 1),
+            (AgentWorkflowStage::Compress, "compress", 2),
+            (AgentWorkflowStage::Analysis, "analysis", 3),
+            (AgentWorkflowStage::Planning, "planning", 4),
+            (AgentWorkflowStage::Executing, "executing", 5),
+            (AgentWorkflowStage::Verifying, "verifying", 6),
+            (AgentWorkflowStage::Completing, "completing", 7),
+            (AgentWorkflowStage::Reporting, "reporting", 8),
+        ];
+        for (stage, expected_str, expected_index) in stages {
+            assert_eq!(stage.as_str(), expected_str, "as_str failed for {:?}", stage);
+            assert_eq!(stage.index(), expected_index, "index failed for {:?}", stage);
+            let parsed = AgentWorkflowStage::parse(expected_str)
+                .unwrap_or_else(|| panic!("parse failed for {}", expected_str));
+            assert_eq!(parsed, stage, "roundtrip failed for {}", expected_str);
+        }
+    }
+
+    #[test]
+    fn test_workflow_stage_discovery_removed() {
+        // Discovery is replaced by LoadContext+Analysis; parse should return None
+        assert!(AgentWorkflowStage::parse("discovery").is_none());
+    }
+
+    #[test]
+    fn test_todo_execution_scenario_serde_roundtrip() {
+        let scenarios = [
+            TodoExecutionScenario::Coding,
+            TodoExecutionScenario::Normal,
+            TodoExecutionScenario::FastPath,
+        ];
+        for s in &scenarios {
+            let json = serde_json::to_string(s).unwrap();
+            let parsed: TodoExecutionScenario = serde_json::from_str(&json).unwrap();
+            assert_eq!(&parsed, s);
+        }
+    }
+
+    #[test]
+    fn test_todo_execution_scenario_snake_case_names() {
+        assert_eq!(
+            serde_json::to_string(&TodoExecutionScenario::Coding).unwrap(),
+            "\"coding\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TodoExecutionScenario::FastPath).unwrap(),
+            "\"fast_path\""
+        );
+    }
+
+    #[test]
+    fn test_context_snapshot_default_fields() {
+        let snap = ContextSnapshot {
+            tool_count: 23,
+            skill_count: 2,
+            mcp_tool_count: 1,
+            memory_facts: vec!["fact1".into()],
+            project_constraints: vec![],
+            estimated_tokens: 5000,
+        };
+        assert_eq!(snap.tool_count, 23);
+        assert_eq!(snap.memory_facts.len(), 1);
+        assert_eq!(snap.estimated_tokens, 5000);
+    }
+
+    #[test]
+    fn test_analysis_result_serde_roundtrip() {
+        let result = AnalysisResult {
+            summary: "Implement login feature".into(),
+            affected_scope: vec!["src/auth.rs".into()],
+            constraints: vec!["must use TDD".into()],
+            scenario_hint: TodoExecutionScenario::Coding,
+            risks: vec![],
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        let parsed: AnalysisResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.summary, result.summary);
+        assert_eq!(parsed.scenario_hint, TodoExecutionScenario::Coding);
+    }
+
+    #[test]
+    fn test_new_event_kinds_exist() {
+        // Verify all 6 new event kinds can be constructed and are distinct
+        let kinds = [
+            AgentExecutionEventKind::TodoStateChange,
+            AgentExecutionEventKind::AnalysisComplete,
+            AgentExecutionEventKind::PlanningComplete,
+            AgentExecutionEventKind::TodoExecutionStart,
+            AgentExecutionEventKind::TodoExecutionEnd,
+            AgentExecutionEventKind::Report,
+        ];
+        for (i, a) in kinds.iter().enumerate() {
+            for (j, b) in kinds.iter().enumerate() {
+                if i != j {
+                    assert_ne!(a, b);
+                }
+            }
+        }
     }
 }

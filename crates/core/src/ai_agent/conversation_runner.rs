@@ -394,7 +394,7 @@ impl ConversationRunner {
                     &mut session_state,
                     &mut execution_events,
                     round,
-                    AgentWorkflowStage::Discovery,
+                    AgentWorkflowStage::Executing,
                     "tool_calls_planned",
                 )
                 .await;

@@ -731,7 +731,14 @@ pub fn event_to_entries(
                 sanitize_text(&event.message, viz_state.redaction_mode)
             )));
         }
-        AgentExecutionEventKind::SessionStatus | AgentExecutionEventKind::Text => {}
+        AgentExecutionEventKind::SessionStatus
+        | AgentExecutionEventKind::Text
+        | AgentExecutionEventKind::TodoStateChange
+        | AgentExecutionEventKind::AnalysisComplete
+        | AgentExecutionEventKind::PlanningComplete
+        | AgentExecutionEventKind::TodoExecutionStart
+        | AgentExecutionEventKind::TodoExecutionEnd
+        | AgentExecutionEventKind::Report => {}
     }
     entries
 }
