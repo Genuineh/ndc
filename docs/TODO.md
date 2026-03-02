@@ -1,6 +1,6 @@
 # NDC TODO / Backlog
 
-> 更新时间：2025-07-25（v17）  
+> 更新时间：2026-03-02（v18）  
 > 已完成里程碑归档：`docs/plan/archive/COMPLETED_MILESTONES.md`  
 > 关联文档：`docs/plan/current_plan.md` · `docs/USER_GUIDE.md` · `docs/design/`
 
@@ -16,7 +16,7 @@
 | **P1-Scene** | ✅ 已完成 | repl.rs 模块化提取 + Scene 上下文自适应 TUI |
 | **P1-TuiCrate** | ✅ 已完成 | TUI 独立 Crate 提取（ndc-tui） |
 | **P1-TaskTodo** | ✅ 已完成 | Agent 驱动 TODO 规划流程（Task 系统集成） |
-| **P1-Workflow** | 待开始 | TODO 驱动工作流重构（Pipeline 重新设计） |
+| **P1-Workflow** | 🔄 进行中 | TODO 驱动工作流重构（Pipeline 重新设计，Phase 1-4 已完成） |
 | **P1** | 待开始 | 核心自治能力与治理 |
 | **P2** | 待开始 | 多 Agent 与知识回灌体验 |
 
@@ -426,12 +426,46 @@ LoadContext → Compress → Analysis → Planning → [TodoLoop] → Review →
 
 | Phase | 内容 | 预估 |
 |-------|------|------|
-| Phase 1 | Core 模型扩展：`AgentWorkflowStage` 8 阶段 + `TodoExecutionScenario` 枚举 + Scene 映射更新 | 1 天 |
-| Phase 2 | ConversationRunner 主循环重构：LoadContext→Compress→Analysis→Planning 阶段实现 | 2 天 |
-| Phase 3 | TODO 执行循环：Per-TODO Classify→Execute→Review→MarkDone + TDD 路径 | 2 天 |
-| Phase 4 | Verifying + Completing + Reporting 阶段实现 | 1 天 |
+| Phase 1 | ✅ Core 模型扩展：`AgentWorkflowStage` 8 阶段 + `TodoExecutionScenario` 枚举 + Scene 映射更新 | 1 天 |
+| Phase 2 | ✅ ConversationRunner 前 4 阶段方法：LoadContext→Compress→Analysis→Planning | 2 天 |
+| Phase 3 | ✅ TODO 执行循环：Per-TODO Classify→Execute→Review→MarkDone + TDD 路径 | 2 天 |
+| Phase 4 | ✅ Verifying + Completing + Reporting 阶段实现 | 1 天 |
 | Phase 5 | TUI 适配：Workflow Progress Bar 更新 + TODO 状态实时联动 + Scene 映射 | 1 天 |
 | Phase 6 | 端到端测试 + 文档收尾 | 1 天 |
+
+#### Phase 1: Core 模型扩展 ✅ `d4f56fb`
+
+- **AgentWorkflowStage**: 5 阶段 → 8 阶段（LoadContext/Compress/Analysis/Planning/Executing/Verifying/Completing/Reporting）
+- **新增类型**: `TodoExecutionScenario`(Coding/Normal/FastPath)、`ContextSnapshot`、`AnalysisResult`
+- **新增事件**: 6 个 `AgentExecutionEventKind` 变体（TodoStateChange/AnalysisComplete/PlanningComplete/TodoExecutionStart/TodoExecutionEnd/Report）
+- **Scene 映射**: `classify_scene()` 更新支持所有 8 阶段（load_context/compress/analysis→Analyze, reporting→Review）
+- **Progress Bar**: `WORKFLOW_STAGE_ORDER` 更新为 8 条目，百分比计算适配
+- **Match exhaustiveness**: `event_renderer.rs` + `chat_renderer.rs` 新事件类型覆盖
+- **测试**: +13 新测试，全部 GREEN
+
+#### Phase 2: ConversationRunner 前 4 阶段 ✅ `02e9995`
+
+- **`estimate_context_tokens()`**: ~4 chars/token 粗估算法
+- **`load_context()`**: 收集工具数量 + token 估算 → `ContextSnapshot`
+- **`compress_context()`**: 超 32K token 阈值时裁剪消息，否则跳过
+- **`run_analysis_round()`**: 独立 LLM 调用 → JSON 解析为 `AnalysisResult`（含降级回退）
+- **`run_planning_round()`**: 独立 LLM 调用 → `Vec<String>` TODOs（≥1 保证，空输出自动兜底）
+- **测试**: +9 新测试（token 估算/load_context/compress 条件/analysis JSON/planning 正常+空输出回退），全部 GREEN
+
+#### Phase 3: TODO 执行循环 ✅
+
+- **`classify_scenario()`**: 关键词匹配判断场景（implement/refactor/fix/add test/write/bug → Coding，其余 → Normal，FastPath 透传）
+- **`run_rounds_with_context()`**: 可复用 LLM 循环 — 注入 context prompt 为 system message，执行 LLM 轮次 + 工具调用
+- **`execute_single_todo()`**: 完整单 TODO 生命周期 — emit TodoExecutionStart → classify_scenario → 构建 TDD/Normal/FastPath prompt → run_rounds_with_context → emit TodoExecutionEnd
+- **测试**: +6 新测试（classify_scenario 3 个场景 + run_rounds_with_context + execute_single_todo 事件 + TDD prompt），全部 GREEN
+
+#### Phase 4: Verifying + Completing + Reporting ✅
+
+- **`run_global_verification()`**: emit Verifying stage → LLM 全局回归验证，汇总所有 TODO 完成状态
+- **`run_completion()`**: emit Completing stage → LLM 文档收尾 + 知识回灌
+- **`generate_execution_report()`**: emit Reporting stage → LLM 生成执行报告（TODO 完成率 + 变更摘要 + 测试结果）→ emit Report 事件
+- **测试**: +3 新测试（verification/completion/report 各 1，验证 stage 事件），全都 GREEN
+- **总计**: conversation_runner 测试 24 个（原始 3 + Phase 2 9 + Phase 3 6 + Phase 4 3），全部 GREEN
 
 ---
 

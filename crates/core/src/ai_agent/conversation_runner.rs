@@ -886,6 +886,416 @@ impl ConversationRunner {
         Ok(todos)
     }
 
+    // ── Phase 3: TODO execution loop ────────────────────────────────
+
+    /// Classify a TODO title into an execution scenario.
+    /// Uses keyword matching on the title, with the analysis hint as default.
+    #[allow(dead_code)]
+    fn classify_scenario(
+        title: &str,
+        analysis_hint: &TodoExecutionScenario,
+    ) -> TodoExecutionScenario {
+        if matches!(analysis_hint, TodoExecutionScenario::FastPath) {
+            return TodoExecutionScenario::FastPath;
+        }
+        let lower = title.to_lowercase();
+        let coding_keywords = [
+            "implement", "refactor", "fix", "add test", "write test", "unit test",
+            "write", "create", "build", "modify", "update code", "add function",
+            "add method", "extract", "move", "rename", "delete code", "remove code",
+            "bug", "patch",
+        ];
+        for kw in &coding_keywords {
+            if lower.contains(kw) {
+                return TodoExecutionScenario::Coding;
+            }
+        }
+        // Fall back to analysis hint
+        *analysis_hint
+    }
+
+    /// Run LLM round loop with an injected context prompt.
+    /// Returns (final_content, tool_calls_made).
+    #[allow(dead_code)]
+    async fn run_rounds_with_context(
+        &self,
+        mut messages: Vec<Message>,
+        context_prompt: &str,
+        session_state: &mut AgentSession,
+        execution_events: &mut Vec<AgentExecutionEvent>,
+        round_start: usize,
+    ) -> Result<(String, Vec<AgentToolCall>), AgentError> {
+        // Inject context as a system message
+        messages.push(Message {
+            role: MessageRole::System,
+            content: context_prompt.to_string(),
+            name: None,
+            tool_calls: None,
+        });
+
+        let mut round = round_start;
+        let mut tool_call_count = 0usize;
+        let mut all_tool_calls: Vec<AgentToolCall> = Vec::new();
+
+        let final_content = loop {
+            round += 1;
+
+            if tool_call_count >= self.config.max_tool_calls {
+                warn!("Max tool calls exceeded in run_rounds_with_context: {}", tool_call_count);
+                return Ok((
+                    format!(
+                        "Reached maximum tool calls ({}) for this TODO.",
+                        self.config.max_tool_calls
+                    ),
+                    all_tool_calls,
+                ));
+            }
+
+            truncate_messages(&mut messages, MAX_CONVERSATION_MESSAGES);
+
+            let tool_schemas = self.tool_executor.tool_schemas();
+            let request = CompletionRequest {
+                model: self.provider.config().default_model.clone(),
+                messages: messages.clone(),
+                temperature: Some(0.1),
+                max_tokens: Some(4096),
+                top_p: None,
+                frequency_penalty: None,
+                presence_penalty: None,
+                stop: None,
+                stream: false,
+                tools: if tool_schemas.is_empty() {
+                    None
+                } else {
+                    Some(tool_schemas)
+                },
+            };
+
+            let response = self
+                .provider
+                .complete(&request)
+                .await
+                .map_err(|e| AgentError::LlmError(e.to_string()))?;
+
+            let assistant_message = response
+                .choices
+                .first()
+                .ok_or_else(|| AgentError::LlmError("No response from LLM".to_string()))?
+                .message
+                .clone();
+
+            if let Some(ref tool_calls) = assistant_message.tool_calls
+                && !tool_calls.is_empty()
+            {
+                let session_tool_calls: Vec<AgentToolCall> = tool_calls
+                    .iter()
+                    .map(|tc| AgentToolCall {
+                        name: tc.function.name.clone(),
+                        arguments: tc.function.arguments.clone(),
+                        id: tc.id.clone(),
+                    })
+                    .collect();
+
+                let tool_results = self
+                    .execute_tool_calls(tool_calls, round, execution_events, session_state)
+                    .await?;
+
+                for tc in &session_tool_calls {
+                    all_tool_calls.push(tc.clone());
+                }
+                tool_call_count += tool_calls.len();
+
+                messages.push(assistant_message.clone());
+                for result in &tool_results {
+                    let sanitized = sanitize_tool_output(&result.content);
+                    messages.push(Message {
+                        role: MessageRole::Tool,
+                        content: sanitized,
+                        name: Some(result.tool_call_id.clone()),
+                        tool_calls: None,
+                    });
+                }
+                continue;
+            }
+
+            break assistant_message.content;
+        };
+
+        Ok((final_content, all_tool_calls))
+    }
+
+    /// Execute a single TODO item: emit events, classify scenario, run rounds, mark done.
+    #[allow(dead_code, clippy::too_many_arguments)]
+    async fn execute_single_todo(
+        &self,
+        todo_index: usize,
+        todo_title: &str,
+        analysis: &AnalysisResult,
+        messages: &[Message],
+        session_state: &mut AgentSession,
+        execution_events: &mut Vec<AgentExecutionEvent>,
+        round: usize,
+    ) -> Result<(String, Vec<AgentToolCall>), AgentError> {
+        // Emit Executing stage for this TODO
+        self.emit_workflow_stage(
+            session_state,
+            execution_events,
+            round,
+            AgentWorkflowStage::Executing,
+            &format!("todo_{}: {}", todo_index, todo_title),
+        )
+        .await;
+
+        // Emit TodoExecutionStart
+        self.emit_event(
+            session_state,
+            execution_events,
+            AgentExecutionEvent {
+                kind: AgentExecutionEventKind::TodoExecutionStart,
+                timestamp: chrono::Utc::now(),
+                message: format!("todo_start: #{} {}", todo_index, todo_title),
+                round,
+                tool_name: None,
+                tool_call_id: None,
+                duration_ms: None,
+                is_error: false,
+                workflow_stage: Some(AgentWorkflowStage::Executing),
+                workflow_detail: Some(format!("todo_{}", todo_index)),
+                workflow_stage_index: Some(AgentWorkflowStage::Executing.index()),
+                workflow_stage_total: Some(AgentWorkflowStage::TOTAL_STAGES),
+            },
+        )
+        .await;
+
+        let scenario = Self::classify_scenario(todo_title, &analysis.scenario_hint);
+
+        // Build context prompt based on scenario
+        let context_prompt = match scenario {
+            TodoExecutionScenario::Coding => format!(
+                "TODO #{}: {}\n\
+                 Scenario: Coding — follow TDD red-green cycle:\n\
+                 1. Red: write a failing test first\n\
+                 2. Green: write minimal implementation to pass\n\
+                 3. Regress: run all tests to confirm no regression\n\
+                 4. Doc: update documentation if needed\n\
+                 Do NOT skip the test step.",
+                todo_index, todo_title
+            ),
+            TodoExecutionScenario::Normal => format!(
+                "TODO #{}: {}\n\
+                 Scenario: Normal — execute the task, verify results, update docs.",
+                todo_index, todo_title
+            ),
+            TodoExecutionScenario::FastPath => format!(
+                "TODO #{}: {}\n\
+                 Scenario: FastPath — quick execution, minimal overhead.",
+                todo_index, todo_title
+            ),
+        };
+
+        let (content, tool_calls) = self
+            .run_rounds_with_context(
+                messages.to_vec(),
+                &context_prompt,
+                session_state,
+                execution_events,
+                round,
+            )
+            .await?;
+
+        // Emit TodoExecutionEnd
+        self.emit_event(
+            session_state,
+            execution_events,
+            AgentExecutionEvent {
+                kind: AgentExecutionEventKind::TodoExecutionEnd,
+                timestamp: chrono::Utc::now(),
+                message: format!("todo_end: #{} {}", todo_index, todo_title),
+                round,
+                tool_name: None,
+                tool_call_id: None,
+                duration_ms: None,
+                is_error: false,
+                workflow_stage: Some(AgentWorkflowStage::Executing),
+                workflow_detail: Some(format!("todo_{}_done", todo_index)),
+                workflow_stage_index: Some(AgentWorkflowStage::Executing.index()),
+                workflow_stage_total: Some(AgentWorkflowStage::TOTAL_STAGES),
+            },
+        )
+        .await;
+
+        Ok((content, tool_calls))
+    }
+
+    // ── Phase 4: Verifying + Completing + Reporting ─────────────────
+
+    /// Global verification: check all TODOs done, run regression tests.
+    #[allow(dead_code)]
+    async fn run_global_verification(
+        &self,
+        todos: &[String],
+        messages: &[Message],
+        session_state: &mut AgentSession,
+        execution_events: &mut Vec<AgentExecutionEvent>,
+        round: usize,
+    ) -> Result<String, AgentError> {
+        self.emit_workflow_stage(
+            session_state,
+            execution_events,
+            round,
+            AgentWorkflowStage::Verifying,
+            "global_regression",
+        )
+        .await;
+
+        let todo_list_str: String = todos
+            .iter()
+            .enumerate()
+            .map(|(i, t)| format!("  {}. {}", i + 1, t))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let verify_prompt = format!(
+            "Verify all completed TODOs. Check for regressions.\n\
+             TODOs completed:\n{}\n\
+             Summarize verification results.",
+            todo_list_str
+        );
+
+        let (content, _) = self
+            .run_rounds_with_context(
+                messages.to_vec(),
+                &verify_prompt,
+                session_state,
+                execution_events,
+                round,
+            )
+            .await?;
+
+        Ok(content)
+    }
+
+    /// Completion phase: documentation updates, memory/knowledge persistence.
+    #[allow(dead_code)]
+    async fn run_completion(
+        &self,
+        todos: &[String],
+        messages: &[Message],
+        session_state: &mut AgentSession,
+        execution_events: &mut Vec<AgentExecutionEvent>,
+        round: usize,
+    ) -> Result<String, AgentError> {
+        self.emit_workflow_stage(
+            session_state,
+            execution_events,
+            round,
+            AgentWorkflowStage::Completing,
+            "documentation_and_memory",
+        )
+        .await;
+
+        let todo_list_str: String = todos
+            .iter()
+            .enumerate()
+            .map(|(i, t)| format!("  {}. {}", i + 1, t))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let completion_prompt = format!(
+            "All TODOs are done. Update documentation and save learnings.\n\
+             Completed TODOs:\n{}\n\
+             Summarize what was changed and any documentation updates.",
+            todo_list_str
+        );
+
+        let (content, _) = self
+            .run_rounds_with_context(
+                messages.to_vec(),
+                &completion_prompt,
+                session_state,
+                execution_events,
+                round,
+            )
+            .await?;
+
+        Ok(content)
+    }
+
+    /// Generate a final execution report with TODO completion rate, changes, test results.
+    #[allow(dead_code)]
+    async fn generate_execution_report(
+        &self,
+        todos: &[String],
+        verification_summary: &str,
+        messages: &[Message],
+        session_state: &mut AgentSession,
+        execution_events: &mut Vec<AgentExecutionEvent>,
+        round: usize,
+    ) -> Result<String, AgentError> {
+        self.emit_workflow_stage(
+            session_state,
+            execution_events,
+            round,
+            AgentWorkflowStage::Reporting,
+            "generating_report",
+        )
+        .await;
+
+        let todo_list_str: String = todos
+            .iter()
+            .enumerate()
+            .map(|(i, t)| format!("  {}. {}", i + 1, t))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let report_prompt = format!(
+            "Generate an execution report.\n\
+             TODOs ({total} total):\n{todos}\n\
+             Verification: {verify}\n\
+             Include: completion rate, change summary, test results, risks.",
+            total = todos.len(),
+            todos = todo_list_str,
+            verify = verification_summary,
+        );
+
+        let (content, _) = self
+            .run_rounds_with_context(
+                messages.to_vec(),
+                &report_prompt,
+                session_state,
+                execution_events,
+                round,
+            )
+            .await?;
+
+        // Emit Report event
+        self.emit_event(
+            session_state,
+            execution_events,
+            AgentExecutionEvent {
+                kind: AgentExecutionEventKind::Report,
+                timestamp: chrono::Utc::now(),
+                message: format!(
+                    "execution_report: {} todos, verification: {}",
+                    todos.len(),
+                    truncate_for_event(verification_summary, 100)
+                ),
+                round,
+                tool_name: None,
+                tool_call_id: None,
+                duration_ms: None,
+                is_error: false,
+                workflow_stage: Some(AgentWorkflowStage::Reporting),
+                workflow_detail: Some("report_generated".to_string()),
+                workflow_stage_index: Some(AgentWorkflowStage::Reporting.index()),
+                workflow_stage_total: Some(AgentWorkflowStage::TOTAL_STAGES),
+            },
+        )
+        .await;
+
+        Ok(content)
+    }
+
     // ── tool execution ──────────────────────────────────────────────
 
     async fn execute_tool_calls(
@@ -1923,6 +2333,427 @@ mod tests {
         assert!(
             !todos.is_empty(),
             "must produce at least 1 TODO even with empty LLM output"
+        );
+    }
+
+    // ── Phase 3: TODO execution loop tests ──────────────────────────
+
+    #[test]
+    fn test_classify_scenario_coding_keywords() {
+        // Titles containing file-change keywords → Coding
+        assert_eq!(
+            ConversationRunner::classify_scenario("Implement auth middleware", &TodoExecutionScenario::Coding),
+            TodoExecutionScenario::Coding,
+        );
+        assert_eq!(
+            ConversationRunner::classify_scenario("Refactor database module", &TodoExecutionScenario::Normal),
+            TodoExecutionScenario::Coding,
+        );
+        assert_eq!(
+            ConversationRunner::classify_scenario("Fix bug in parser", &TodoExecutionScenario::Normal),
+            TodoExecutionScenario::Coding,
+        );
+        assert_eq!(
+            ConversationRunner::classify_scenario("Add unit tests for auth", &TodoExecutionScenario::Normal),
+            TodoExecutionScenario::Coding,
+        );
+        assert_eq!(
+            ConversationRunner::classify_scenario("Write new handler function", &TodoExecutionScenario::Normal),
+            TodoExecutionScenario::Coding,
+        );
+    }
+
+    #[test]
+    fn test_classify_scenario_normal_keywords() {
+        // Non-code tasks → Normal
+        assert_eq!(
+            ConversationRunner::classify_scenario("Update documentation", &TodoExecutionScenario::Normal),
+            TodoExecutionScenario::Normal,
+        );
+        assert_eq!(
+            ConversationRunner::classify_scenario("Research API options", &TodoExecutionScenario::Normal),
+            TodoExecutionScenario::Normal,
+        );
+        assert_eq!(
+            ConversationRunner::classify_scenario("Configure CI pipeline", &TodoExecutionScenario::Normal),
+            TodoExecutionScenario::Normal,
+        );
+    }
+
+    #[test]
+    fn test_classify_scenario_respects_hint() {
+        // When analysis says Coding, even normal-sounding title stays Coding
+        assert_eq!(
+            ConversationRunner::classify_scenario("Update config settings", &TodoExecutionScenario::Coding),
+            TodoExecutionScenario::Coding,
+        );
+        // FastPath hint is preserved for short tasks
+        assert_eq!(
+            ConversationRunner::classify_scenario("Quick question", &TodoExecutionScenario::FastPath),
+            TodoExecutionScenario::FastPath,
+        );
+    }
+
+    #[tokio::test]
+    async fn test_run_rounds_with_context_injects_prompt_and_returns() {
+        let response = CompletionResponse {
+            id: "round-ctx".to_string(),
+            object: "chat.completion".to_string(),
+            created: 0,
+            model: "mock-model".to_string(),
+            choices: vec![Choice {
+                index: 0,
+                message: Message {
+                    role: MessageRole::Assistant,
+                    content: "Done with context".to_string(),
+                    name: None,
+                    tool_calls: None,
+                },
+                finish_reason: Some("stop".to_string()),
+                logprobs: None,
+            }],
+            usage: Some(Usage {
+                prompt_tokens: 20,
+                completion_tokens: 10,
+                total_tokens: 30,
+            }),
+        };
+        let runner = make_runner(
+            Arc::new(ScriptedProvider::new(vec![response])),
+            Arc::new(MockToolExecutor::new()),
+        );
+        let messages = vec![Message {
+            role: MessageRole::User,
+            content: "do something".to_string(),
+            name: None,
+            tool_calls: None,
+        }];
+        let mut session = AgentSession::new("rounds-ctx".to_string());
+        let mut events = Vec::new();
+
+        let (content, tool_calls) = runner
+            .run_rounds_with_context(
+                messages,
+                "You are working on TODO #1: write tests",
+                &mut session,
+                &mut events,
+                1,
+            )
+            .await
+            .expect("should succeed");
+
+        assert_eq!(content, "Done with context");
+        assert!(tool_calls.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_execute_single_todo_emits_start_end_events() {
+        // LLM returns a simple response (no tool calls)
+        let response = CompletionResponse {
+            id: "todo-exec".to_string(),
+            object: "chat.completion".to_string(),
+            created: 0,
+            model: "mock-model".to_string(),
+            choices: vec![Choice {
+                index: 0,
+                message: Message {
+                    role: MessageRole::Assistant,
+                    content: "Implemented the feature.".to_string(),
+                    name: None,
+                    tool_calls: None,
+                },
+                finish_reason: Some("stop".to_string()),
+                logprobs: None,
+            }],
+            usage: Some(Usage {
+                prompt_tokens: 50,
+                completion_tokens: 20,
+                total_tokens: 70,
+            }),
+        };
+        let runner = make_runner(
+            Arc::new(ScriptedProvider::new(vec![response])),
+            Arc::new(MockToolExecutor::new()),
+        );
+        let messages = vec![Message {
+            role: MessageRole::User,
+            content: "implement auth".to_string(),
+            name: None,
+            tool_calls: None,
+        }];
+        let analysis = AnalysisResult {
+            summary: "Auth module".to_string(),
+            affected_scope: vec!["auth/mod.rs".to_string()],
+            constraints: vec![],
+            scenario_hint: TodoExecutionScenario::Coding,
+            risks: vec![],
+        };
+        let mut session = AgentSession::new("todo-exec-test".to_string());
+        let mut events = Vec::new();
+
+        runner
+            .execute_single_todo(
+                1,
+                "Implement auth middleware",
+                &analysis,
+                &messages,
+                &mut session,
+                &mut events,
+                1,
+            )
+            .await
+            .expect("should succeed");
+
+        // Must emit TodoExecutionStart and TodoExecutionEnd
+        assert!(
+            events.iter().any(|e| e.kind == AgentExecutionEventKind::TodoExecutionStart),
+            "should emit TodoExecutionStart"
+        );
+        assert!(
+            events.iter().any(|e| e.kind == AgentExecutionEventKind::TodoExecutionEnd),
+            "should emit TodoExecutionEnd"
+        );
+        // Executing workflow stage must be emitted
+        assert!(
+            events.iter().any(|e| e.workflow_stage == Some(AgentWorkflowStage::Executing)),
+            "should emit Executing workflow stage"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_execute_single_todo_coding_scenario_includes_tdd_prompt() {
+        // Verify that coding scenario injects TDD-related context
+        let response = CompletionResponse {
+            id: "tdd-test".to_string(),
+            object: "chat.completion".to_string(),
+            created: 0,
+            model: "mock-model".to_string(),
+            choices: vec![Choice {
+                index: 0,
+                message: Message {
+                    role: MessageRole::Assistant,
+                    content: "Written TDD code.".to_string(),
+                    name: None,
+                    tool_calls: None,
+                },
+                finish_reason: Some("stop".to_string()),
+                logprobs: None,
+            }],
+            usage: Some(Usage {
+                prompt_tokens: 60,
+                completion_tokens: 15,
+                total_tokens: 75,
+            }),
+        };
+        let runner = make_runner(
+            Arc::new(ScriptedProvider::new(vec![response])),
+            Arc::new(MockToolExecutor::new()),
+        );
+        let messages = vec![Message {
+            role: MessageRole::User,
+            content: "add auth tests".to_string(),
+            name: None,
+            tool_calls: None,
+        }];
+        let analysis = AnalysisResult {
+            summary: "Auth tests".to_string(),
+            affected_scope: vec!["auth/".to_string()],
+            constraints: vec![],
+            scenario_hint: TodoExecutionScenario::Coding,
+            risks: vec![],
+        };
+        let mut session = AgentSession::new("tdd-prompt-test".to_string());
+        let mut events = Vec::new();
+
+        runner
+            .execute_single_todo(
+                1,
+                "Add unit tests for auth module",
+                &analysis,
+                &messages,
+                &mut session,
+                &mut events,
+                1,
+            )
+            .await
+            .expect("should succeed");
+
+        // Verify events contain the TODO execution markers
+        let start_event = events
+            .iter()
+            .find(|e| e.kind == AgentExecutionEventKind::TodoExecutionStart)
+            .expect("must have start event");
+        assert!(start_event.message.contains("Add unit tests"));
+    }
+
+    // ── Phase 4: Verifying + Completing + Reporting tests ───────────
+
+    #[tokio::test]
+    async fn test_run_global_verification_emits_verifying_stage() {
+        let response = CompletionResponse {
+            id: "verify".to_string(),
+            object: "chat.completion".to_string(),
+            created: 0,
+            model: "mock-model".to_string(),
+            choices: vec![Choice {
+                index: 0,
+                message: Message {
+                    role: MessageRole::Assistant,
+                    content: "All TODOs verified. No regressions found.".to_string(),
+                    name: None,
+                    tool_calls: None,
+                },
+                finish_reason: Some("stop".to_string()),
+                logprobs: None,
+            }],
+            usage: Some(Usage {
+                prompt_tokens: 40,
+                completion_tokens: 15,
+                total_tokens: 55,
+            }),
+        };
+        let runner = make_runner(
+            Arc::new(ScriptedProvider::new(vec![response])),
+            Arc::new(MockToolExecutor::new()),
+        );
+        let messages = vec![Message {
+            role: MessageRole::User,
+            content: "verify everything".to_string(),
+            name: None,
+            tool_calls: None,
+        }];
+        let todos = vec![
+            "Implement auth".to_string(),
+            "Add tests".to_string(),
+        ];
+        let mut session = AgentSession::new("verify-test".to_string());
+        let mut events = Vec::new();
+
+        let result = runner
+            .run_global_verification(&todos, &messages, &mut session, &mut events, 1)
+            .await
+            .expect("should succeed");
+
+        assert!(!result.is_empty(), "verification should return content");
+        assert!(
+            events.iter().any(|e| e.workflow_stage == Some(AgentWorkflowStage::Verifying)),
+            "should emit Verifying stage"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_run_completion_emits_completing_stage() {
+        let response = CompletionResponse {
+            id: "complete".to_string(),
+            object: "chat.completion".to_string(),
+            created: 0,
+            model: "mock-model".to_string(),
+            choices: vec![Choice {
+                index: 0,
+                message: Message {
+                    role: MessageRole::Assistant,
+                    content: "Documentation updated. Memory entries saved.".to_string(),
+                    name: None,
+                    tool_calls: None,
+                },
+                finish_reason: Some("stop".to_string()),
+                logprobs: None,
+            }],
+            usage: Some(Usage {
+                prompt_tokens: 30,
+                completion_tokens: 10,
+                total_tokens: 40,
+            }),
+        };
+        let runner = make_runner(
+            Arc::new(ScriptedProvider::new(vec![response])),
+            Arc::new(MockToolExecutor::new()),
+        );
+        let messages = vec![Message {
+            role: MessageRole::User,
+            content: "wrap up".to_string(),
+            name: None,
+            tool_calls: None,
+        }];
+        let todos = vec!["Done task".to_string()];
+        let mut session = AgentSession::new("completion-test".to_string());
+        let mut events = Vec::new();
+
+        let result = runner
+            .run_completion(&todos, &messages, &mut session, &mut events, 1)
+            .await
+            .expect("should succeed");
+
+        assert!(!result.is_empty());
+        assert!(
+            events.iter().any(|e| e.workflow_stage == Some(AgentWorkflowStage::Completing)),
+            "should emit Completing stage"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_generate_execution_report_contains_completion_rate() {
+        let response = CompletionResponse {
+            id: "report".to_string(),
+            object: "chat.completion".to_string(),
+            created: 0,
+            model: "mock-model".to_string(),
+            choices: vec![Choice {
+                index: 0,
+                message: Message {
+                    role: MessageRole::Assistant,
+                    content: "## Report\n- 3/3 TODOs completed (100%)\n- All tests pass".to_string(),
+                    name: None,
+                    tool_calls: None,
+                },
+                finish_reason: Some("stop".to_string()),
+                logprobs: None,
+            }],
+            usage: Some(Usage {
+                prompt_tokens: 50,
+                completion_tokens: 20,
+                total_tokens: 70,
+            }),
+        };
+        let runner = make_runner(
+            Arc::new(ScriptedProvider::new(vec![response])),
+            Arc::new(MockToolExecutor::new()),
+        );
+        let messages = vec![Message {
+            role: MessageRole::User,
+            content: "generate report".to_string(),
+            name: None,
+            tool_calls: None,
+        }];
+        let todos = vec![
+            "Task A".to_string(),
+            "Task B".to_string(),
+            "Task C".to_string(),
+        ];
+        let verification_summary = "All verified OK".to_string();
+        let mut session = AgentSession::new("report-test".to_string());
+        let mut events = Vec::new();
+
+        let report = runner
+            .generate_execution_report(
+                &todos,
+                &verification_summary,
+                &messages,
+                &mut session,
+                &mut events,
+                1,
+            )
+            .await
+            .expect("should succeed");
+
+        assert!(!report.is_empty(), "report should not be empty");
+        assert!(
+            events.iter().any(|e| e.workflow_stage == Some(AgentWorkflowStage::Reporting)),
+            "should emit Reporting stage"
+        );
+        assert!(
+            events.iter().any(|e| e.kind == AgentExecutionEventKind::Report),
+            "should emit Report event"
         );
     }
 }
