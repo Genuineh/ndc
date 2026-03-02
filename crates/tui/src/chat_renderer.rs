@@ -732,13 +732,45 @@ pub fn event_to_entries(
             )));
         }
         AgentExecutionEventKind::SessionStatus
-        | AgentExecutionEventKind::Text
-        | AgentExecutionEventKind::TodoStateChange
-        | AgentExecutionEventKind::AnalysisComplete
-        | AgentExecutionEventKind::PlanningComplete
-        | AgentExecutionEventKind::TodoExecutionStart
-        | AgentExecutionEventKind::TodoExecutionEnd
-        | AgentExecutionEventKind::Report => {}
+        | AgentExecutionEventKind::Text => {}
+        AgentExecutionEventKind::TodoStateChange => {
+            viz_state.todo_sidebar_dirty = true;
+        }
+        AgentExecutionEventKind::AnalysisComplete => {
+            entries.push(ChatEntry::SystemNote(format!(
+                "[Analysis] {}",
+                sanitize_text(&event.message, viz_state.redaction_mode)
+            )));
+        }
+        AgentExecutionEventKind::PlanningComplete => {
+            entries.push(ChatEntry::StageNote(format!(
+                "[Plan] {}",
+                sanitize_text(&event.message, viz_state.redaction_mode)
+            )));
+        }
+        AgentExecutionEventKind::TodoExecutionStart => {
+            entries.push(ChatEntry::SystemNote(format!(
+                "[TODO Start] {}",
+                sanitize_text(&event.message, viz_state.redaction_mode)
+            )));
+        }
+        AgentExecutionEventKind::TodoExecutionEnd => {
+            let duration_suffix = event
+                .duration_ms
+                .map(|d| format!(" ({}ms)", d))
+                .unwrap_or_default();
+            entries.push(ChatEntry::SystemNote(format!(
+                "[TODO Done] {}{}",
+                sanitize_text(&event.message, viz_state.redaction_mode),
+                duration_suffix,
+            )));
+        }
+        AgentExecutionEventKind::Report => {
+            entries.push(ChatEntry::StageNote(format!(
+                "[Report] {}",
+                sanitize_text(&event.message, viz_state.redaction_mode)
+            )));
+        }
     }
     entries
 }
@@ -1950,5 +1982,71 @@ mod tests {
         assert!(has_stage, "expected stage entry");
         assert!(has_reasoning, "expected expanded reasoning");
         assert_eq!(tool_cards.len(), 2, "expected 2 tool cards (start + end)");
+    }
+
+    // ── Phase 5: New event type chat entry tests ─────────────────────
+
+    #[test]
+    fn test_event_to_entries_todo_execution_start() {
+        let mut viz = ReplVisualizationState::new(false);
+        let event = mk_event(
+            AgentExecutionEventKind::TodoExecutionStart,
+            "todo_start: [1] implement feature X | scenario: coding",
+            3,
+            None,
+            None,
+            None,
+            false,
+        );
+        let entries = event_to_entries(&event, &mut viz);
+        assert!(!entries.is_empty(), "TodoExecutionStart should produce entries");
+    }
+
+    #[test]
+    fn test_event_to_entries_todo_execution_end() {
+        let mut viz = ReplVisualizationState::new(false);
+        let event = mk_event(
+            AgentExecutionEventKind::TodoExecutionEnd,
+            "todo_end: [1] implement feature X | completed",
+            3,
+            None,
+            None,
+            Some(5200),
+            false,
+        );
+        let entries = event_to_entries(&event, &mut viz);
+        assert!(!entries.is_empty(), "TodoExecutionEnd should produce entries");
+    }
+
+    #[test]
+    fn test_event_to_entries_planning_complete() {
+        let mut viz = ReplVisualizationState::new(false);
+        let event = mk_event(
+            AgentExecutionEventKind::PlanningComplete,
+            "planning_complete: 4 TODOs generated",
+            2,
+            None,
+            None,
+            None,
+            false,
+        );
+        let entries = event_to_entries(&event, &mut viz);
+        assert!(!entries.is_empty(), "PlanningComplete should produce entries");
+    }
+
+    #[test]
+    fn test_event_to_entries_report() {
+        let mut viz = ReplVisualizationState::new(false);
+        let event = mk_event(
+            AgentExecutionEventKind::Report,
+            "execution_report: 5 todos completed",
+            5,
+            None,
+            None,
+            None,
+            false,
+        );
+        let entries = event_to_entries(&event, &mut viz);
+        assert!(!entries.is_empty(), "Report should produce entries");
     }
 }

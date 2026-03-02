@@ -306,13 +306,50 @@ pub fn event_to_lines(
             ));
         }
         ndc_core::AgentExecutionEventKind::SessionStatus
-        | ndc_core::AgentExecutionEventKind::Text
-        | ndc_core::AgentExecutionEventKind::TodoStateChange
-        | ndc_core::AgentExecutionEventKind::AnalysisComplete
-        | ndc_core::AgentExecutionEventKind::PlanningComplete
-        | ndc_core::AgentExecutionEventKind::TodoExecutionStart
-        | ndc_core::AgentExecutionEventKind::TodoExecutionEnd
-        | ndc_core::AgentExecutionEventKind::Report => {}
+        | ndc_core::AgentExecutionEventKind::Text => {}
+        ndc_core::AgentExecutionEventKind::TodoStateChange => {
+            viz_state.todo_sidebar_dirty = true;
+        }
+        ndc_core::AgentExecutionEventKind::AnalysisComplete => {
+            lines.push(format!(
+                "[Analysis][r{}] {}",
+                event.round,
+                sanitize_text(&event.message, viz_state.redaction_mode)
+            ));
+        }
+        ndc_core::AgentExecutionEventKind::PlanningComplete => {
+            lines.push(format!(
+                "[Plan][r{}] {}",
+                event.round,
+                sanitize_text(&event.message, viz_state.redaction_mode)
+            ));
+        }
+        ndc_core::AgentExecutionEventKind::TodoExecutionStart => {
+            lines.push(format!(
+                "[TODO Start][r{}] {}",
+                event.round,
+                sanitize_text(&event.message, viz_state.redaction_mode)
+            ));
+        }
+        ndc_core::AgentExecutionEventKind::TodoExecutionEnd => {
+            let duration_suffix = event
+                .duration_ms
+                .map(|d| format!(" ({}ms)", d))
+                .unwrap_or_default();
+            lines.push(format!(
+                "[TODO Done][r{}] {}{}",
+                event.round,
+                sanitize_text(&event.message, viz_state.redaction_mode),
+                duration_suffix,
+            ));
+        }
+        ndc_core::AgentExecutionEventKind::Report => {
+            lines.push(format!(
+                "[Report][r{}] {}",
+                event.round,
+                sanitize_text(&event.message, viz_state.redaction_mode)
+            ));
+        }
     }
     lines
 }
@@ -1580,5 +1617,120 @@ mod tests {
         assert!(lines[0].contains("[ToolRun]"));
         assert!(lines[0].contains("shell"));
         assert!(lines[0].contains("cargo build"));
+    }
+
+    // ── Phase 5: New event type rendering tests ─────────────────────
+
+    #[test]
+    fn test_event_to_lines_todo_execution_start() {
+        let mut viz = ReplVisualizationState::new(false);
+        let event = mk_event(
+            ndc_core::AgentExecutionEventKind::TodoExecutionStart,
+            "todo_start: [1] implement feature X | scenario: coding",
+            3,
+            None,
+            None,
+            None,
+            false,
+        );
+        let lines = event_to_lines(&event, &mut viz);
+        assert!(!lines.is_empty(), "TodoExecutionStart should produce output");
+        let joined = lines.join(" ");
+        assert!(joined.contains("TODO") || joined.contains("todo"));
+    }
+
+    #[test]
+    fn test_event_to_lines_todo_execution_end() {
+        let mut viz = ReplVisualizationState::new(false);
+        let event = mk_event(
+            ndc_core::AgentExecutionEventKind::TodoExecutionEnd,
+            "todo_end: [1] implement feature X | completed",
+            3,
+            None,
+            None,
+            Some(5200),
+            false,
+        );
+        let lines = event_to_lines(&event, &mut viz);
+        assert!(!lines.is_empty(), "TodoExecutionEnd should produce output");
+        let joined = lines.join(" ");
+        assert!(joined.contains("TODO") || joined.contains("todo") || joined.contains("Done"));
+    }
+
+    #[test]
+    fn test_event_to_lines_analysis_complete() {
+        let mut viz = ReplVisualizationState::new(false);
+        let event = mk_event(
+            ndc_core::AgentExecutionEventKind::AnalysisComplete,
+            "analysis_complete: 3 affected scopes, 2 risks identified",
+            1,
+            None,
+            None,
+            None,
+            false,
+        );
+        let lines = event_to_lines(&event, &mut viz);
+        assert!(
+            !lines.is_empty(),
+            "AnalysisComplete should produce output"
+        );
+    }
+
+    #[test]
+    fn test_event_to_lines_planning_complete() {
+        let mut viz = ReplVisualizationState::new(false);
+        let event = mk_event(
+            ndc_core::AgentExecutionEventKind::PlanningComplete,
+            "planning_complete: 4 TODOs generated",
+            2,
+            None,
+            None,
+            None,
+            false,
+        );
+        let lines = event_to_lines(&event, &mut viz);
+        assert!(
+            !lines.is_empty(),
+            "PlanningComplete should produce output"
+        );
+        let joined = lines.join(" ");
+        assert!(joined.contains("Plan") || joined.contains("TODO") || joined.contains("plan"));
+    }
+
+    #[test]
+    fn test_event_to_lines_report() {
+        let mut viz = ReplVisualizationState::new(false);
+        let event = mk_event(
+            ndc_core::AgentExecutionEventKind::Report,
+            "execution_report: 5 todos, verification: all passed",
+            5,
+            None,
+            None,
+            None,
+            false,
+        );
+        let lines = event_to_lines(&event, &mut viz);
+        assert!(!lines.is_empty(), "Report should produce output");
+        let joined = lines.join(" ");
+        assert!(joined.contains("Report") || joined.contains("report"));
+    }
+
+    #[test]
+    fn test_event_to_lines_todo_state_change() {
+        let mut viz = ReplVisualizationState::new(false);
+        let event = mk_event(
+            ndc_core::AgentExecutionEventKind::TodoStateChange,
+            "todo_state: [2] refactor module → completed",
+            4,
+            None,
+            None,
+            None,
+            false,
+        );
+        let lines = event_to_lines(&event, &mut viz);
+        // TodoStateChange may or may not produce visible lines (sidebar-only is acceptable),
+        // but if it does, it should be meaningful
+        // At minimum, it should set a flag for sidebar refresh
+        assert!(viz.todo_sidebar_dirty);
     }
 }

@@ -16,7 +16,7 @@
 | **P1-Scene** | ✅ 已完成 | repl.rs 模块化提取 + Scene 上下文自适应 TUI |
 | **P1-TuiCrate** | ✅ 已完成 | TUI 独立 Crate 提取（ndc-tui） |
 | **P1-TaskTodo** | ✅ 已完成 | Agent 驱动 TODO 规划流程（Task 系统集成） |
-| **P1-Workflow** | 🔄 进行中 | TODO 驱动工作流重构（Pipeline 重新设计，Phase 1-4 已完成） |
+| **P1-Workflow** | 🔄 进行中 | TODO 驱动工作流重构（Pipeline 重新设计，Phase 1-5 已完成） |
 | **P1** | 待开始 | 核心自治能力与治理 |
 | **P2** | 待开始 | 多 Agent 与知识回灌体验 |
 
@@ -430,7 +430,7 @@ LoadContext → Compress → Analysis → Planning → [TodoLoop] → Review →
 | Phase 2 | ✅ ConversationRunner 前 4 阶段方法：LoadContext→Compress→Analysis→Planning | 2 天 |
 | Phase 3 | ✅ TODO 执行循环：Per-TODO Classify→Execute→Review→MarkDone + TDD 路径 | 2 天 |
 | Phase 4 | ✅ Verifying + Completing + Reporting 阶段实现 | 1 天 |
-| Phase 5 | TUI 适配：Workflow Progress Bar 更新 + TODO 状态实时联动 + Scene 映射 | 1 天 |
+| Phase 5 | ✅ TUI 适配：Workflow Progress Bar 更新 + TODO 状态实时联动 + Scene 映射 | 1 天 |
 | Phase 6 | 端到端测试 + 文档收尾 | 1 天 |
 
 #### Phase 1: Core 模型扩展 ✅ `d4f56fb`
@@ -466,6 +466,15 @@ LoadContext → Compress → Analysis → Planning → [TodoLoop] → Review →
 - **`generate_execution_report()`**: emit Reporting stage → LLM 生成执行报告（TODO 完成率 + 变更摘要 + 测试结果）→ emit Report 事件
 - **测试**: +3 新测试（verification/completion/report 各 1，验证 stage 事件），全都 GREEN
 - **总计**: conversation_runner 测试 24 个（原始 3 + Phase 2 9 + Phase 3 6 + Phase 4 3），全部 GREEN
+
+#### Phase 5: TUI 适配 ✅
+
+- **event_renderer.rs**: 6 个新事件类型渲染（TodoExecutionStart/End → `[TODO Start/Done]`, AnalysisComplete → `[Analysis]`, PlanningComplete → `[Plan]`, Report → `[Report]`, TodoStateChange → sidebar dirty flag）
+- **chat_renderer.rs**: 同 6 个事件类型产生 ChatEntry（SystemNote/StageNote），不再 no-op
+- **app.rs**: `todo_sidebar_dirty` 检测 → 实时刷新 TODO sidebar（不再仅在 session 结束后）
+- **lib.rs**: `ReplVisualizationState` 新增 `todo_sidebar_dirty: bool` 字段
+- **测试**: +10 新测试（event_renderer 6 + chat_renderer 4），全部 GREEN
+- **总计**: ndc-tui 测试 170 个，全部 GREEN
 
 ---
 

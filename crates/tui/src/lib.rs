@@ -60,6 +60,8 @@ pub struct ReplVisualizationState {
     pub show_todo_panel: bool,
     pub todo_items: Vec<TodoItem>,
     pub todo_scroll_offset: usize,
+    /// Set to true when a TodoStateChange event is received, signaling sidebar refresh needed.
+    pub todo_sidebar_dirty: bool,
 }
 
 impl ReplVisualizationState {
@@ -97,6 +99,7 @@ impl ReplVisualizationState {
             show_todo_panel: true,
             todo_items: Vec::new(),
             todo_scroll_offset: 0,
+            todo_sidebar_dirty: false,
         }
     }
 }

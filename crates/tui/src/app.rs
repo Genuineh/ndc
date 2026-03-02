@@ -71,6 +71,14 @@ pub async fn run_repl_tui(
             streamed_any = true;
         }
 
+        // Refresh TODO sidebar when a TodoStateChange event was received
+        if viz_state.todo_sidebar_dirty {
+            viz_state.todo_sidebar_dirty = false;
+            if let Ok(items) = agent_manager.list_session_todos().await {
+                viz_state.todo_items = items;
+            }
+        }
+
         // Poll for incoming permission requests from the executor
         if let Ok(req) = permission_rx.try_recv() {
             viz_state.permission_blocked = true;
