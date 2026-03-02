@@ -86,7 +86,9 @@ pub async fn run_repl_tui(
         if viz_state.todo_sidebar_dirty {
             viz_state.todo_sidebar_dirty = false;
             if let Ok(items) = agent_manager.list_session_todos().await {
-                viz_state.todo_items = items;
+                if !items.is_empty() || viz_state.todo_items.is_empty() {
+                    viz_state.todo_items = items;
+                }
             }
         }
 

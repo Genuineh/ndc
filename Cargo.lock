@@ -1530,6 +1530,7 @@ dependencies = [
  "crossterm 0.29.0",
  "ndc-core",
  "ratatui",
+ "serde_json",
  "tokio",
  "tracing",
 ]

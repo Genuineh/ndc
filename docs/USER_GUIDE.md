@@ -182,6 +182,8 @@ TUI 快捷键（默认 REPL）：
      8. **Reporting** — 生成执行报告（变更摘要、测试结果、TODO 完成率）
    - 编码类 TODO 自动注入 TDD 提示（红绿循环），普通 TODO 走快速执行路径
    - TODO 状态变更会实时刷新侧边栏（无需等待 session 完成）
+  - `PlanningComplete` 事件会携带 TODO 明细，TUI 会在 planning 后立即展示侧边栏列表
+  - `TodoStateChange` 事件会直接驱动侧边栏状态更新；当存储列表暂为空时也不会覆盖已展示项
    - `WorkflowStage` 事件会实时更新状态栏中的 `workflow=<stage>`
    - `TokenUsage` 事件会实时更新 `tok_round/tok_session`
    - 使用 `/workflow compact` 查看阶段进度聚合（适合日常观测）

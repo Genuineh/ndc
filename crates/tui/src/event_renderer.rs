@@ -6,6 +6,7 @@
 use ndc_core::redaction::sanitize_text;
 
 use super::*;
+use crate::sync_todo_sidebar_from_event;
 
 /// Convert a single execution event into display lines (legacy/CLI mode).
 pub fn event_to_lines(
@@ -308,7 +309,7 @@ pub fn event_to_lines(
         ndc_core::AgentExecutionEventKind::SessionStatus
         | ndc_core::AgentExecutionEventKind::Text => {}
         ndc_core::AgentExecutionEventKind::TodoStateChange => {
-            viz_state.todo_sidebar_dirty = true;
+            sync_todo_sidebar_from_event(viz_state, event);
         }
         ndc_core::AgentExecutionEventKind::AnalysisComplete => {
             lines.push(format!(
@@ -318,6 +319,7 @@ pub fn event_to_lines(
             ));
         }
         ndc_core::AgentExecutionEventKind::PlanningComplete => {
+            sync_todo_sidebar_from_event(viz_state, event);
             lines.push(format!(
                 "[Plan][r{}] {}",
                 event.round,

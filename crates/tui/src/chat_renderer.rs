@@ -16,6 +16,9 @@ use super::{
 
 use ndc_core::{AgentExecutionEvent, AgentExecutionEventKind, AgentSessionExecutionEvent};
 
+use crate::sync_todo_sidebar_from_event;
+
+
 #[derive(Debug, Clone, Copy)]
 pub struct TuiTheme {
     pub text_strong: Color,
@@ -734,7 +737,7 @@ pub fn event_to_entries(
         AgentExecutionEventKind::SessionStatus
         | AgentExecutionEventKind::Text => {}
         AgentExecutionEventKind::TodoStateChange => {
-            viz_state.todo_sidebar_dirty = true;
+            sync_todo_sidebar_from_event(viz_state, event);
         }
         AgentExecutionEventKind::AnalysisComplete => {
             entries.push(ChatEntry::SystemNote(format!(
@@ -743,6 +746,7 @@ pub fn event_to_entries(
             )));
         }
         AgentExecutionEventKind::PlanningComplete => {
+            sync_todo_sidebar_from_event(viz_state, event);
             entries.push(ChatEntry::StageNote(format!(
                 "[Plan] {}",
                 sanitize_text(&event.message, viz_state.redaction_mode)

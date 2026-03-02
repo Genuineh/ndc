@@ -1134,7 +1134,10 @@ impl ConversationRunner {
             AgentExecutionEvent {
                 kind: AgentExecutionEventKind::PlanningComplete,
                 timestamp: chrono::Utc::now(),
-                message: format!("planning_complete: {} todos", todos.len()),
+                message: format!(
+                    "planning_complete: {}",
+                    serde_json::json!({ "todos": todos }).to_string()
+                ),
                 round,
                 tool_name: None,
                 tool_call_id: None,
@@ -2584,6 +2587,21 @@ mod tests {
         assert_eq!(todos[0], "Extract JWT logic into jwt.rs");
         // Should emit Planning workflow stage
         assert!(events.iter().any(|e| e.workflow_stage == Some(AgentWorkflowStage::Planning)));
+        let planning_event = events
+            .iter()
+            .find(|e| e.kind == AgentExecutionEventKind::PlanningComplete)
+            .expect("planning event should exist");
+        let payload = planning_event
+            .message
+            .strip_prefix("planning_complete:")
+            .expect("planning payload prefix")
+            .trim();
+        let parsed: serde_json::Value =
+            serde_json::from_str(payload).expect("planning payload should be valid JSON");
+        let event_todos = parsed["todos"]
+            .as_array()
+            .expect("todos should be array");
+        assert_eq!(event_todos.len(), 3);
     }
 
     #[tokio::test]
