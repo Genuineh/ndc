@@ -1443,6 +1443,7 @@ mod tests {
             scroll_offset: 0,
             auto_follow: true,
             body_height: 5,
+            rendered_line_count: 0,
         };
         let scroll = effective_chat_scroll(&entries, &view);
         // auto_follow: total(8) - body_height(5) = 3
@@ -1463,6 +1464,7 @@ mod tests {
             scroll_offset: 2,
             auto_follow: false,
             body_height: 3,
+            rendered_line_count: 0,
         };
         let scroll = effective_chat_scroll(&entries, &view);
         // manual: min(scroll_offset=2, total(5)-body(3)=2) = 2

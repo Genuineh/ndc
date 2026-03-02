@@ -180,6 +180,14 @@ impl ConversationRunner {
         )
     }
 
+    fn todo_workflow_enabled() -> bool {
+        if let Ok(v) = std::env::var("NDC_TODO_WORKFLOW") {
+            let raw = v.trim().to_ascii_lowercase();
+            return matches!(raw.as_str(), "1" | "true" | "yes" | "on");
+        }
+        !cfg!(test)
+    }
+
     // ── main conversation loop ──────────────────────────────────────
 
     /// Run the non-streaming conversation loop.
@@ -209,6 +217,17 @@ impl ConversationRunner {
             tool_results: None,
             tool_call_id: None,
         });
+
+        if Self::todo_workflow_enabled() {
+            return self
+                .run_todo_driven_main_loop(
+                    session,
+                    messages,
+                    session_state,
+                    active_task_id,
+                )
+                .await;
+        }
 
         let mut tool_call_count = 0;
         let mut all_tool_calls: Vec<AgentToolCall> = Vec::new();
@@ -649,6 +668,252 @@ impl ConversationRunner {
         })
     }
 
+    #[allow(clippy::too_many_lines)]
+    async fn run_todo_driven_main_loop(
+        &self,
+        session: AgentSession,
+        mut messages: Vec<Message>,
+        mut session_state: AgentSession,
+        active_task_id: Option<TaskId>,
+    ) -> Result<AgentResponse, AgentError> {
+        let mut all_tool_calls: Vec<AgentToolCall> = Vec::new();
+        let mut execution_events: Vec<AgentExecutionEvent> = Vec::new();
+        let mut round = 0usize;
+
+        self.emit_event(
+            &mut session_state,
+            &mut execution_events,
+            AgentExecutionEvent {
+                kind: AgentExecutionEventKind::SessionStatus,
+                timestamp: chrono::Utc::now(),
+                message: "session_running".to_string(),
+                round,
+                tool_name: None,
+                tool_call_id: None,
+                duration_ms: None,
+                is_error: false,
+                workflow_stage: None,
+                workflow_detail: None,
+                workflow_stage_index: None,
+                workflow_stage_total: None,
+            },
+        )
+        .await;
+
+        self.emit_workflow_stage(
+            &mut session_state,
+            &mut execution_events,
+            round,
+            AgentWorkflowStage::LoadContext,
+            "collect_tools_memory_and_history",
+        )
+        .await;
+        let snapshot = self.load_context(&messages);
+
+        self.emit_workflow_stage(
+            &mut session_state,
+            &mut execution_events,
+            round,
+            AgentWorkflowStage::Compress,
+            "check_and_trim_context",
+        )
+        .await;
+        let compressed = self.compress_context(&mut messages, &snapshot);
+        if compressed {
+            self.emit_event(
+                &mut session_state,
+                &mut execution_events,
+                AgentExecutionEvent {
+                    kind: AgentExecutionEventKind::Reasoning,
+                    timestamp: chrono::Utc::now(),
+                    message: "context_compressed: message history trimmed".to_string(),
+                    round,
+                    tool_name: None,
+                    tool_call_id: None,
+                    duration_ms: None,
+                    is_error: false,
+                    workflow_stage: Some(AgentWorkflowStage::Compress),
+                    workflow_detail: Some("compressed".to_string()),
+                    workflow_stage_index: Some(AgentWorkflowStage::Compress.index()),
+                    workflow_stage_total: Some(AgentWorkflowStage::TOTAL_STAGES),
+                },
+            )
+            .await;
+        }
+
+        round += 1;
+        let analysis = self
+            .run_analysis_round(&messages, &mut session_state, &mut execution_events, round)
+            .await?;
+
+        round += 1;
+        let todos = self
+            .run_planning_round(
+                &analysis,
+                &messages,
+                &mut session_state,
+                &mut execution_events,
+                round,
+            )
+            .await?;
+
+        for (todo_index, todo_title) in todos.iter().enumerate() {
+            round += 1;
+            let (_content, tool_calls) = self
+                .execute_single_todo(
+                    todo_index + 1,
+                    todo_title,
+                    &analysis,
+                    &messages,
+                    &mut session_state,
+                    &mut execution_events,
+                    round,
+                )
+                .await?;
+            all_tool_calls.extend(tool_calls);
+
+            if all_tool_calls.len() >= self.config.max_tool_calls {
+                self.emit_event(
+                    &mut session_state,
+                    &mut execution_events,
+                    AgentExecutionEvent {
+                        kind: AgentExecutionEventKind::Error,
+                        timestamp: chrono::Utc::now(),
+                        message: format!("max_tool_calls_exceeded: {}", self.config.max_tool_calls),
+                        round,
+                        tool_name: None,
+                        tool_call_id: None,
+                        duration_ms: None,
+                        is_error: true,
+                        workflow_stage: Some(AgentWorkflowStage::Executing),
+                        workflow_detail: Some("too_many_tool_calls".to_string()),
+                        workflow_stage_index: Some(AgentWorkflowStage::Executing.index()),
+                        workflow_stage_total: Some(AgentWorkflowStage::TOTAL_STAGES),
+                    },
+                )
+                .await;
+
+                self.save_session(session_state).await;
+                return Ok(AgentResponse {
+                    session_id: session.id,
+                    content: format!(
+                        "I've reached the maximum number of tool calls ({}). Please review my progress and provide further guidance.",
+                        self.config.max_tool_calls
+                    ),
+                    tool_calls: all_tool_calls,
+                    is_complete: false,
+                    needs_input: true,
+                    verification_result: None,
+                    execution_events,
+                });
+            }
+        }
+
+        round += 1;
+        let verification_summary = self
+            .run_global_verification(
+                &todos,
+                &messages,
+                &mut session_state,
+                &mut execution_events,
+                round,
+            )
+            .await?;
+
+        let final_verification = if self.config.auto_verify {
+            if let Some(task_id) = active_task_id {
+                self.emit_event(
+                    &mut session_state,
+                    &mut execution_events,
+                    AgentExecutionEvent {
+                        kind: AgentExecutionEventKind::Verification,
+                        timestamp: chrono::Utc::now(),
+                        message: format!("verify_task: {}", task_id),
+                        round,
+                        tool_name: None,
+                        tool_call_id: None,
+                        duration_ms: None,
+                        is_error: false,
+                        workflow_stage: Some(AgentWorkflowStage::Verifying),
+                        workflow_detail: Some("task_verifier".to_string()),
+                        workflow_stage_index: Some(AgentWorkflowStage::Verifying.index()),
+                        workflow_stage_total: Some(AgentWorkflowStage::TOTAL_STAGES),
+                    },
+                )
+                .await;
+                self.verifier.verify_and_track(&task_id).await.ok()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        round += 1;
+        let _completion_summary = self
+            .run_completion(
+                &todos,
+                &messages,
+                &mut session_state,
+                &mut execution_events,
+                round,
+            )
+            .await?;
+
+        round += 1;
+        let final_content = self
+            .generate_execution_report(
+                &todos,
+                &verification_summary,
+                &messages,
+                &mut session_state,
+                &mut execution_events,
+                round,
+            )
+            .await?;
+
+        session_state.add_message(AgentMessage {
+            role: MessageRole::Assistant,
+            content: final_content.clone(),
+            timestamp: chrono::Utc::now(),
+            tool_calls: None,
+            tool_results: None,
+            tool_call_id: None,
+        });
+
+        self.emit_event(
+            &mut session_state,
+            &mut execution_events,
+            AgentExecutionEvent {
+                kind: AgentExecutionEventKind::SessionStatus,
+                timestamp: chrono::Utc::now(),
+                message: "session_idle".to_string(),
+                round,
+                tool_name: None,
+                tool_call_id: None,
+                duration_ms: None,
+                is_error: false,
+                workflow_stage: None,
+                workflow_detail: None,
+                workflow_stage_index: None,
+                workflow_stage_total: None,
+            },
+        )
+        .await;
+
+        self.save_session(session_state).await;
+
+        Ok(AgentResponse {
+            session_id: session.id,
+            content: final_content,
+            tool_calls: all_tool_calls,
+            is_complete: true,
+            needs_input: false,
+            verification_result: final_verification,
+            execution_events,
+        })
+    }
+
     // ── front-stage methods (Phase 2) ───────────────────────────────
     // These methods will be integrated into run_main_loop() in Phase 3.
 
@@ -1046,6 +1311,26 @@ impl ConversationRunner {
         )
         .await;
 
+        self.emit_event(
+            session_state,
+            execution_events,
+            AgentExecutionEvent {
+                kind: AgentExecutionEventKind::TodoStateChange,
+                timestamp: chrono::Utc::now(),
+                message: format!("todo_state: #{} {} -> in_progress", todo_index, todo_title),
+                round,
+                tool_name: None,
+                tool_call_id: None,
+                duration_ms: None,
+                is_error: false,
+                workflow_stage: Some(AgentWorkflowStage::Executing),
+                workflow_detail: Some(format!("todo_{}_in_progress", todo_index)),
+                workflow_stage_index: Some(AgentWorkflowStage::Executing.index()),
+                workflow_stage_total: Some(AgentWorkflowStage::TOTAL_STAGES),
+            },
+        )
+        .await;
+
         // Emit TodoExecutionStart
         self.emit_event(
             session_state,
@@ -1118,6 +1403,26 @@ impl ConversationRunner {
                 is_error: false,
                 workflow_stage: Some(AgentWorkflowStage::Executing),
                 workflow_detail: Some(format!("todo_{}_done", todo_index)),
+                workflow_stage_index: Some(AgentWorkflowStage::Executing.index()),
+                workflow_stage_total: Some(AgentWorkflowStage::TOTAL_STAGES),
+            },
+        )
+        .await;
+
+        self.emit_event(
+            session_state,
+            execution_events,
+            AgentExecutionEvent {
+                kind: AgentExecutionEventKind::TodoStateChange,
+                timestamp: chrono::Utc::now(),
+                message: format!("todo_state: #{} {} -> completed", todo_index, todo_title),
+                round,
+                tool_name: None,
+                tool_call_id: None,
+                duration_ms: None,
+                is_error: false,
+                workflow_stage: Some(AgentWorkflowStage::Executing),
+                workflow_detail: Some(format!("todo_{}_completed", todo_index)),
                 workflow_stage_index: Some(AgentWorkflowStage::Executing.index()),
                 workflow_stage_total: Some(AgentWorkflowStage::TOTAL_STAGES),
             },
@@ -2918,5 +3223,99 @@ mod tests {
         assert!(stages_emitted.contains(&AgentWorkflowStage::Verifying));
         assert!(stages_emitted.contains(&AgentWorkflowStage::Completing));
         assert!(stages_emitted.contains(&AgentWorkflowStage::Reporting));
+    }
+
+    #[tokio::test]
+    async fn test_todo_driven_main_loop_emits_front_and_reporting_stages() {
+        fn mk_resp(content: &str) -> CompletionResponse {
+            CompletionResponse {
+                id: "resp".to_string(),
+                object: "chat.completion".to_string(),
+                created: 0,
+                model: "mock-model".to_string(),
+                choices: vec![Choice {
+                    index: 0,
+                    message: Message {
+                        role: MessageRole::Assistant,
+                        content: content.to_string(),
+                        name: None,
+                        tool_calls: None,
+                    },
+                    finish_reason: Some("stop".to_string()),
+                    logprobs: None,
+                }],
+                usage: Some(Usage {
+                    prompt_tokens: 10,
+                    completion_tokens: 5,
+                    total_tokens: 15,
+                }),
+            }
+        }
+
+        let runner = make_runner(
+            Arc::new(ScriptedProvider::new(vec![
+                mk_resp(r#"{"summary":"Fix auth","affected_scope":["auth.rs"],"constraints":[],"scenario_hint":"coding","risks":[]}"#),
+                mk_resp(r#"{"todos":["Refactor auth flow"]}"#),
+                mk_resp("Refactored auth flow with tests."),
+                mk_resp("Verification passed."),
+                mk_resp("Docs updated."),
+                mk_resp("Report: 1/1 done."),
+            ])),
+            Arc::new(MockToolExecutor::new()),
+        );
+
+        let session = AgentSession::new("todo-main-loop-test".to_string());
+        let user_msg = Message {
+            role: MessageRole::User,
+            content: "Fix auth flow".to_string(),
+            name: None,
+            tool_calls: None,
+        };
+
+        let mut messages = runner
+            .build_messages(&session, &user_msg, None, None, None)
+            .await
+            .expect("messages");
+        let mut session_state = session.clone();
+        session_state.add_message(AgentMessage {
+            role: MessageRole::User,
+            content: user_msg.content.clone(),
+            timestamp: chrono::Utc::now(),
+            tool_calls: None,
+            tool_results: None,
+            tool_call_id: None,
+        });
+
+        let result = runner
+            .run_todo_driven_main_loop(session, messages.split_off(0), session_state, None)
+            .await
+            .expect("todo-driven main loop should succeed");
+
+        assert!(result.content.contains("Report"));
+        assert!(
+            result
+                .execution_events
+                .iter()
+                .any(|e| e.workflow_stage == Some(AgentWorkflowStage::LoadContext))
+        );
+        assert!(
+            result
+                .execution_events
+                .iter()
+                .any(|e| e.workflow_stage == Some(AgentWorkflowStage::Compress))
+        );
+        assert!(
+            result
+                .execution_events
+                .iter()
+                .any(|e| e.workflow_stage == Some(AgentWorkflowStage::Reporting))
+        );
+        assert!(
+            result
+                .execution_events
+                .iter()
+                .any(|e| e.kind == AgentExecutionEventKind::TodoStateChange),
+            "should emit TodoStateChange for sidebar updates"
+        );
     }
 }

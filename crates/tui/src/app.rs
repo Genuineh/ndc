@@ -18,10 +18,21 @@ use ratatui::widgets::{
 };
 
 use crate::agent_backend::{AgentBackend, TuiPermissionRequest};
-use crate::layout_manager::tui_session_split;
+use crate::layout_manager::{effective_log_scroll, tui_session_split};
 use crate::todo_panel::render_todo_sidebar;
 
 use super::*;
+
+fn wrapped_visual_line_count(lines: &[Line<'_>], inner_width: usize) -> usize {
+    let width = inner_width.max(1);
+    lines
+        .iter()
+        .map(|line| {
+            let line_width: usize = line.spans.iter().map(|span| span.content.chars().count()).sum();
+            line_width.max(1).div_ceil(width)
+        })
+        .sum()
+}
 
 pub async fn run_repl_tui(
     viz_state: &mut ReplVisualizationState,
@@ -135,8 +146,9 @@ pub async fn run_repl_tui(
             let inner = body_block.inner(conv_area);
             session_view.body_height = (inner.height as usize).max(1);
             let styled_lines = style_chat_entries(entries.as_slice());
-            let display_line_count = styled_lines.len();
-            let scroll = effective_chat_scroll(&entries, &session_view) as u16;
+            let display_line_count = wrapped_visual_line_count(&styled_lines, inner.width as usize);
+            session_view.rendered_line_count = display_line_count;
+            let scroll = effective_log_scroll(display_line_count, &session_view) as u16;
             let body = Paragraph::new(Text::from(styled_lines))
                 .block(body_block)
                 .wrap(Wrap { trim: false })
@@ -144,7 +156,7 @@ pub async fn run_repl_tui(
             f.render_widget(body, conv_area);
             if display_line_count > session_view.body_height {
                 let mut scrollbar_state = ScrollbarState::new(display_line_count)
-                    .position(effective_chat_scroll(&entries, &session_view));
+                    .position(effective_log_scroll(display_line_count, &session_view));
                 let scrollbar = Scrollbar::default()
                     .orientation(ScrollbarOrientation::VerticalRight)
                     .thumb_style(Style::default().fg(theme.text_muted));
@@ -314,11 +326,8 @@ pub async fn run_repl_tui(
                         continue;
                     }
 
-                    if handle_session_scroll_key(
-                        &key,
-                        &mut session_view,
-                        total_display_lines(&entries),
-                    ) {
+                    let rendered_line_count = session_view.rendered_line_count;
+                    if handle_session_scroll_key(&key, &mut session_view, rendered_line_count) {
                         continue;
                     }
 
@@ -544,10 +553,11 @@ pub async fn run_repl_tui(
                     }
                 }
                 Event::Mouse(mouse) => {
+                    let rendered_line_count = session_view.rendered_line_count;
                     let _ = handle_session_scroll_mouse(
                         &mouse,
                         &mut session_view,
-                        total_display_lines(&entries),
+                        rendered_line_count,
                     );
                 }
                 _ => {}

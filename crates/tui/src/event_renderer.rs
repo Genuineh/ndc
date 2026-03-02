@@ -1727,7 +1727,7 @@ mod tests {
             None,
             false,
         );
-        let lines = event_to_lines(&event, &mut viz);
+        let _lines = event_to_lines(&event, &mut viz);
         // TodoStateChange may or may not produce visible lines (sidebar-only is acceptable),
         // but if it does, it should be meaningful
         // At minimum, it should set a flag for sidebar refresh

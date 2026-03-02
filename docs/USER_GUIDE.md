@@ -187,6 +187,9 @@ TUI 快捷键（默认 REPL）：
    - 使用 `/workflow compact` 查看阶段进度聚合（适合日常观测）
    - 使用 `/workflow verbose` 查看阶段切换轨迹明细（含最近阶段事件列表）
    - 使用 `/metrics` 查看聚合运行指标（包含 `blocked_on_permission`）
+   - 工作流切换开关：
+     - `NDC_TODO_WORKFLOW=1`：强制启用 TODO 驱动 8 阶段主流程（默认生产开启）
+     - `NDC_TODO_WORKFLOW=0`：回退 legacy 主流程（用于对比排障）
 
 推荐组合：
 

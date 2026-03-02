@@ -584,6 +584,7 @@ mod tests {
             scroll_offset: 0,
             auto_follow: true,
             body_height: 10,
+            rendered_line_count: 0,
         };
         assert!(handle_session_scroll_key(
             &KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE),
@@ -688,6 +689,7 @@ mod tests {
             scroll_offset: 0,
             auto_follow: true,
             body_height: 10,
+            rendered_line_count: 0,
         };
         let up = MouseEvent {
             kind: MouseEventKind::ScrollUp,

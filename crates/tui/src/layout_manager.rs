@@ -89,6 +89,7 @@ pub struct TuiSessionViewState {
     pub scroll_offset: usize,
     pub auto_follow: bool,
     pub body_height: usize,
+    pub rendered_line_count: usize,
 }
 
 impl Default for TuiSessionViewState {
@@ -97,6 +98,7 @@ impl Default for TuiSessionViewState {
             scroll_offset: 0,
             auto_follow: true,
             body_height: 1,
+            rendered_line_count: 0,
         }
     }
 }
@@ -1096,6 +1098,7 @@ mod tests {
             scroll_offset: 0,
             auto_follow: true,
             body_height: 10,
+            rendered_line_count: 0,
         };
         assert_eq!(effective_log_scroll(30, &view), 20);
         view.auto_follow = false;
@@ -1170,6 +1173,7 @@ mod tests {
             scroll_offset: 5,
             auto_follow: false,
             body_height: 10,
+            rendered_line_count: 0,
         };
         let line = build_status_line(&status, &viz, false, &view, "ready");
         assert!(line.contains("workflow_progress=-"));
