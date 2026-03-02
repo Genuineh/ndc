@@ -1,6 +1,6 @@
 # NDC TODO / Backlog
 
-> 更新时间：2026-03-02（v18）  
+> 更新时间：2026-03-02（v19）  
 > 已完成里程碑归档：`docs/plan/archive/COMPLETED_MILESTONES.md`  
 > 关联文档：`docs/plan/current_plan.md` · `docs/USER_GUIDE.md` · `docs/design/`
 
@@ -16,7 +16,7 @@
 | **P1-Scene** | ✅ 已完成 | repl.rs 模块化提取 + Scene 上下文自适应 TUI |
 | **P1-TuiCrate** | ✅ 已完成 | TUI 独立 Crate 提取（ndc-tui） |
 | **P1-TaskTodo** | ✅ 已完成 | Agent 驱动 TODO 规划流程（Task 系统集成） |
-| **P1-Workflow** | 🔄 进行中 | TODO 驱动工作流重构（Pipeline 重新设计，Phase 1-5 已完成） |
+| **P1-Workflow** | ✅ 已完成 | TODO 驱动工作流重构（Pipeline 重新设计，Phase 1-6 全部完成） |
 | **P1** | 待开始 | 核心自治能力与治理 |
 | **P2** | 待开始 | 多 Agent 与知识回灌体验 |
 
@@ -431,7 +431,7 @@ LoadContext → Compress → Analysis → Planning → [TodoLoop] → Review →
 | Phase 3 | ✅ TODO 执行循环：Per-TODO Classify→Execute→Review→MarkDone + TDD 路径 | 2 天 |
 | Phase 4 | ✅ Verifying + Completing + Reporting 阶段实现 | 1 天 |
 | Phase 5 | ✅ TUI 适配：Workflow Progress Bar 更新 + TODO 状态实时联动 + Scene 映射 | 1 天 |
-| Phase 6 | 端到端测试 + 文档收尾 | 1 天 |
+| Phase 6 | ✅ 端到端测试 + 文档收尾 | 1 天 |
 
 #### Phase 1: Core 模型扩展 ✅ `d4f56fb`
 
@@ -475,6 +475,12 @@ LoadContext → Compress → Analysis → Planning → [TodoLoop] → Review →
 - **lib.rs**: `ReplVisualizationState` 新增 `todo_sidebar_dirty: bool` 字段
 - **测试**: +10 新测试（event_renderer 6 + chat_renderer 4），全部 GREEN
 - **总计**: ndc-tui 测试 170 个，全部 GREEN
+
+#### Phase 6: 端到端测试 + 文档收尾 ✅
+
+- **集成测试**: `test_full_pipeline_flow_all_8_stages` — 完整 8 阶段流水线（LoadContext→Compress→Analysis→Planning→Executing×2→Verifying→Completing→Reporting），验证全部 stage 事件和 event kind
+- **文档更新**: `docs/USER_GUIDE.md` — 更新工作流阶段说明（8 阶段 Pipeline + TDD 路径 + TODO 实时刷新）
+- **测试**: ndc-core 291 个、ndc-tui 170 个、ndc-storage 11 个，全部 GREEN
 
 ---
 

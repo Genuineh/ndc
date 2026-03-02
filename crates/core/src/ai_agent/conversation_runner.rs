@@ -2756,4 +2756,167 @@ mod tests {
             "should emit Report event"
         );
     }
+
+    // ── Phase 6: End-to-end pipeline integration test ───────────────
+
+    /// Exercises the complete 8-stage pipeline:
+    /// LoadContext → Compress → Analysis → Planning → Executing → Verifying → Completing → Reporting
+    #[tokio::test]
+    async fn test_full_pipeline_flow_all_8_stages() {
+        fn mk_resp(content: &str) -> CompletionResponse {
+            CompletionResponse {
+                id: "resp".to_string(),
+                object: "chat.completion".to_string(),
+                created: 0,
+                model: "mock-model".to_string(),
+                choices: vec![Choice {
+                    index: 0,
+                    message: Message {
+                        role: MessageRole::Assistant,
+                        content: content.to_string(),
+                        name: None,
+                        tool_calls: None,
+                    },
+                    finish_reason: Some("stop".to_string()),
+                    logprobs: None,
+                }],
+                usage: Some(Usage {
+                    prompt_tokens: 10,
+                    completion_tokens: 5,
+                    total_tokens: 15,
+                }),
+            }
+        }
+
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            mk_resp(r#"{"summary":"Add logging","affected_scope":["runtime"],"constraints":[],"scenario_hint":"coding","risks":["low"]}"#),
+            mk_resp(r#"{"todos":["Add tracing to runtime","Write tests for tracing"]}"#),
+            mk_resp("Added tracing::info! calls to runtime methods."),
+            mk_resp("Wrote tests verifying tracing output."),
+            mk_resp("All tests pass. No regressions found."),
+            mk_resp("Updated docs with tracing usage."),
+            mk_resp("Report: 2/2 TODOs done. All tests green."),
+        ]));
+        let runner = make_runner(provider, Arc::new(MockToolExecutor::new()));
+        let messages = vec![Message {
+            role: MessageRole::User,
+            content: "Add logging to the runtime".to_string(),
+            name: None,
+            tool_calls: None,
+        }];
+        let mut session = AgentSession::new("e2e-test".to_string());
+        let mut events: Vec<AgentExecutionEvent> = Vec::new();
+
+        // Stage 1: LoadContext (sync, no stage event emitted — lightweight)
+        let snapshot = runner.load_context(&messages);
+        assert!(snapshot.estimated_tokens > 0);
+
+        // Stage 2: Compress (sync, no stage event emitted — lightweight)
+        let mut msgs = messages.clone();
+        let compressed = runner.compress_context(&mut msgs, &snapshot);
+        // Under threshold, so no truncation
+        assert!(!compressed);
+
+        // Stage 3: Analysis
+        let analysis = runner
+            .run_analysis_round(&messages, &mut session, &mut events, 1)
+            .await
+            .expect("analysis should succeed");
+        assert_eq!(analysis.summary, "Add logging");
+        assert!(
+            events.iter().any(|e| e.workflow_stage == Some(AgentWorkflowStage::Analysis)),
+            "should emit Analysis stage"
+        );
+
+        // Stage 4: Planning
+        let todos = runner
+            .run_planning_round(&analysis, &messages, &mut session, &mut events, 2)
+            .await
+            .expect("planning should succeed");
+        assert_eq!(todos.len(), 2);
+        assert!(
+            events.iter().any(|e| e.workflow_stage == Some(AgentWorkflowStage::Planning)),
+            "should emit Planning stage"
+        );
+
+        // Stage 5: Executing (per-TODO loop)
+        for (i, todo_title) in todos.iter().enumerate() {
+            let (_content, _tools) = runner
+                .execute_single_todo(
+                    i,
+                    todo_title,
+                    &analysis,
+                    &messages,
+                    &mut session,
+                    &mut events,
+                    3 + i,
+                )
+                .await
+                .expect("execute should succeed");
+        }
+        assert!(
+            events.iter().any(|e| e.kind == AgentExecutionEventKind::TodoExecutionStart),
+            "should emit TodoExecutionStart"
+        );
+        assert!(
+            events.iter().any(|e| e.kind == AgentExecutionEventKind::TodoExecutionEnd),
+            "should emit TodoExecutionEnd"
+        );
+
+        // Stage 6: Verifying
+        let verification = runner
+            .run_global_verification(&todos, &messages, &mut session, &mut events, 5)
+            .await
+            .expect("verification should succeed");
+        assert!(verification.contains("pass"));
+        assert!(
+            events.iter().any(|e| e.workflow_stage == Some(AgentWorkflowStage::Verifying)),
+            "should emit Verifying stage"
+        );
+
+        // Stage 7: Completing
+        let completion = runner
+            .run_completion(&todos, &messages, &mut session, &mut events, 6)
+            .await
+            .expect("completion should succeed");
+        assert!(!completion.is_empty());
+        assert!(
+            events.iter().any(|e| e.workflow_stage == Some(AgentWorkflowStage::Completing)),
+            "should emit Completing stage"
+        );
+
+        // Stage 8: Reporting
+        let report = runner
+            .generate_execution_report(
+                &todos,
+                &verification,
+                &messages,
+                &mut session,
+                &mut events,
+                7,
+            )
+            .await
+            .expect("report should succeed");
+        assert!(report.contains("2/2"));
+        assert!(
+            events.iter().any(|e| e.workflow_stage == Some(AgentWorkflowStage::Reporting)),
+            "should emit Reporting stage"
+        );
+        assert!(
+            events.iter().any(|e| e.kind == AgentExecutionEventKind::Report),
+            "should emit Report event"
+        );
+
+        // Verify all stages that emit events were covered
+        let stages_emitted: std::collections::HashSet<_> = events
+            .iter()
+            .filter_map(|e| e.workflow_stage)
+            .collect();
+        assert!(stages_emitted.contains(&AgentWorkflowStage::Analysis));
+        assert!(stages_emitted.contains(&AgentWorkflowStage::Planning));
+        assert!(stages_emitted.contains(&AgentWorkflowStage::Executing));
+        assert!(stages_emitted.contains(&AgentWorkflowStage::Verifying));
+        assert!(stages_emitted.contains(&AgentWorkflowStage::Completing));
+        assert!(stages_emitted.contains(&AgentWorkflowStage::Reporting));
+    }
 }

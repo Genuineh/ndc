@@ -171,6 +171,17 @@ TUI 快捷键（默认 REPL）：
      - `NDC_TIMELINE_LIMIT=<N>`
      - `NDC_REPL_SHOW_USAGE=true|false`
 5. Workflow 与指标观测
+   - Agent 采用 **8 阶段 TODO 驱动工作流**（Pipeline）:
+     1. **LoadContext** — 加载工具清单、Skills、MCP 能力、项目记忆、会话历史
+     2. **Compress** — 上下文超限时压缩摘要（可跳过）
+     3. **Analysis** — 结合上下文分析用户需求，产出需求理解文档
+     4. **Planning** — 将需求分解为 TODO 列表
+     5. **Executing** — 围绕 TODO 执行循环：场景判断→编码(TDD)/普通路径→单项完成
+     6. **Verifying** — 所有 TODO 完成后，全局回归验证
+     7. **Completing** — 文档收尾、知识回灌
+     8. **Reporting** — 生成执行报告（变更摘要、测试结果、TODO 完成率）
+   - 编码类 TODO 自动注入 TDD 提示（红绿循环），普通 TODO 走快速执行路径
+   - TODO 状态变更会实时刷新侧边栏（无需等待 session 完成）
    - `WorkflowStage` 事件会实时更新状态栏中的 `workflow=<stage>`
    - `TokenUsage` 事件会实时更新 `tok_round/tok_session`
    - 使用 `/workflow compact` 查看阶段进度聚合（适合日常观测）
